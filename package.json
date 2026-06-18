@@ -15,6 +15,7 @@
     "deploy:usb": "node scripts/deploy-to-usb.mjs",
     "scan:usb": "node scripts/scan-usb.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
+    "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",
     "fetch:hermes": "node scripts/fetch-hermes.mjs"
   },

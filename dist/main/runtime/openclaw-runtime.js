@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { checkTcpPort } from "../services/net.js";
@@ -62,7 +64,7 @@ export class OpenClawRuntime {
         }
         this.supervisor.start({
             command,
-            args: ["gateway", "start", "--host", "127.0.0.1", "--port", "18789"],
+            args: ["gateway", "--allow-unconfigured"],
             cwd: this.runtimeRoot,
             env: this.buildEnv()
         });
@@ -77,8 +79,31 @@ export class OpenClawRuntime {
         await new Promise((resolve) => setTimeout(resolve, 800));
         return this.start();
     }
-    async chat(message) {
-        return { ok: false, error: `OpenClaw chat passthrough is not implemented in this rebuilt hub yet. Message: ${message}` };
+    async chat(message, messages = []) {
+        const config = this.readOpenClawConfig();
+        const modelRef = config?.agents?.defaults?.model?.primary || "";
+        const [providerId, modelIdFromRef] = String(modelRef).split("/");
+        const provider = providerId ? config?.models?.providers?.[providerId] : null;
+        const model = modelIdFromRef || provider?.models?.[0]?.id;
+        if (!provider || !provider.baseUrl || !model) {
+            return {
+                ok: false,
+                error: "OpenClaw model config is incomplete. Please configure a provider and primary model in data/.openclaw/openclaw.json."
+            };
+        }
+        if (provider.api && provider.api !== "openai-completions") {
+            return { ok: false, error: `Unsupported OpenClaw provider api: ${provider.api}` };
+        }
+        const url = this.resolveChatCompletionsUrl(provider.baseUrl);
+        const payload = JSON.stringify({
+            model,
+            messages: [...messages, { role: "user", content: message }],
+            stream: false
+        });
+        return this.requestJson(url, payload, {
+            Authorization: provider.apiKey ? `Bearer ${provider.apiKey}` : "",
+            ...(provider.headers || {})
+        });
     }
     ensureRuntime() {
         fs.mkdirSync(this.runtimeRoot, { recursive: true });
@@ -103,6 +128,66 @@ export class OpenClawRuntime {
             USERPROFILE: path.join(this.dataRoot, "home"),
             [pathKey]: [this.runtimeRoot, process.env[pathKey] || ""].filter(Boolean).join(path.delimiter)
         };
+    }
+    readOpenClawConfig() {
+        const file = path.join(this.dataRoot, "openclaw.json");
+        if (!fs.existsSync(file))
+            return null;
+        try {
+            return JSON.parse(fs.readFileSync(file, "utf8"));
+        }
+        catch {
+            return null;
+        }
+    }
+    resolveChatCompletionsUrl(baseUrl) {
+        const trimmed = baseUrl.replace(/\/+$/, "");
+        if (trimmed.endsWith("/chat/completions"))
+            return new URL(trimmed);
+        return new URL(`${trimmed}/chat/completions`);
+    }
+    requestJson(url, payload, headers) {
+        return new Promise((resolve) => {
+            const transport = url.protocol === "https:" ? https : http;
+            const requestHeaders = Object.fromEntries(Object.entries({
+                "Content-Type": "application/json",
+                "Content-Length": String(Buffer.byteLength(payload)),
+                ...headers
+            }).filter(([, value]) => value));
+            const req = transport.request({
+                hostname: url.hostname,
+                port: url.port || (url.protocol === "https:" ? 443 : 80),
+                path: `${url.pathname}${url.search}`,
+                method: "POST",
+                headers: requestHeaders,
+                timeout: 120000
+            }, (res) => {
+                let raw = "";
+                res.setEncoding("utf8");
+                res.on("data", (chunk) => raw += chunk);
+                res.on("end", () => {
+                    try {
+                        const json = JSON.parse(raw || "{}");
+                        const reply = json.choices?.[0]?.message?.content || json.choices?.[0]?.text || json.reply;
+                        if ((res.statusCode || 0) >= 400) {
+                            resolve({ ok: false, error: json.error?.message || json.error || raw || `HTTP ${res.statusCode}` });
+                            return;
+                        }
+                        resolve({ ok: true, reply: reply || raw });
+                    }
+                    catch (error) {
+                        resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+                    }
+                });
+            });
+            req.on("error", (error) => resolve({ ok: false, error: error.message }));
+            req.on("timeout", () => {
+                req.destroy();
+                resolve({ ok: false, error: "OpenClaw model request timed out." });
+            });
+            req.write(payload);
+            req.end();
+        });
     }
     findOpenClawCommand() {
         const command = path.join(this.runtimeRoot, process.platform === "win32" ? "openclaw.cmd" : "openclaw");

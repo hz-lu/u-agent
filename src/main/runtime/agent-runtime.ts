@@ -1,4 +1,4 @@
-import { AgentLogLine, AgentStatus } from "../../shared/types.js";
+import { AgentLogLine, AgentStatus, ChatResponse } from "../../shared/types.js";
 
 export interface AgentRuntime {
   onLog(callback: (line: AgentLogLine) => void): void;
@@ -6,4 +6,5 @@ export interface AgentRuntime {
   start(): Promise<AgentStatus>;
   stop(): Promise<AgentStatus>;
   restart(): Promise<AgentStatus>;
+  chat?(message: string, messages?: Array<{ role: string; content: string }>): Promise<ChatResponse>;
 }
