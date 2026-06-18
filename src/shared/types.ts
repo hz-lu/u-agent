@@ -75,3 +75,20 @@ export interface ChatResponse {
   reply?: string;
   error?: string;
 }
+
+export interface ActionResult {
+  ok: boolean;
+  message: string;
+  path?: string;
+}
+
+export interface ConfigImportResult extends ActionResult {
+  config?: HermesConfig;
+}
+
+export interface ScheduleInput {
+  title: string;
+  naturalLanguage: string;
+  cron?: string;
+  enabled?: boolean;
+}

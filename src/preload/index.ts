@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AgentId, AgentLogLine, ChatRequest, HermesConfig } from "../shared/types.js";
+import { AgentId, AgentLogLine, ChatRequest, ConnectorConfig, HermesConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
 
 const api = {
   listStatus: () => ipcRenderer.invoke("agent:list-status"),
@@ -9,6 +9,12 @@ const api = {
   readLogs: () => ipcRenderer.invoke("agent:logs"),
   readHermesConfig: () => ipcRenderer.invoke("hermes:read-config"),
   writeHermesConfig: (config: HermesConfig) => ipcRenderer.invoke("hermes:write-config", config),
+  testHermesConnector: (id: ConnectorConfig["id"]) => ipcRenderer.invoke("hermes:test-connector", id),
+  testHermesSandbox: (id: SandboxConfig["id"]) => ipcRenderer.invoke("hermes:test-sandbox", id),
+  addHermesSchedule: (input: ScheduleInput) => ipcRenderer.invoke("hermes:add-schedule", input),
+  removeHermesSchedule: (id: string) => ipcRenderer.invoke("hermes:remove-schedule", id),
+  exportHermesConfig: () => ipcRenderer.invoke("hermes:export-config"),
+  importHermesConfig: (filePath: string) => ipcRenderer.invoke("hermes:import-config", filePath),
   openHermes: (target: "config" | "dashboard" | "api") => ipcRenderer.invoke("hermes:open", target),
   startHermesDashboard: () => ipcRenderer.invoke("hermes:start-dashboard"),
   startHermesApi: () => ipcRenderer.invoke("hermes:start-api"),

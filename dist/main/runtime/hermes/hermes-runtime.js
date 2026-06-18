@@ -33,6 +33,22 @@ const defaultHermesConfig = {
     memoryEnabled: true,
     autoSkillEnabled: true
 };
+const connectorRequiredFields = {
+    telegram: ["botToken"],
+    discord: ["botToken"],
+    slack: ["appToken", "botToken"],
+    whatsapp: ["sessionName"],
+    signal: ["phoneNumber"],
+    email: ["imapUrl", "smtpUrl", "username"],
+    cli: []
+};
+const sandboxRequiredFields = {
+    local: [],
+    docker: ["socket"],
+    ssh: ["host", "user"],
+    singularity: ["image"],
+    modal: ["tokenId"]
+};
 export class HermesRuntime {
     paths;
     getMainWindow;
@@ -60,12 +76,84 @@ export class HermesRuntime {
         this.logSink = callback;
     }
     readConfig() {
-        return this.store.read();
+        return this.normalizeConfig(this.store.read());
     }
     writeConfig(config) {
-        this.store.write(config);
-        this.writePortableEnv(config);
+        const normalized = this.normalizeConfig(config);
+        this.store.write(normalized);
+        this.writePortableArtifacts(normalized);
         return this.store.read();
+    }
+    testConnector(id) {
+        const config = this.readConfig();
+        const connector = config.connectors.find((item) => item.id === id);
+        if (!connector)
+            return { ok: false, message: `Connector ${id} is not available.` };
+        const missing = this.missingRequiredFields(connector.fields, connectorRequiredFields[id]);
+        connector.status = missing.length ? "error" : "configured";
+        this.writeConfig(config);
+        if (missing.length) {
+            return { ok: false, message: `${connector.label} missing required fields: ${missing.join(", ")}` };
+        }
+        return {
+            ok: true,
+            message: `${connector.label} configuration is ready.`,
+            path: path.join(this.dataRoot, "connectors", `${id}.json`)
+        };
+    }
+    testSandbox(id) {
+        const config = this.readConfig();
+        const sandbox = config.sandboxes.find((item) => item.id === id);
+        if (!sandbox)
+            return { ok: false, message: `Sandbox ${id} is not available.` };
+        const missing = this.missingRequiredFields(sandbox.fields, sandboxRequiredFields[id]);
+        if (missing.length)
+            return { ok: false, message: `${id} sandbox missing required fields: ${missing.join(", ")}` };
+        if (id === "docker" && sandbox.fields.socket && !fs.existsSync(sandbox.fields.socket)) {
+            return { ok: false, message: `Docker socket was not found: ${sandbox.fields.socket}` };
+        }
+        return {
+            ok: true,
+            message: `${id} sandbox configuration is ready.`,
+            path: path.join(this.dataRoot, "sandboxes", "backends.json")
+        };
+    }
+    addSchedule(input) {
+        const config = this.readConfig();
+        const schedule = {
+            id: `schedule-${Date.now()}`,
+            title: input.title.trim() || "Untitled automation",
+            naturalLanguage: input.naturalLanguage.trim(),
+            cron: input.cron?.trim() || this.inferCron(input.naturalLanguage),
+            enabled: input.enabled ?? true
+        };
+        config.schedules = [schedule, ...config.schedules];
+        this.writeConfig(config);
+        return schedule;
+    }
+    removeSchedule(id) {
+        const config = this.readConfig();
+        config.schedules = config.schedules.filter((item) => item.id !== id);
+        return this.writeConfig(config);
+    }
+    exportConfig() {
+        const config = this.readConfig();
+        const exportsDir = path.join(this.dataRoot, "exports");
+        fs.mkdirSync(exportsDir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+        const target = path.join(exportsDir, `hermes-config-${stamp}.json`);
+        fs.writeFileSync(target, `${JSON.stringify(this.redactConfig(config), null, 2)}\n`, "utf8");
+        return { ok: true, message: "Hermes config exported with secrets redacted.", path: target };
+    }
+    importConfig(filePath) {
+        const resolved = path.resolve(filePath);
+        if (!fs.existsSync(resolved))
+            return { ok: false, message: `File does not exist: ${resolved}` };
+        const parsed = JSON.parse(fs.readFileSync(resolved, "utf8"));
+        const current = this.readConfig();
+        const normalized = this.normalizeConfig(parsed, current);
+        const config = this.writeConfig(normalized);
+        return { ok: true, message: "Hermes config imported.", path: resolved, config };
     }
     async getStatus() {
         const configReady = await checkTcpPort(17520);
@@ -123,7 +211,7 @@ export class HermesRuntime {
     async start() {
         this.ensurePortableDirs();
         this.migrateLegacyData();
-        this.writePortableEnv();
+        this.writePortableArtifacts();
         await this.startConfigServer(false);
         await this.startDashboard(false);
         return this.getStatus();
@@ -267,6 +355,7 @@ export class HermesRuntime {
             path.join(this.dataRoot, "cron"),
             path.join(this.dataRoot, "connectors"),
             path.join(this.dataRoot, "sandboxes"),
+            path.join(this.dataRoot, "exports"),
             path.join(this.dataRoot, "tmp")
         ]) {
             fs.mkdirSync(dir, { recursive: true });
@@ -286,7 +375,7 @@ export class HermesRuntime {
         }
     }
     buildHermesEnv() {
-        const config = this.store.read();
+        const config = this.readConfig();
         const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
         const venvScripts = path.join(this.runtimeRoot, "venv", process.platform === "win32" ? "Scripts" : "bin");
         const nodeDir = this.findNode() ? path.dirname(this.findNode()) : path.join(this.runtimeRoot, "node");
@@ -314,7 +403,8 @@ export class HermesRuntime {
             [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path.delimiter)
         };
     }
-    writePortableEnv(config = this.store.read()) {
+    writePortableArtifacts(config = this.readConfig()) {
+        this.ensurePortableDirs();
         fs.mkdirSync(path.join(this.dataRoot, "config"), { recursive: true });
         const lines = [
             "HERMES_HOME=" + this.dataRoot,
@@ -326,6 +416,101 @@ export class HermesRuntime {
             "HERMES_API_KEY=" + config.model.apiKey
         ];
         fs.writeFileSync(path.join(this.dataRoot, "config", ".env"), `${lines.join("\n")}\n`, "utf8");
+        fs.writeFileSync(path.join(this.dataRoot, "config", "model.json"), `${JSON.stringify(this.redactConfig(config).model, null, 2)}\n`, "utf8");
+        fs.writeFileSync(path.join(this.dataRoot, "cron", "schedules.json"), `${JSON.stringify(config.schedules, null, 2)}\n`, "utf8");
+        fs.writeFileSync(path.join(this.dataRoot, "sandboxes", "backends.json"), `${JSON.stringify(config.sandboxes, null, 2)}\n`, "utf8");
+        fs.writeFileSync(path.join(this.dataRoot, "config", "features.json"), `${JSON.stringify({
+            memoryEnabled: config.memoryEnabled,
+            autoSkillEnabled: config.autoSkillEnabled
+        }, null, 2)}\n`, "utf8");
+        for (const connector of config.connectors) {
+            fs.writeFileSync(path.join(this.dataRoot, "connectors", `${connector.id}.json`), `${JSON.stringify({ ...connector, fields: this.redactFields(connector.fields) }, null, 2)}\n`, "utf8");
+        }
+    }
+    normalizeConfig(config, fallback = defaultHermesConfig) {
+        const safeConfig = config || fallback;
+        const fallbackByConnector = new Map(fallback.connectors.map((item) => [item.id, item]));
+        const inputByConnector = new Map((safeConfig.connectors || []).map((item) => [item.id, item]));
+        const connectors = defaultHermesConfig.connectors.map((template) => {
+            const fallbackItem = fallbackByConnector.get(template.id) || template;
+            const input = inputByConnector.get(template.id);
+            return {
+                ...template,
+                ...fallbackItem,
+                ...input,
+                fields: {
+                    ...template.fields,
+                    ...fallbackItem.fields,
+                    ...input?.fields
+                }
+            };
+        });
+        const fallbackBySandbox = new Map(fallback.sandboxes.map((item) => [item.id, item]));
+        const inputBySandbox = new Map((safeConfig.sandboxes || []).map((item) => [item.id, item]));
+        const sandboxes = defaultHermesConfig.sandboxes.map((template) => {
+            const fallbackItem = fallbackBySandbox.get(template.id) || template;
+            const input = inputBySandbox.get(template.id);
+            return {
+                ...template,
+                ...fallbackItem,
+                ...input,
+                fields: {
+                    ...template.fields,
+                    ...fallbackItem.fields,
+                    ...input?.fields
+                }
+            };
+        });
+        return {
+            model: {
+                ...defaultHermesConfig.model,
+                ...fallback.model,
+                ...safeConfig.model
+            },
+            connectors,
+            schedules: Array.isArray(safeConfig.schedules) ? safeConfig.schedules : [],
+            sandboxes,
+            memoryEnabled: safeConfig.memoryEnabled ?? fallback.memoryEnabled ?? true,
+            autoSkillEnabled: safeConfig.autoSkillEnabled ?? fallback.autoSkillEnabled ?? true
+        };
+    }
+    missingRequiredFields(fields, required) {
+        return required.filter((field) => !(fields[field] || "").trim());
+    }
+    inferCron(text) {
+        const normalized = text.toLowerCase();
+        if (normalized.includes("hour") || normalized.includes("每小时"))
+            return "0 * * * *";
+        if (normalized.includes("week") || normalized.includes("每周"))
+            return "0 9 * * 1";
+        if (normalized.includes("month") || normalized.includes("每月"))
+            return "0 9 1 * *";
+        if (normalized.includes("night") || normalized.includes("晚") || normalized.includes("夜"))
+            return "0 22 * * *";
+        return "0 9 * * *";
+    }
+    redactConfig(config) {
+        return {
+            ...config,
+            model: { ...config.model, apiKey: this.redactSecret(config.model.apiKey) },
+            connectors: config.connectors.map((connector) => ({
+                ...connector,
+                fields: this.redactFields(connector.fields)
+            }))
+        };
+    }
+    redactFields(fields) {
+        return Object.fromEntries(Object.entries(fields).map(([key, value]) => [
+            key,
+            /token|key|secret|password/i.test(key) ? this.redactSecret(value) : value
+        ]));
+    }
+    redactSecret(value) {
+        if (!value)
+            return "";
+        if (value.length <= 6)
+            return "***";
+        return `${value.slice(0, 3)}...${value.slice(-3)}`;
     }
     findHermesExe() {
         const candidate = process.platform === "win32"

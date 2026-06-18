@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentId, AgentLogLine, ChatRequest } from "../shared/types.js";
+import { AgentId, AgentLogLine, ChatRequest, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
 import { PortablePaths } from "./portable-paths.js";
 import { HermesRuntime } from "./runtime/hermes/hermes-runtime.js";
 import { OpenClawRuntime } from "./runtime/openclaw-runtime.js";
@@ -69,6 +69,12 @@ function registerIpc(): void {
   ipcMain.handle("agent:logs", async () => logs);
   ipcMain.handle("hermes:read-config", async () => hermes.readConfig());
   ipcMain.handle("hermes:write-config", async (_, config) => hermes.writeConfig(config));
+  ipcMain.handle("hermes:test-connector", async (_, id: ConnectorConfig["id"]) => hermes.testConnector(id));
+  ipcMain.handle("hermes:test-sandbox", async (_, id: SandboxConfig["id"]) => hermes.testSandbox(id));
+  ipcMain.handle("hermes:add-schedule", async (_, input: ScheduleInput) => hermes.addSchedule(input));
+  ipcMain.handle("hermes:remove-schedule", async (_, id: string) => hermes.removeSchedule(id));
+  ipcMain.handle("hermes:export-config", async () => hermes.exportConfig());
+  ipcMain.handle("hermes:import-config", async (_, filePath: string) => hermes.importConfig(filePath));
   ipcMain.handle("hermes:open", async (_, target: "config" | "dashboard" | "api") => hermes.open(target));
   ipcMain.handle("hermes:start-dashboard", async () => hermes.startDashboard(true));
   ipcMain.handle("hermes:start-api", async () => hermes.startApiServer(true));

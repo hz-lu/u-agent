@@ -1,7 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { Bot, BrainCircuit, CalendarClock, CheckCircle2, KeyRound, Play, RefreshCw, Square, TerminalSquare } from "lucide-vue-next";
-import type { AgentId, AgentLogLine, AgentStatus, ChatResponse, HermesConfig } from "../shared/types";
+import {
+  Bot,
+  BrainCircuit,
+  CalendarClock,
+  CheckCircle2,
+  Download,
+  KeyRound,
+  Play,
+  RefreshCw,
+  Send,
+  Square,
+  TerminalSquare,
+  Upload
+} from "lucide-vue-next";
+import type {
+  ActionResult,
+  AgentId,
+  AgentLogLine,
+  AgentStatus,
+  ChatResponse,
+  ConnectorConfig,
+  HermesConfig,
+  SandboxConfig
+} from "../shared/types";
 
 const activeAgent = ref<AgentId>("hermes");
 const statuses = reactive<Record<AgentId, AgentStatus | null>>({ openclaw: null, hermes: null });
@@ -12,9 +34,27 @@ const embeddedTitle = ref("");
 const chatInput = ref("");
 const chatMessages = ref<Array<{ role: "user" | "assistant"; content: string }>>([]);
 const busy = ref(false);
+const statusMessage = ref("");
+const importPath = ref("");
+const scheduleDraft = reactive({ title: "", naturalLanguage: "", cron: "" });
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
-const hermesReady = computed(() => statuses.hermes?.ready || false);
+const connectorFields: Record<ConnectorConfig["id"], string[]> = {
+  telegram: ["botToken"],
+  discord: ["botToken"],
+  slack: ["appToken", "botToken"],
+  whatsapp: ["sessionName"],
+  signal: ["phoneNumber"],
+  email: ["imapUrl", "smtpUrl", "username"],
+  cli: []
+};
+const sandboxFields: Record<SandboxConfig["id"], string[]> = {
+  local: [],
+  docker: ["socket"],
+  ssh: ["host", "user"],
+  singularity: ["image"],
+  modal: ["tokenId"]
+};
 
 async function refresh() {
   const next = await window.agentHub.listStatus();
@@ -29,6 +69,8 @@ async function loadConfig() {
 async function saveConfig() {
   if (!hermesConfig.value) return;
   hermesConfig.value = await window.agentHub.writeHermesConfig(hermesConfig.value);
+  statusMessage.value = "配置已保存到 U 盘 data/.hermes。";
+  await refresh();
 }
 
 async function start(agent: AgentId) {
@@ -53,6 +95,54 @@ async function stop(agent: AgentId) {
 
 async function openHermes(target: "config" | "dashboard" | "api") {
   await window.agentHub.openHermes(target);
+  await refresh();
+}
+
+async function testConnector(id: ConnectorConfig["id"]) {
+  if (!hermesConfig.value) return;
+  await saveConfig();
+  const result = await window.agentHub.testHermesConnector(id) as ActionResult;
+  statusMessage.value = result.message;
+  await loadConfig();
+}
+
+async function testSandbox(id: SandboxConfig["id"]) {
+  if (!hermesConfig.value) return;
+  await saveConfig();
+  const result = await window.agentHub.testHermesSandbox(id) as ActionResult;
+  statusMessage.value = result.message;
+}
+
+async function addSchedule() {
+  if (!scheduleDraft.naturalLanguage.trim()) return;
+  await window.agentHub.addHermesSchedule({
+    title: scheduleDraft.title,
+    naturalLanguage: scheduleDraft.naturalLanguage,
+    cron: scheduleDraft.cron,
+    enabled: true
+  });
+  scheduleDraft.title = "";
+  scheduleDraft.naturalLanguage = "";
+  scheduleDraft.cron = "";
+  statusMessage.value = "自动化任务已加入 Hermes cron 配置。";
+  await loadConfig();
+}
+
+async function removeSchedule(id: string) {
+  hermesConfig.value = await window.agentHub.removeHermesSchedule(id);
+  statusMessage.value = "自动化任务已删除。";
+}
+
+async function exportConfig() {
+  const result = await window.agentHub.exportHermesConfig() as ActionResult;
+  statusMessage.value = result.path ? `${result.message} ${result.path}` : result.message;
+}
+
+async function importConfig() {
+  if (!importPath.value.trim()) return;
+  const result = await window.agentHub.importHermesConfig(importPath.value.trim());
+  statusMessage.value = result.message;
+  if (result.config) hermesConfig.value = result.config;
   await refresh();
 }
 
@@ -110,7 +200,7 @@ onMounted(async () => {
           <p>{{ activeStatus?.runtimeRoot || "正在读取运行时..." }}</p>
         </div>
         <div class="actions">
-          <button class="icon-button" @click="refresh"><RefreshCw :size="18" /></button>
+          <button class="icon-button" title="刷新状态" @click="refresh"><RefreshCw :size="18" /></button>
           <button class="primary" :disabled="busy" @click="start(activeAgent)"><Play :size="17" />启动</button>
           <button class="secondary" :disabled="busy" @click="stop(activeAgent)"><Square :size="17" />停止</button>
         </div>
@@ -135,56 +225,104 @@ onMounted(async () => {
         </div>
       </section>
 
-      <section v-if="activeAgent === 'hermes'" class="panel-grid">
+      <section v-if="activeAgent === 'hermes'" class="config-board">
         <div class="panel">
-          <div class="panel-title"><KeyRound :size="18" />模型配置</div>
+          <div class="panel-title"><KeyRound :size="18" />模型与服务</div>
           <div v-if="hermesConfig" class="form-grid">
             <label>Provider<input v-model="hermesConfig.model.provider" /></label>
             <label>Model<input v-model="hermesConfig.model.model" /></label>
             <label>Base URL<input v-model="hermesConfig.model.baseUrl" /></label>
             <label>API Key<input v-model="hermesConfig.model.apiKey" type="password" /></label>
           </div>
-          <button class="primary compact" @click="saveConfig"><CheckCircle2 :size="16" />保存配置</button>
-        </div>
-
-        <div class="panel">
-          <div class="panel-title"><TerminalSquare :size="18" />Hermes 服务</div>
           <div class="button-row">
+            <button class="primary compact" @click="saveConfig"><CheckCircle2 :size="16" />保存</button>
+            <button class="secondary compact" @click="exportConfig"><Download :size="16" />导出</button>
+          </div>
+          <div class="import-row">
+            <input v-model="importPath" placeholder="粘贴要导入的 Hermes 配置 JSON 路径" />
+            <button class="secondary compact" @click="importConfig"><Upload :size="16" />导入</button>
+          </div>
+          <div class="button-row service-row">
             <button class="secondary" @click="openHermes('config')">配置中心</button>
             <button class="secondary" @click="openHermes('dashboard')">Dashboard</button>
             <button class="secondary" @click="openHermes('api')">Agent API</button>
           </div>
-          <div class="capabilities">
-            <span v-for="(enabled, name) in statuses.hermes?.capabilities" :key="name" :class="{ ok: enabled }">{{ name }}</span>
-          </div>
+          <p v-if="statusMessage" class="notice">{{ statusMessage }}</p>
         </div>
 
         <div class="panel">
           <div class="panel-title"><Bot :size="18" />连接器</div>
-          <div v-if="hermesConfig" class="toggle-list">
-            <label v-for="connector in hermesConfig.connectors" :key="connector.id">
-              <input v-model="connector.enabled" type="checkbox" />
-              <span>{{ connector.label }}</span>
-              <small>{{ connector.status }}</small>
-            </label>
+          <div v-if="hermesConfig" class="connector-list">
+            <div v-for="connector in hermesConfig.connectors" :key="connector.id" class="config-item">
+              <div class="config-item-head">
+                <label class="inline-toggle">
+                  <input v-model="connector.enabled" type="checkbox" />
+                  <span>{{ connector.label }}</span>
+                </label>
+                <button class="secondary compact" @click="testConnector(connector.id)">测试</button>
+              </div>
+              <div class="mini-grid">
+                <label v-for="field in connectorFields[connector.id]" :key="field">
+                  {{ field }}
+                  <input v-model="connector.fields[field]" :type="/token|key|secret/i.test(field) ? 'password' : 'text'" />
+                </label>
+              </div>
+              <small :class="connector.status">{{ connector.status }}</small>
+            </div>
           </div>
         </div>
 
         <div class="panel">
-          <div class="panel-title"><CalendarClock :size="18" />自动化与沙箱</div>
-          <div v-if="hermesConfig" class="toggle-list">
-            <label>
+          <div class="panel-title"><CalendarClock :size="18" />定时自动化</div>
+          <div v-if="hermesConfig" class="toggle-row">
+            <label class="inline-toggle">
               <input v-model="hermesConfig.memoryEnabled" type="checkbox" />
               <span>持久记忆</span>
             </label>
-            <label>
+            <label class="inline-toggle">
               <input v-model="hermesConfig.autoSkillEnabled" type="checkbox" />
               <span>自动生成技能</span>
             </label>
-            <label v-for="sandbox in hermesConfig.sandboxes" :key="sandbox.id">
-              <input v-model="sandbox.enabled" type="checkbox" />
-              <span>{{ sandbox.id }}</span>
-            </label>
+          </div>
+          <div class="schedule-editor">
+            <input v-model="scheduleDraft.title" placeholder="任务名称" />
+            <input v-model="scheduleDraft.naturalLanguage" placeholder="自然语言，例如：每天早上九点生成项目简报" />
+            <input v-model="scheduleDraft.cron" placeholder="cron，可留空自动推断" />
+            <button class="primary compact" @click="addSchedule">添加任务</button>
+          </div>
+          <div v-if="hermesConfig" class="schedule-list">
+            <div v-for="schedule in hermesConfig.schedules" :key="schedule.id" class="config-item slim">
+              <div>
+                <strong>{{ schedule.title }}</strong>
+                <small>{{ schedule.cron }} · {{ schedule.naturalLanguage }}</small>
+              </div>
+              <button class="secondary compact" @click="removeSchedule(schedule.id)">删除</button>
+            </div>
+            <div v-if="!hermesConfig.schedules.length" class="empty small">还没有自动化任务。</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title"><TerminalSquare :size="18" />沙箱后端</div>
+          <div v-if="hermesConfig" class="connector-list">
+            <div v-for="sandbox in hermesConfig.sandboxes" :key="sandbox.id" class="config-item">
+              <div class="config-item-head">
+                <label class="inline-toggle">
+                  <input v-model="sandbox.enabled" type="checkbox" />
+                  <span>{{ sandbox.id }}</span>
+                </label>
+                <button class="secondary compact" @click="testSandbox(sandbox.id)">测试</button>
+              </div>
+              <div class="mini-grid">
+                <label v-for="field in sandboxFields[sandbox.id]" :key="field">
+                  {{ field }}
+                  <input v-model="sandbox.fields[field]" :type="/token|key|secret/i.test(field) ? 'password' : 'text'" />
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="capabilities">
+            <span v-for="(enabled, name) in statuses.hermes?.capabilities" :key="name" :class="{ ok: enabled }">{{ name }}</span>
           </div>
         </div>
       </section>
@@ -201,7 +339,7 @@ onMounted(async () => {
           </div>
           <div class="chat-input">
             <textarea v-model="chatInput" placeholder="输入消息，Enter 发送" @keydown.enter.prevent="sendChat"></textarea>
-            <button class="primary" @click="sendChat">发送</button>
+            <button class="primary" @click="sendChat"><Send :size="17" />发送</button>
           </div>
         </div>
 
