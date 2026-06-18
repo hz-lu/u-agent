@@ -1,0 +1,34 @@
+{
+  "name": "openclawpro-agent-hub",
+  "version": "2.0.0",
+  "description": "Complete portable OpenClawPro client with native OpenClaw and Hermes Agent support.",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:electron": "cross-env NODE_ENV=development electron .",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.main.json",
+    "deploy:usb": "node scripts/deploy-to-usb.mjs",
+    "scan:usb": "node scripts/scan-usb.mjs",
+    "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
+    "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",
+    "fetch:hermes": "node scripts/fetch-hermes.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "lucide-vue-next": "^0.468.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "cross-env": "^7.0.3",
+    "electron": "^35.7.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}
