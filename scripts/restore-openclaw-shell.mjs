@@ -301,6 +301,137 @@ function patchHermesEnvCheck(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesModelConfig(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("model-hermes-tab")) return;
+
+  const saveCustomAnchor = [
+    "    function saveCustomModel() {",
+    "      if (!customUrl.value) {",
+    "        showToast(\"请填写 API URL，不可为空\", true);",
+    "        return;",
+    "      }",
+    "      if (!customKey.value) {",
+    "        showToast(\"请填写 API Key，不可为空\", true);",
+    "        return;",
+    "      }",
+    "      if (!customModelName.value) {",
+    "        showToast(\"请填写自定义模型名称\", true);",
+    "        return;",
+    "      }",
+    "      const modelValue2 = `custom-${customModelName.value}`;",
+    "      const exists = modelsStore.selectedModels.some((m) => m.value === modelValue2);",
+    "      if (exists) {",
+    "        showToast(\"不可重复添加模型\", true);",
+    "        return;",
+    "      }",
+    "      const modelInfo = {",
+    "        label: customModelName.value,",
+    "        value: modelValue2,",
+    "        source: \"custom\",",
+    "        base: customUrl.value,",
+    "        key: customKey.value,",
+    "        model: customModelName.value,",
+    "        provider: \"custom\",",
+    "        api: customApiType.value",
+    "      };",
+    "      const updatedModels = [...modelsStore.selectedModels];",
+    "      updatedModels.push({ ...modelInfo, isCurrent: updatedModels.length === 0 });",
+    "      modelsStore.setSelectedModels(updatedModels);",
+    "      showToast(\"模型添加成功\");",
+    "      customUrl.value = \"\";",
+    "      customKey.value = \"\";",
+    "      customModelName.value = \"\";",
+    "      customApiType.value = \"openai-completions\";",
+    "    }"
+  ].join("\n");
+  const saveCustomReplacement = [
+    saveCustomAnchor,
+    "    async function handleHermesModelConfig() {",
+    "      try {",
+    "        await window.uclaw.ipcOpenHermesConfig();",
+    "        showToast(\"Hermes 配置中心已打开\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes 配置中心打开失败: \" + e.message, true);",
+    "      }",
+    "    }",
+    "    async function handleHermesModelDashboard() {",
+    "      try {",
+    "        await window.uclaw.ipcOpenHermesDashboard();",
+    "        showToast(\"Hermes Dashboard 已打开\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes Dashboard 打开失败: \" + e.message, true);",
+    "      }",
+    "    }",
+    "    async function handleHermesModelApi() {",
+    "      try {",
+    "        await window.uclaw.ipcOpenHermesApiServer();",
+    "        showToast(\"Hermes Agent API 已启动\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes Agent API 启动失败: \" + e.message, true);",
+    "      }",
+    "    }"
+  ].join("\n");
+  if (!source.includes(saveCustomAnchor)) {
+    throw new Error("Could not find custom model save function in OpenClaw renderer bundle.");
+  }
+  source = source.replace(saveCustomAnchor, saveCustomReplacement);
+
+  const customTabAnchor = [
+    "          createBaseVNode(\"button\", {",
+    "            class: normalizeClass([\"model-model-tab\", { \"model-active\": activeTab.value === \"custom\" }]),",
+    "            onClick: _cache[3] || (_cache[3] = ($event) => activeTab.value = \"custom\")",
+    "          }, \" 自定义模型 \", 2)"
+  ].join("\n");
+  const customTabReplacement = [
+    customTabAnchor + ",",
+    "          createBaseVNode(\"button\", {",
+    "            class: normalizeClass([\"model-model-tab\", { \"model-active\": activeTab.value === \"hermes\" }]),",
+    "            onClick: ($event) => activeTab.value = \"hermes\"",
+    "          }, \" Hermes Agent \", 2)"
+  ].join("\n");
+  if (!source.includes(customTabAnchor)) {
+    throw new Error("Could not find model tab insertion point in OpenClaw renderer bundle.");
+  }
+  source = source.replace(customTabAnchor, customTabReplacement);
+
+  const customCloseAnchor = [
+    "        withDirectives(createBaseVNode(\"div\", _hoisted_44$2, [",
+    "          _cache[42] || (_cache[42] = createBaseVNode(\"div\", { class: \"model-custom-intro\" }, ["
+  ].join("\n");
+  const hermesPanel = [
+    "        withDirectives(createBaseVNode(\"div\", { class: \"model-tab-content model-hermes-tab\" }, [",
+    "          createBaseVNode(\"div\", { class: \"model-hermes-panel\" }, [",
+    "            createBaseVNode(\"div\", { class: \"model-hermes-head\" }, [",
+    "              createBaseVNode(\"div\", { class: \"model-hermes-mark\" }, \"H\"),",
+    "              createBaseVNode(\"div\", { class: \"model-hermes-copy\" }, [",
+    "                createBaseVNode(\"h3\", null, \"Hermes Agent 模型配置\"),",
+    "                createBaseVNode(\"p\", null, \"Hermes 使用独立配置中心管理 provider、模型、Key、记忆、技能和沙箱。OpenClaw 模型继续用于原 Gateway，Hermes 可作为独立 Agent 或协同 Agent 调用。\")",
+    "              ])",
+    "            ]),",
+    "            createBaseVNode(\"div\", { class: \"model-hermes-actions\" }, [",
+    "              createBaseVNode(\"button\", { class: \"model-hermes-btn primary\", onClick: handleHermesModelConfig }, \"打开配置中心\"),",
+    "              createBaseVNode(\"button\", { class: \"model-hermes-btn\", onClick: handleHermesModelDashboard }, \"Dashboard\"),",
+    "              createBaseVNode(\"button\", { class: \"model-hermes-btn\", onClick: handleHermesModelApi }, \"启动 Agent API\")",
+    "            ]),",
+    "            createBaseVNode(\"div\", { class: \"model-hermes-notes\" }, [",
+    "              createBaseVNode(\"span\", null, \"配置保存到 U 盘 data/.hermes\"),",
+    "              createBaseVNode(\"span\", null, \"不会覆盖 OpenClaw 当前模型\"),",
+    "              createBaseVNode(\"span\", null, \"后续会在 AI 会话中加入 OpenClaw / Hermes / 协同模式切换\")",
+    "            ])",
+    "          ])",
+    "        ], 512), [",
+    "          [vShow, activeTab.value === \"hermes\"]",
+    "        ]),",
+    customCloseAnchor
+  ].join("\n");
+  if (!source.includes(customCloseAnchor)) {
+    throw new Error("Could not find custom model tab content insertion point in OpenClaw renderer bundle.");
+  }
+  source = source.replace(customCloseAnchor, hermesPanel);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesHomeStyles(filePath) {
   let source = fs.readFileSync(filePath, "utf8");
   if (source.includes(".home-hermes-card")) return;
@@ -401,6 +532,96 @@ function patchHermesHomeStyles(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesModelStyles(filePath) {
+  let source = fs.readFileSync(filePath, "utf8");
+  if (source.includes(".model-hermes-panel")) return;
+  source += `
+
+.model-hermes-panel {
+  padding: 18px;
+  border: 1px solid rgba(173, 198, 255, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(34, 42, 61, 0.95), rgba(19, 27, 46, 0.95));
+}
+
+.model-hermes-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.model-hermes-mark {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #4edea3;
+  color: #002113;
+  font-weight: 800;
+}
+
+.model-hermes-copy h3 {
+  margin: 0;
+  color: #dae2fd;
+  font-size: 18px;
+}
+
+.model-hermes-copy p {
+  margin: 6px 0 0;
+  color: #c2c6d6;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.model-hermes-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.model-hermes-btn {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(173, 198, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dae2fd;
+  cursor: pointer;
+}
+
+.model-hermes-btn.primary {
+  border-color: #4edea3;
+  background: #4edea3;
+  color: #002113;
+  font-weight: 700;
+}
+
+.model-hermes-btn:hover {
+  filter: brightness(1.08);
+}
+
+.model-hermes-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-hermes-notes span {
+  border: 1px solid rgba(173, 198, 255, 0.16);
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: #c2c6d6;
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
+`;
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -441,10 +662,12 @@ const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DI
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
+patchHermesModelConfig(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);
 patchHermesHomeStyles(rendererStyleTarget);
+patchHermesModelStyles(rendererStyleTarget);
 copyFile(baselineHtml, path.join(targetApp, "dist", "assets", "main", "index.html"));
 
 for (const asset of ["icon.ico", "icon.png", "logo.png"]) {
@@ -456,4 +679,5 @@ console.log(`Restored original OpenClaw shell to ${targetApp}`);
 console.log("Added non-invasive Hermes tray menu entries.");
 console.log("Added Hermes controls to the original OpenClaw home console.");
 console.log("Added Hermes runtime status to the original environment checks.");
+console.log("Added Hermes Agent tab to the original model configuration page.");
 console.log("Hermes dist-injected patch assets were intentionally not copied.");
