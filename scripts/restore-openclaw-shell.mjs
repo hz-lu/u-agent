@@ -85,6 +85,10 @@ function patchHermesTrayMenu(filePath) {
 
 function patchHermesRuntimeEnv(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  source = source.replace(
+    "      OPENCLAW_HOME: this.dataDir,\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`",
+    "      OPENCLAW_HOME: this.dataDir,\n      OPENCLAW_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      CLAWDBOT_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      OPENCLAW_CONFIG: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`"
+  );
   const envAnchor = [
     "  getHermesEnv() {",
     "    const root = this.getPortableRoot();",
@@ -156,11 +160,22 @@ function patchHermesRuntimeEnv(filePath) {
     "    const npmBin = process.platform === \"win32\" ? path$1.join(nodeDir, \"npm.cmd\") : path$1.join(nodeDir, \"bin\", \"npm\");",
     "    const data = path$1.join(getAppRoot(), \"data\", \".hermes\");",
     "    const skillsRoot = path$1.join(data, \"skills\");",
-    "    let skillCount = 0;",
-    "    try {",
-    "      skillCount = fs$1.existsSync(skillsRoot) ? fs$1.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() || entry.name.toLowerCase().endsWith(\".md\")).length : 0;",
-    "    } catch {",
-    "      skillCount = 0;",
+    "    function countHermesSkills(rootDir) {",
+    "      const seen = /* @__PURE__ */ new Set();",
+    "      function walk(dir) {",
+    "        if (!fs$1.existsSync(dir)) return;",
+    "        for (const entry of fs$1.readdirSync(dir, { withFileTypes: true })) {",
+    "          const full = path$1.join(dir, entry.name);",
+    "          if (entry.isDirectory()) {",
+    "            if (fs$1.existsSync(path$1.join(full, \"SKILL.md\")) || fs$1.existsSync(path$1.join(full, \"DESCRIPTION.md\"))) seen.add(path$1.relative(rootDir, full).replace(/\\\\/g, \"/\"));",
+    "            walk(full);",
+    "          } else if (/^(SKILL|DESCRIPTION)\\.md$/i.test(entry.name)) {",
+    "            seen.add(path$1.relative(rootDir, dir).replace(/\\\\/g, \"/\") || entry.name);",
+    "          }",
+    "        }",
+    "      }",
+    "      walk(rootDir);",
+    "      return seen.size;",
     "    }",
     "    function readJsonSafe(filePath) {",
     "      try {",
@@ -171,6 +186,8 @@ function patchHermesRuntimeEnv(filePath) {
     "      }",
     "    }",
     "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));",
+    "    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
+    "    const skillCount = [skillsRoot, ...openClawSkillDirs].reduce((total, dir) => total + countHermesSkills(dir), 0);",
     "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
     "    return {",
     "      status: this.status,",
@@ -435,13 +452,88 @@ function patchHermesSkillBridge(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesLogAndWechatDiagnostics(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("hermes:getLogs")) {
+    const statusAnchor = [
+      "  electron.ipcMain.handle(\"hermes:getStatus\", async () => {",
+      "    return await getHermesManager().getStatus();",
+      "  });"
+    ].join("\n");
+    const statusReplacement = [
+      statusAnchor,
+      "  electron.ipcMain.handle(\"hermes:getLogs\", async (_, options = {}) => {",
+      "    const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(1e3, Number(options.limit))) : 300;",
+      "    const logsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"logs\");",
+      "    const files = [\"gateway.log\", \"agent.log\", \"errors.log\", \"gui.log\", \"gateway-exit-diag.log\"];",
+      "    const rows = [];",
+      "    for (const name of files) {",
+      "      const filePath = path$1.join(logsRoot, name);",
+      "      try {",
+      "        if (!fs$1.existsSync(filePath)) continue;",
+      "        const lines = fs$1.readFileSync(filePath, \"utf8\").split(/\\r?\\n/).filter(Boolean).slice(-limit);",
+      "        for (const line of lines) rows.push({ type: name.includes(\"error\") ? \"stderr\" : \"system\", msg: \"[\" + name + \"] \" + line, file: name });",
+      "      } catch (err) {",
+      "        rows.push({ type: \"stderr\", msg: \"[\" + name + \"] read failed: \" + err.message, file: name });",
+      "      }",
+      "    }",
+      "    return rows.slice(-limit);",
+      "  });"
+    ].join("\n");
+    if (!source.includes(statusAnchor)) {
+      throw new Error("Could not find Hermes status IPC block.");
+    }
+    source = source.replace(statusAnchor, statusReplacement);
+  }
+
+  if (!source.includes("wechat:diagnostics")) {
+    const statusAnchor = [
+      "  electron.ipcMain.handle(\"get-wechat-status\", () => {",
+      "    return getWechatManagerInstance().getStatus();",
+      "  });"
+    ].join("\n");
+    const statusReplacement = [
+      "  function getWeChatDiagnostics() {",
+      "    const stateRoot = path$1.join(getDataRoot(), \".openclaw\");",
+      "    const weixinRoot = path$1.join(stateRoot, \"openclaw-weixin\");",
+      "    const indexPath = path$1.join(weixinRoot, \"accounts.json\");",
+      "    const accountsDir = path$1.join(weixinRoot, \"accounts\");",
+      "    let accountIds = [];",
+      "    try {",
+      "      if (fs$1.existsSync(indexPath)) {",
+      "        const parsed = JSON.parse(fs$1.readFileSync(indexPath, \"utf8\"));",
+      "        if (Array.isArray(parsed)) accountIds = parsed.filter((id) => typeof id === \"string\" && id.trim());",
+      "      }",
+      "    } catch {",
+      "      accountIds = [];",
+      "    }",
+      "    const accountFiles = fs$1.existsSync(accountsDir) ? fs$1.readdirSync(accountsDir).filter((name) => name.endsWith(\".json\")) : [];",
+      "    return { stateRoot, weixinRoot, indexPath, accountsDir, indexExists: fs$1.existsSync(indexPath), accountIds, accountFiles, accountCount: accountIds.length || accountFiles.filter((name) => !name.includes(\".sync\") && !name.includes(\"context-tokens\")).length };",
+      "  }",
+      "  electron.ipcMain.handle(\"get-wechat-status\", () => {",
+      "    const status = getWechatManagerInstance().getStatus();",
+      "    return { ...(typeof status === \"object\" && status ? status : { status }), diagnostics: getWeChatDiagnostics() };",
+      "  });",
+      "  electron.ipcMain.handle(\"wechat:diagnostics\", () => getWeChatDiagnostics());"
+    ].join("\n");
+    if (!source.includes(statusAnchor)) {
+      throw new Error("Could not find WeChat status IPC block.");
+    }
+    source = source.replace(statusAnchor, statusReplacement);
+  }
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesPreload(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("ipcSyncHermesSkills")) return;
+  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics")) return;
   const anchor = "  ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke(\"toggle-skill\", { skillName, enabled }),";
   const replacement = [
     anchor,
-    "  ipcSyncHermesSkills: () => electron.ipcRenderer.invoke(\"sync-hermes-skills\"),"
+    "  ipcSyncHermesSkills: () => electron.ipcRenderer.invoke(\"sync-hermes-skills\"),",
+    "  ipcGetHermesLogs: (options) => electron.ipcRenderer.invoke(\"hermes:getLogs\", options),",
+    "  ipcGetWeChatDiagnostics: () => electron.ipcRenderer.invoke(\"wechat:diagnostics\"),"
   ].join("\n");
   if (!source.includes(anchor)) {
     throw new Error("Could not find preload skill IPC insertion point.");
@@ -507,12 +599,26 @@ function patchHermesHomeDashboard(filePath) {
     "        if (container && activeLogSource.value === \"hermes\") container.scrollTop = container.scrollHeight;",
     "      });",
     "    }",
+    "    async function loadHermesLogs() {",
+    "      try {",
+    "        const rows = window.uclaw.ipcGetHermesLogs ? await window.uclaw.ipcGetHermesLogs({ limit: 300 }) : [];",
+    "        hermesLogs.value = [];",
+    "        for (const row of rows || []) appendHermesLog(row);",
+    "      } catch (e) {",
+    "        appendHermesLog({ type: \"stderr\", msg: \"[ui] Hermes 日志读取失败: \" + e.message });",
+    "      }",
+    "    }",
+    "    function switchLogSource(source) {",
+    "      activeLogSource.value = source;",
+    "      if (source === \"hermes\" && hermesLogs.value.length === 0) loadHermesLogs();",
+    "    }",
     "    async function handleHermesStart() {",
     "      try {",
     "        hermesActionBusy.value = \"start\";",
     "        showToast(\"正在启动 Hermes...\");",
     "        await window.uclaw.ipcStartHermes({ open: false });",
     "        await refreshHermesStatus();",
+    "        await loadHermesLogs();",
     "        activeLogSource.value = \"hermes\";",
     "        showToast(\"Hermes 已启动\");",
     "      } catch (e) {",
@@ -528,6 +634,7 @@ function patchHermesHomeDashboard(filePath) {
     "        await window.uclaw.ipcStopHermes();",
     "        await window.uclaw.ipcStartHermes({ open: false });",
     "        await refreshHermesStatus();",
+    "        await loadHermesLogs();",
     "        activeLogSource.value = \"hermes\";",
     "        showToast(\"Hermes 已重启\");",
     "      } catch (e) {",
@@ -594,7 +701,7 @@ function patchHermesHomeDashboard(filePath) {
     "      runAllChecks();",
     "      startLiveLogs();"
   ].join("\n");
-  source = source.replace(mountedAnchor, "      runAllChecks();\n      refreshHermesStatus();\n      startLiveLogs();");
+  source = source.replace(mountedAnchor, "      runAllChecks();\n      refreshHermesStatus();\n      loadHermesLogs();\n      startLiveLogs();");
 
   const liveLogsAnchor = [
     "        nextTick(() => {",
@@ -677,7 +784,7 @@ function patchHermesHomeDashboard(filePath) {
 
   source = source.replace(
     "_cache[15] || (_cache[15] = createBaseVNode(\"span\", { class: \"home-terminal-title\" }, \"实时日志\", -1)),",
-    "createBaseVNode(\"div\", { class: \"home-terminal-title-row\" }, [\n              createBaseVNode(\"span\", { class: \"home-terminal-title\" }, \"实时日志\"),\n              createBaseVNode(\"div\", { class: \"home-log-tabs\" }, [\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"openclaw\" }), onClick: ($event) => activeLogSource.value = \"openclaw\" }, \"OpenClaw\", 2),\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"hermes\" }), onClick: ($event) => activeLogSource.value = \"hermes\" }, \"Hermes\", 2)\n              ])\n            ]),"
+    "createBaseVNode(\"div\", { class: \"home-terminal-title-row\" }, [\n              createBaseVNode(\"span\", { class: \"home-terminal-title\" }, \"实时日志\"),\n              createBaseVNode(\"div\", { class: \"home-log-tabs\" }, [\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"openclaw\" }), onClick: ($event) => switchLogSource(\"openclaw\") }, \"OpenClaw\", 2),\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"hermes\" }), onClick: ($event) => switchLogSource(\"hermes\") }, \"Hermes\", 2)\n              ])\n            ]),"
   );
   source = source.replaceAll("logs.value.length", "activeLogs.value.length");
   source = source.replace("renderList(logs.value, (log) => {", "renderList(activeLogs.value, (log) => {");
@@ -747,6 +854,7 @@ function patchHermesEnvCheck(filePath) {
   source = source.replace("    checkPort();\n", "    checkPort();\n    await checkHermes();\n");
   source = source.replace("    checkPort\n", "    checkPort,\n    checkHermes\n");
   source = source.replaceAll("      runAllChecks();\n      gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));", "      await runAllChecks();\n      gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));");
+  source = source.replace("    if (gatewayStore.envCheckResults) {\n      checkItems.value = JSON.parse(JSON.stringify(gatewayStore.envCheckResults));\n    }\n    async function handleRecheck() {", "    if (gatewayStore.envCheckResults) {\n      checkItems.value = JSON.parse(JSON.stringify(gatewayStore.envCheckResults));\n      setTimeout(async () => {\n        await runAllChecks();\n        gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));\n      }, 0);\n    }\n    async function handleRecheck() {");
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -2049,6 +2157,7 @@ const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
+patchHermesLogAndWechatDiagnostics(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
 const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
