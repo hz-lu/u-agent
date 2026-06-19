@@ -15,6 +15,7 @@ const api = {
   removeHermesSchedule: (id: string) => ipcRenderer.invoke("hermes:remove-schedule", id),
   exportHermesConfig: () => ipcRenderer.invoke("hermes:export-config"),
   importHermesConfig: (filePath: string) => ipcRenderer.invoke("hermes:import-config", filePath),
+  pickHermesConfigFile: () => ipcRenderer.invoke("hermes:pick-config-file"),
   openHermes: (target: "config" | "dashboard" | "api") => ipcRenderer.invoke("hermes:open", target),
   startHermesDashboard: () => ipcRenderer.invoke("hermes:start-dashboard"),
   startHermesApi: () => ipcRenderer.invoke("hermes:start-api"),

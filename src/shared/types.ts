@@ -80,10 +80,15 @@ export interface ActionResult {
   ok: boolean;
   message: string;
   path?: string;
+  details?: string[];
 }
 
 export interface ConfigImportResult extends ActionResult {
   config?: HermesConfig;
+}
+
+export interface FilePickResult extends ActionResult {
+  filePath?: string;
 }
 
 export interface ScheduleInput {

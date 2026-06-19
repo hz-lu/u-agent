@@ -351,6 +351,8 @@ textarea {
 }
 
 .notice {
+  display: grid;
+  gap: 4px;
   margin-top: 12px;
   padding: 8px 10px;
   border: 1px solid #bfdbfe;
@@ -358,6 +360,21 @@ textarea {
   background: #eff6ff;
   color: #1d4ed8;
   word-break: break-all;
+}
+
+.notice.bad {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b42318;
+}
+
+.notice strong {
+  font-size: 12px;
+}
+
+.notice span,
+.notice small {
+  display: block;
 }
 
 .not-configured {

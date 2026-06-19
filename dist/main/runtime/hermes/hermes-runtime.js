@@ -92,13 +92,34 @@ export class HermesRuntime {
         const missing = this.missingRequiredFields(connector.fields, connectorRequiredFields[id]);
         connector.status = missing.length ? "error" : "configured";
         this.writeConfig(config);
+        const details = [
+            `enabled=${connector.enabled}`,
+            `required=${connectorRequiredFields[id].join(",") || "none"}`,
+            `missing=${missing.join(",") || "none"}`,
+            `artifact=${path.join(this.dataRoot, "connectors", `${id}.json`)}`
+        ];
+        const reportPath = this.writeTestReport("connectors", id, {
+            ok: !missing.length,
+            type: "connector",
+            id,
+            label: connector.label,
+            enabled: connector.enabled,
+            missing,
+            artifact: path.join(this.dataRoot, "connectors", `${id}.json`)
+        });
         if (missing.length) {
-            return { ok: false, message: `${connector.label} missing required fields: ${missing.join(", ")}` };
+            return {
+                ok: false,
+                message: `${connector.label} missing required fields: ${missing.join(", ")}`,
+                path: reportPath,
+                details
+            };
         }
         return {
             ok: true,
             message: `${connector.label} configuration is ready.`,
-            path: path.join(this.dataRoot, "connectors", `${id}.json`)
+            path: reportPath,
+            details
         };
     }
     testSandbox(id) {
@@ -107,15 +128,58 @@ export class HermesRuntime {
         if (!sandbox)
             return { ok: false, message: `Sandbox ${id} is not available.` };
         const missing = this.missingRequiredFields(sandbox.fields, sandboxRequiredFields[id]);
-        if (missing.length)
-            return { ok: false, message: `${id} sandbox missing required fields: ${missing.join(", ")}` };
-        if (id === "docker" && sandbox.fields.socket && !fs.existsSync(sandbox.fields.socket)) {
-            return { ok: false, message: `Docker socket was not found: ${sandbox.fields.socket}` };
+        const details = [
+            `enabled=${sandbox.enabled}`,
+            `required=${sandboxRequiredFields[id].join(",") || "none"}`,
+            `missing=${missing.join(",") || "none"}`,
+            `artifact=${path.join(this.dataRoot, "sandboxes", "backends.json")}`
+        ];
+        if (missing.length) {
+            const reportPath = this.writeTestReport("sandboxes", id, {
+                ok: false,
+                type: "sandbox",
+                id,
+                enabled: sandbox.enabled,
+                missing,
+                artifact: path.join(this.dataRoot, "sandboxes", "backends.json")
+            });
+            return {
+                ok: false,
+                message: `${id} sandbox missing required fields: ${missing.join(", ")}`,
+                path: reportPath,
+                details
+            };
         }
+        if (id === "docker" && sandbox.fields.socket && !fs.existsSync(sandbox.fields.socket)) {
+            const reportPath = this.writeTestReport("sandboxes", id, {
+                ok: false,
+                type: "sandbox",
+                id,
+                enabled: sandbox.enabled,
+                missing,
+                error: `Docker socket was not found: ${sandbox.fields.socket}`,
+                artifact: path.join(this.dataRoot, "sandboxes", "backends.json")
+            });
+            return {
+                ok: false,
+                message: `Docker socket was not found: ${sandbox.fields.socket}`,
+                path: reportPath,
+                details
+            };
+        }
+        const reportPath = this.writeTestReport("sandboxes", id, {
+            ok: true,
+            type: "sandbox",
+            id,
+            enabled: sandbox.enabled,
+            missing,
+            artifact: path.join(this.dataRoot, "sandboxes", "backends.json")
+        });
         return {
             ok: true,
             message: `${id} sandbox configuration is ready.`,
-            path: path.join(this.dataRoot, "sandboxes", "backends.json")
+            path: reportPath,
+            details
         };
     }
     addSchedule(input) {
@@ -356,6 +420,9 @@ export class HermesRuntime {
             path.join(this.dataRoot, "connectors"),
             path.join(this.dataRoot, "sandboxes"),
             path.join(this.dataRoot, "exports"),
+            path.join(this.dataRoot, "reports"),
+            path.join(this.dataRoot, "reports", "connectors"),
+            path.join(this.dataRoot, "reports", "sandboxes"),
             path.join(this.dataRoot, "tmp")
         ]) {
             fs.mkdirSync(dir, { recursive: true });
@@ -476,6 +543,16 @@ export class HermesRuntime {
     }
     missingRequiredFields(fields, required) {
         return required.filter((field) => !(fields[field] || "").trim());
+    }
+    writeTestReport(kind, id, payload) {
+        const dir = path.join(this.dataRoot, "reports", kind);
+        fs.mkdirSync(dir, { recursive: true });
+        const target = path.join(dir, `${id}-last-test.json`);
+        fs.writeFileSync(target, `${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            ...payload
+        }, null, 2)}\n`, "utf8");
+        return target;
     }
     inferCron(text) {
         const normalized = text.toLowerCase();

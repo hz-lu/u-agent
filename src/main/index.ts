@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, OpenDialogOptions, dialog, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentId, AgentLogLine, ChatRequest, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
@@ -75,6 +75,16 @@ function registerIpc(): void {
   ipcMain.handle("hermes:remove-schedule", async (_, id: string) => hermes.removeSchedule(id));
   ipcMain.handle("hermes:export-config", async () => hermes.exportConfig());
   ipcMain.handle("hermes:import-config", async (_, filePath: string) => hermes.importConfig(filePath));
+  ipcMain.handle("hermes:pick-config-file", async () => {
+    const options: OpenDialogOptions = {
+      title: "选择 Hermes 配置 JSON",
+      properties: ["openFile"],
+      filters: [{ name: "JSON", extensions: ["json"] }]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return { ok: false, message: "未选择配置文件。" };
+    return { ok: true, message: "已选择配置文件。", filePath: result.filePaths[0] };
+  });
   ipcMain.handle("hermes:open", async (_, target: "config" | "dashboard" | "api") => hermes.open(target));
   ipcMain.handle("hermes:start-dashboard", async () => hermes.startDashboard(true));
   ipcMain.handle("hermes:start-api", async () => hermes.startApiServer(true));

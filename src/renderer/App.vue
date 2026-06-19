@@ -35,7 +35,9 @@ const chatInput = ref("");
 const chatMessages = ref<Array<{ role: "user" | "assistant"; content: string }>>([]);
 const busy = ref(false);
 const statusMessage = ref("");
+const statusOk = ref(true);
 const importPath = ref("");
+const lastTestResult = ref<ActionResult | null>(null);
 const scheduleDraft = reactive({ title: "", naturalLanguage: "", cron: "" });
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
@@ -69,6 +71,7 @@ async function loadConfig() {
 async function saveConfig() {
   if (!hermesConfig.value) return;
   hermesConfig.value = await window.agentHub.writeHermesConfig(hermesConfig.value);
+  statusOk.value = true;
   statusMessage.value = "配置已保存到 U 盘 data/.hermes。";
   await refresh();
 }
@@ -102,6 +105,8 @@ async function testConnector(id: ConnectorConfig["id"]) {
   if (!hermesConfig.value) return;
   await saveConfig();
   const result = await window.agentHub.testHermesConnector(id) as ActionResult;
+  lastTestResult.value = result;
+  statusOk.value = result.ok;
   statusMessage.value = result.message;
   await loadConfig();
 }
@@ -110,6 +115,8 @@ async function testSandbox(id: SandboxConfig["id"]) {
   if (!hermesConfig.value) return;
   await saveConfig();
   const result = await window.agentHub.testHermesSandbox(id) as ActionResult;
+  lastTestResult.value = result;
+  statusOk.value = result.ok;
   statusMessage.value = result.message;
 }
 
@@ -124,23 +131,34 @@ async function addSchedule() {
   scheduleDraft.title = "";
   scheduleDraft.naturalLanguage = "";
   scheduleDraft.cron = "";
+  statusOk.value = true;
   statusMessage.value = "自动化任务已加入 Hermes cron 配置。";
   await loadConfig();
 }
 
 async function removeSchedule(id: string) {
   hermesConfig.value = await window.agentHub.removeHermesSchedule(id);
+  statusOk.value = true;
   statusMessage.value = "自动化任务已删除。";
 }
 
 async function exportConfig() {
   const result = await window.agentHub.exportHermesConfig() as ActionResult;
+  statusOk.value = result.ok;
   statusMessage.value = result.path ? `${result.message} ${result.path}` : result.message;
+}
+
+async function pickImportFile() {
+  const result = await window.agentHub.pickHermesConfigFile();
+  statusOk.value = result.ok;
+  statusMessage.value = result.message;
+  if (result.filePath) importPath.value = result.filePath;
 }
 
 async function importConfig() {
   if (!importPath.value.trim()) return;
   const result = await window.agentHub.importHermesConfig(importPath.value.trim());
+  statusOk.value = result.ok;
   statusMessage.value = result.message;
   if (result.config) hermesConfig.value = result.config;
   await refresh();
@@ -240,6 +258,7 @@ onMounted(async () => {
           </div>
           <div class="import-row">
             <input v-model="importPath" placeholder="粘贴要导入的 Hermes 配置 JSON 路径" />
+            <button class="secondary compact" @click="pickImportFile"><Upload :size="16" />选择</button>
             <button class="secondary compact" @click="importConfig"><Upload :size="16" />导入</button>
           </div>
           <div class="button-row service-row">
@@ -247,7 +266,12 @@ onMounted(async () => {
             <button class="secondary" @click="openHermes('dashboard')">Dashboard</button>
             <button class="secondary" @click="openHermes('api')">Agent API</button>
           </div>
-          <p v-if="statusMessage" class="notice">{{ statusMessage }}</p>
+          <div v-if="statusMessage" class="notice" :class="{ bad: !statusOk }">
+            <strong>{{ statusOk ? "完成" : "需要处理" }}</strong>
+            <span>{{ statusMessage }}</span>
+            <small v-if="lastTestResult?.path">报告: {{ lastTestResult.path }}</small>
+            <small v-for="detail in lastTestResult?.details || []" :key="detail">{{ detail }}</small>
+          </div>
         </div>
 
         <div class="panel">
