@@ -89,6 +89,18 @@ function patchHermesRuntimeEnv(filePath) {
     "      OPENCLAW_HOME: this.dataDir,\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`",
     "      OPENCLAW_HOME: this.dataDir,\n      OPENCLAW_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      CLAWDBOT_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      OPENCLAW_CONFIG: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`"
   );
+  source = source.replace(
+    "      const accountsFile = path$1.join(this.dataDir, \"openclaw-weixin\", \"accounts.json\");",
+    "      const accountsFile = path$1.join(this.dataDir, \".openclaw\", \"openclaw-weixin\", \"accounts.json\");"
+  );
+  source = source.replace(
+    "      const wechatDataDir = path$1.join(dataDir, \"openclaw-weixin\");",
+    "      const wechatDataDir = path$1.join(dataDir, \".openclaw\", \"openclaw-weixin\");"
+  );
+  source = source.replace(
+    "      this.emit(\"login-exit\", code);",
+    "      if (code === 0 || this.status === \"connected\") {\n        const restart = this.restartGateway();\n        this.emit(\"log\", restart.success ? \"[weixin] Gateway 已刷新，微信账号配置已加载\" : `[weixin] Gateway 刷新失败: ${restart.error}`);\n      }\n      this.emit(\"login-exit\", code);"
+  );
   const envAnchor = [
     "  getHermesEnv() {",
     "    const root = this.getPortableRoot();",
@@ -140,6 +152,99 @@ function patchHermesRuntimeEnv(filePath) {
     source = source.replace(homeEnvAnchor, homeEnvReplacement);
   }
 
+  const syncMethodMarker = "  syncOpenClawSkillsToHermes(options = {}) {";
+  if (!source.includes(syncMethodMarker)) {
+    const repairAnchor = "  repairShims() {";
+    const syncMethod = [
+      "  syncOpenClawSkillsToHermes(options = {}) {",
+      "    const silent = options?.silent !== false;",
+      "    const hermesSkillsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"skills\");",
+      "    const openClawTargetRoot = path$1.join(hermesSkillsRoot, \"openclaw\");",
+      "    const manifestPath = path$1.join(openClawTargetRoot, \".openclaw_sync_manifest.json\");",
+      "    fs$1.mkdirSync(openClawTargetRoot, { recursive: true });",
+      "    function readJsonSafe(filePath) {",
+      "      try {",
+      "        if (!fs$1.existsSync(filePath)) return null;",
+      "        return JSON.parse(fs$1.readFileSync(filePath, \"utf8\"));",
+      "      } catch {",
+      "        return null;",
+      "      }",
+      "    }",
+      "    function safeSkillDirName(name, fallback) {",
+      "      return String(name || fallback || \"skill\").replace(/[\\\\/:*?\\\"<>|]/g, \"_\").trim() || \"skill\";",
+      "    }",
+      "    function findSkillSources(rootDir) {",
+      "      const rows = [];",
+      "      if (!rootDir || !fs$1.existsSync(rootDir)) return rows;",
+      "      for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {",
+      "        const full = path$1.join(rootDir, entry.name);",
+      "        if (entry.isDirectory()) {",
+      "          const skillFile = path$1.join(full, \"SKILL.md\");",
+      "          if (!fs$1.existsSync(skillFile)) continue;",
+      "          let meta = null;",
+      "          try { meta = parseSkillMeta(skillFile); } catch { meta = null; }",
+      "          rows.push({ source: full, name: meta?.name || entry.name, key: entry.name, skillFile });",
+      "        } else if (entry.isFile() && entry.name.toLowerCase().endsWith(\".md\")) {",
+      "          let meta = null;",
+      "          try { meta = parseSkillMeta(full); } catch { meta = null; }",
+      "          rows.push({ source: full, name: meta?.name || entry.name.replace(/\\.md$/i, \"\"), key: entry.name.replace(/\\.md$/i, \"\"), skillFile: full });",
+      "        }",
+      "      }",
+      "      return rows;",
+      "    }",
+      "    try {",
+      "      const config = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\")) || {};",
+      "      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];",
+      "      const skillEntries = config?.skills?.entries || {};",
+      "      const sourceRoots = extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));",
+      "      const sources = [];",
+      "      const seenKeys = new Set();",
+      "      for (const rootDir of sourceRoots) {",
+      "        for (const item of findSkillSources(rootDir)) {",
+      "          const disabled = skillEntries[item.name]?.enabled === false || skillEntries[item.key]?.enabled === false;",
+      "          const targetName = safeSkillDirName(item.key || item.name, item.name);",
+      "          if (disabled || seenKeys.has(targetName)) continue;",
+      "          seenKeys.add(targetName);",
+      "          const stat = fs$1.statSync(item.skillFile);",
+      "          sources.push({ ...item, targetName, skillMtimeMs: Math.round(stat.mtimeMs), rootDir });",
+      "        }",
+      "      }",
+      "      const nextManifest = { version: 2, sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };",
+      "      const oldManifest = readJsonSafe(manifestPath);",
+      "      if (oldManifest && JSON.stringify(oldManifest) === JSON.stringify(nextManifest)) {",
+      "        return { ok: true, copied: 0, total: sources.length, path: openClawTargetRoot, unchanged: true };",
+      "      }",
+      "      fs$1.rmSync(openClawTargetRoot, { recursive: true, force: true });",
+      "      fs$1.mkdirSync(openClawTargetRoot, { recursive: true });",
+      "      fs$1.writeFileSync(path$1.join(openClawTargetRoot, \"DESCRIPTION.md\"), \"# OpenClaw Skills\\n\\nOpenClaw skills synchronized from the portable USB skills directory. Hermes scans this folder recursively before each run.\\n\", \"utf8\");",
+      "      let copied = 0;",
+      "      for (const item of sources) {",
+      "        const target = path$1.join(openClawTargetRoot, item.targetName);",
+      "        if (fs$1.statSync(item.source).isDirectory()) {",
+      "          fs$1.cpSync(item.source, target, { recursive: true });",
+      "        } else {",
+      "          fs$1.mkdirSync(target, { recursive: true });",
+      "          fs$1.copyFileSync(item.source, path$1.join(target, \"SKILL.md\"));",
+      "        }",
+      "        copied += 1;",
+      "      }",
+      "      fs$1.writeFileSync(manifestPath, JSON.stringify(nextManifest, null, 2), \"utf8\");",
+      "      if (!silent) safeSend(\"hermes-log\", { type: \"system\", msg: \"[skills] synced \" + copied + \" OpenClaw skills into \" + openClawTargetRoot });",
+      "      return { ok: true, copied, total: sources.length, path: openClawTargetRoot, unchanged: false };",
+      "    } catch (err) {",
+      "      const error = err instanceof Error ? err.message : String(err);",
+      "      safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[skills] sync failed: \" + error });",
+      "      return { ok: false, copied: 0, total: 0, path: openClawTargetRoot, error };",
+      "    }",
+      "  }",
+      ""
+    ].join("\n");
+    if (!source.includes(repairAnchor)) {
+      throw new Error("Could not find Hermes repairShims insertion point.");
+    }
+    source = source.replace(repairAnchor, syncMethod + repairAnchor);
+  }
+
   const snapshotAnchor = [
     "    return {",
     "      status: this.status,",
@@ -187,7 +292,8 @@ function patchHermesRuntimeEnv(filePath) {
     "    }",
     "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));",
     "    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
-    "    const skillCount = [skillsRoot, ...openClawSkillDirs].reduce((total, dir) => total + countHermesSkills(dir), 0);",
+    "    this.syncOpenClawSkillsToHermes({ silent: true });",
+    "    const skillCount = countHermesSkills(skillsRoot);",
     "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
     "    return {",
     "      status: this.status,",
@@ -361,6 +467,10 @@ function patchHermesRuntimeEnv(filePath) {
     "  }"
   ].join("\n");
   source = source.slice(0, chatStart) + chatReplacement + source.slice(chatEnd);
+  source = source.replaceAll(
+    "\n    this.repairShims();",
+    "\n    this.syncOpenClawSkillsToHermes({ silent: false });\n    this.repairShims();"
+  );
 
   fs.writeFileSync(filePath, source, "utf8");
 }
@@ -392,6 +502,7 @@ function patchHermesSkillBridge(filePath) {
     "",
     "  electron.ipcMain.handle(\"sync-hermes-skills\", async () => {",
     "    try {",
+    "      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false });",
     "      const hermesSkillsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"skills\");",
     "      fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });",
     "      let extraDirs = [];",
@@ -539,6 +650,70 @@ function patchHermesPreload(filePath) {
     throw new Error("Could not find preload skill IPC insertion point.");
   }
   source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchWeChatDiagnosticsUi(filePath) {
+  const marker = "codex-wechat-diagnostics-ui";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+
+  const setupAnchor = [
+    "    const activeChatTab = /* @__PURE__ */ ref(\"wechat\");",
+    "    const feishuMode = /* @__PURE__ */ ref(\"auto\");"
+  ].join("\n");
+  const setupReplacement = [
+    "    const activeChatTab = /* @__PURE__ */ ref(\"wechat\");",
+    "    const wechatDiagnostics = /* codex-wechat-diagnostics-ui */ ref(null);",
+    "    function normalizeWechatStatus(payload) {",
+    "      if (payload && typeof payload === \"object\") {",
+    "        wechatDiagnostics.value = payload.diagnostics || null;",
+    "        return payload.status || \"disconnected\";",
+    "      }",
+    "      return payload || \"disconnected\";",
+    "    }",
+    "    function appendWechatDiagnostics(payload) {",
+    "      const diag = payload?.diagnostics || payload || wechatDiagnostics.value;",
+    "      if (!diag || typeof diag !== \"object\") return;",
+    "      wechatDiagnostics.value = diag;",
+    "      const count = Number(diag.accountCount || 0);",
+    "      if (count > 0) {",
+    "        wechatStore.addLog(`[diagnostics] 已发现 ${count} 个微信账号凭据，目录：${diag.weixinRoot || \"未知\"}`);",
+    "      } else {",
+    "        wechatStore.addLog(`[diagnostics] 未发现微信账号凭据，请重新扫码。账号目录：${diag.weixinRoot || \"未知\"}`);",
+    "      }",
+    "    }",
+    "    const feishuMode = /* @__PURE__ */ ref(\"auto\");"
+  ].join("\n");
+  if (!source.includes(setupAnchor)) {
+    throw new Error("Could not find Chat setup insertion point for WeChat diagnostics.");
+  }
+  source = source.replace(setupAnchor, setupReplacement);
+
+  source = source.replace(
+    "      window.uclaw.ipcGetWeChatStatus();",
+    "      window.uclaw.ipcGetWeChatStatus().then((payload) => { setStatus(normalizeWechatStatus(payload)); appendWechatDiagnostics(payload); }).catch(() => {});"
+  );
+  source = source.replace(
+    "    function startScan() {",
+    "    async function startScan() {"
+  );
+  source = source.replace(
+    "        const result = window.uclaw.startWeChatScan();",
+    "        const result = await window.uclaw.startWeChatScan();"
+  );
+  source = source.replace(
+    "          showToast(result.error, true);",
+    "          showToast(result.error, true);\n          try { appendWechatDiagnostics(await window.uclaw.ipcGetWeChatDiagnostics?.()); } catch {}"
+  );
+  source = source.replace(
+    "    function handleWechatStatus(status) {\n      wechatStore.setStatus(status === \"refreshing\" ? \"scanning\" : status);",
+    "    function handleWechatStatus(status) {\n      const normalized = normalizeWechatStatus(status);\n      appendWechatDiagnostics(status);\n      wechatStore.setStatus(normalized === \"refreshing\" ? \"scanning\" : normalized);"
+  );
+  source = source.replace(
+    "        const status = await window.uclaw.ipcGetWeChatStatus();\n        handleWechatStatus(status);",
+    "        const status = await window.uclaw.ipcGetWeChatStatus();\n        handleWechatStatus(status);"
+  );
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -2168,6 +2343,7 @@ patchHermesEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
+patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
