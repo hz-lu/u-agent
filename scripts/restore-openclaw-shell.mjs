@@ -432,6 +432,393 @@ function patchHermesModelConfig(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesAiChat(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("agent-mode-switch")) return;
+
+  const refsAnchor = [
+    "    const chatInputRef = /* @__PURE__ */ ref(null);",
+    "    const messagesArea = /* @__PURE__ */ ref(null);"
+  ].join("\n");
+  const refsReplacement = [
+    "    const chatInputRef = /* @__PURE__ */ ref(null);",
+    "    const agentMode = /* @__PURE__ */ ref(\"openclaw\");",
+    "    const hermesMessages = /* @__PURE__ */ ref([]);",
+    "    const hermesSending = /* @__PURE__ */ ref(false);",
+    "    const hermesInputText = /* @__PURE__ */ ref(\"\");",
+    "    const messagesArea = /* @__PURE__ */ ref(null);"
+  ].join("\n");
+  if (!source.includes(refsAnchor)) {
+    throw new Error("Could not find AiChat refs insertion point.");
+  }
+  source = source.replace(refsAnchor, refsReplacement);
+
+  const waitingAnchor = [
+    "    const isWaitingForAi = computed(() => {",
+    "      if (!store.sending) return false;",
+    "      const msgs = store.currentMessages;",
+    "      if (!msgs.length) return false;",
+    "      const last = msgs[msgs.length - 1];",
+    "      return last.role === \"user\";",
+    "    });"
+  ].join("\n");
+  const waitingReplacement = [
+    "    const activeMessages = computed(() => agentMode.value === \"openclaw\" ? store.currentMessages : hermesMessages.value);",
+    "    const activeProfile = computed(() => agentMode.value === \"openclaw\" ? store.profile : {",
+    "      ...store.profile,",
+    "      aiName: agentMode.value === \"collab\" ? \"OpenClaw + Hermes\" : \"Hermes Agent\",",
+    "      aiAvatar: \"H\",",
+    "      aiAvatarImg: \"\",",
+    "      aiColor: \"#4edea3\"",
+    "    });",
+    "    const activeSending = computed(() => agentMode.value === \"openclaw\" ? store.sending : hermesSending.value);",
+    "    const activeReady = computed(() => agentMode.value === \"openclaw\" ? store.isReady : !hermesSending.value);",
+    "    const isWaitingForAi = computed(() => {",
+    "      if (agentMode.value !== \"openclaw\") return hermesSending.value;",
+    "      if (!store.sending) return false;",
+    "      const msgs = store.currentMessages;",
+    "      if (!msgs.length) return false;",
+    "      const last = msgs[msgs.length - 1];",
+    "      return last.role === \"user\";",
+    "    });"
+  ].join("\n");
+  if (!source.includes(waitingAnchor)) {
+    throw new Error("Could not find AiChat waiting-state block.");
+  }
+  source = source.replace(waitingAnchor, waitingReplacement);
+
+  const openWebAnchor = [
+    "    async function handleOpenWebUI() {",
+    "      try {",
+    "        if (window.uclaw?.ipcOpenChatWindow) {",
+    "          await window.uclaw.ipcOpenChatWindow();",
+    "        } else if (window.uclaw?.ipcOpenExternalUrl) {",
+    "          const port = window.uclaw.ipcGetDefaultPort ? await window.uclaw.ipcGetDefaultPort() : 18789;",
+    "          let token = \"\";",
+    "          try {",
+    "            if (window.uclaw?.ipcReadConfig) {",
+    "              const config = await window.uclaw.ipcReadConfig();",
+    "              token = config?.gateway?.auth?.token || \"\";",
+    "            }",
+    "          } catch {",
+    "          }",
+    "          const url = token ? `http://127.0.0.1:${port}/?token=${encodeURIComponent(token)}` : `http://127.0.0.1:${port}/`;",
+    "          await window.uclaw.ipcOpenExternalUrl(url);",
+    "        } else {",
+    "          window.open(\"http://127.0.0.1:18789/\", \"_blank\", \"noopener\");",
+    "        }",
+    "      } catch (e) {",
+    "        console.warn(\"[AiChat] open chat window failed:\", e);",
+    "      }",
+    "    }"
+  ].join("\n");
+  const openWebReplacement = [
+    openWebAnchor,
+    "    function selectAgentMode(mode) {",
+    "      agentMode.value = mode;",
+    "      nextTick(() => scrollToBottom(0));",
+    "    }",
+    "    function getHermesReply(result) {",
+    "      if (!result) return \"\";",
+    "      return result.reply || result.content || result.message || result.text || result.raw || \"Hermes 已返回空响应。\";",
+    "    }",
+    "    async function sendHermesMessage(text2, attachments = []) {",
+    "      const content = (text2 || \"\").trim();",
+    "      if (!content || hermesSending.value) return;",
+    "      const now = Date.now();",
+    "      const userMessage = {",
+    "        id: `hermes-user-${now}`,",
+    "        role: \"user\",",
+    "        content,",
+    "        attachments,",
+    "        timestamp: now,",
+    "        status: \"done\"",
+    "      };",
+    "      hermesMessages.value = [...hermesMessages.value, userMessage];",
+    "      hermesSending.value = true;",
+    "      scrollToBottom();",
+    "      try {",
+    "        const result = await window.uclaw.ipcHermesChat({",
+    "          message: content,",
+    "          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),",
+    "          sessionId: agentMode.value === \"collab\" ? \"openclaw-hermes-collab\" : \"hermes-ai-chat\"",
+    "        });",
+    "        const ok = result?.ok !== false;",
+    "        hermesMessages.value = [...hermesMessages.value, {",
+    "          id: `hermes-assistant-${Date.now()}`,",
+    "          role: \"assistant\",",
+    "          content: ok ? getHermesReply(result) : `Hermes 调用失败: ${result?.error || \"unknown error\"}`,",
+    "          model: agentMode.value === \"collab\" ? \"OpenClaw / Hermes 协同\" : \"Hermes Agent\",",
+    "          timestamp: Date.now(),",
+    "          status: ok ? \"done\" : \"error\"",
+    "        }];",
+    "      } catch (e) {",
+    "        hermesMessages.value = [...hermesMessages.value, {",
+    "          id: `hermes-error-${Date.now()}`,",
+    "          role: \"assistant\",",
+    "          content: \"Hermes 调用失败: \" + (e?.message || e),",
+    "          model: \"Hermes Agent\",",
+    "          timestamp: Date.now(),",
+    "          status: \"error\"",
+    "        }];",
+    "      } finally {",
+    "        hermesSending.value = false;",
+    "        scrollToBottom();",
+    "      }",
+    "    }",
+    "    async function handleHermesChatConfig() {",
+    "      try {",
+    "        await window.uclaw.ipcOpenHermesConfig();",
+    "        showToast(\"Hermes 配置中心已打开\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes 配置中心打开失败: \" + e.message, true);",
+    "      }",
+    "    }",
+    "    async function handleHermesChatApi() {",
+    "      try {",
+    "        await window.uclaw.ipcOpenHermesApiServer();",
+    "        showToast(\"Hermes Agent API 已启动\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes Agent API 启动失败: \" + e.message, true);",
+    "      }",
+    "    }"
+  ].join("\n");
+  if (!source.includes(openWebAnchor)) {
+    throw new Error("Could not find AiChat open-web handler.");
+  }
+  source = source.replace(openWebAnchor, openWebReplacement);
+
+  const sendAnchor = [
+    "    function handleSend(text2, attachments) {",
+    "      store.sendMessage(text2, attachments);",
+    "      scrollToBottom();",
+    "    }",
+    "    function handleCommand(cmd) {",
+    "      store.handleCommand(cmd);",
+    "      if (cmd === \"/new\" || cmd === \"/reset\") scrollToBottom();",
+    "    }"
+  ].join("\n");
+  const sendReplacement = [
+    "    function handleSend(text2, attachments) {",
+    "      if (agentMode.value === \"openclaw\") {",
+    "        store.sendMessage(text2, attachments);",
+    "        scrollToBottom();",
+    "        return;",
+    "      }",
+    "      hermesInputText.value = \"\";",
+    "      sendHermesMessage(text2, attachments);",
+    "    }",
+    "    function handleCommand(cmd) {",
+    "      if (agentMode.value === \"openclaw\") {",
+    "        store.handleCommand(cmd);",
+    "        if (cmd === \"/new\" || cmd === \"/reset\") scrollToBottom();",
+    "        return;",
+    "      }",
+    "      if (cmd === \"/new\" || cmd === \"/reset\") {",
+    "        hermesMessages.value = [];",
+    "        showToast(\"Hermes 会话已重置\");",
+    "        return;",
+    "      }",
+    "      if (cmd === \"/stop\") {",
+    "        showToast(\"Hermes 当前调用会在本轮完成后结束\");",
+    "      }",
+    "    }",
+    "    function handleStop() {",
+    "      if (agentMode.value === \"openclaw\") {",
+    "        store.abortMessage();",
+    "        return;",
+    "      }",
+    "      showToast(\"Hermes 当前调用会在本轮完成后结束\");",
+    "    }"
+  ].join("\n");
+  if (!source.includes(sendAnchor)) {
+    throw new Error("Could not find AiChat send handler.");
+  }
+  source = source.replace(sendAnchor, sendReplacement);
+
+  const clearAnchor = [
+    "    function handleClearSession() {",
+    "      if (!store.activeSessionKey) return;",
+    "      showClearDialog.value = true;",
+    "    }",
+    "    async function confirmClear() {",
+    "      if (store.activeSessionKey) {",
+    "        await store.resetSession(store.activeSessionKey);",
+    "        showToast(\"对话已清空\");",
+    "      }",
+    "      showClearDialog.value = false;",
+    "    }"
+  ].join("\n");
+  const clearReplacement = [
+    "    function handleClearSession() {",
+    "      if (agentMode.value !== \"openclaw\") {",
+    "        if (!hermesMessages.value.length) return;",
+    "        showClearDialog.value = true;",
+    "        return;",
+    "      }",
+    "      if (!store.activeSessionKey) return;",
+    "      showClearDialog.value = true;",
+    "    }",
+    "    async function confirmClear() {",
+    "      if (agentMode.value !== \"openclaw\") {",
+    "        hermesMessages.value = [];",
+    "        showToast(\"Hermes 会话已清空\");",
+    "        showClearDialog.value = false;",
+    "        return;",
+    "      }",
+    "      if (store.activeSessionKey) {",
+    "        await store.resetSession(store.activeSessionKey);",
+    "        showToast(\"对话已清空\");",
+    "      }",
+    "      showClearDialog.value = false;",
+    "    }"
+  ].join("\n");
+  if (!source.includes(clearAnchor)) {
+    throw new Error("Could not find AiChat clear handler.");
+  }
+  source = source.replace(clearAnchor, clearReplacement);
+
+  const gatewayAnchor = [
+    "        !unref(gatewayStore).running ? (openBlock(), createElementBlock(\"div\", _hoisted_2$9, [..._cache[14] || (_cache[14] = [",
+    "          createBaseVNode(\"div\", { class: \"hint-icon\" }, [",
+    "            createBaseVNode(\"span\", { class: \"iconfont icon-clawhuanjingjiancha\" })",
+    "          ], -1),",
+    "          createBaseVNode(\"h2\", null, \"Gateway 未运行\", -1),",
+    "          createBaseVNode(\"p\", null, \"请先在首页启动 Gateway，然后开始对话\", -1)",
+    "        ])])) : (openBlock(), createElementBlock(\"div\", _hoisted_3$8, ["
+  ].join("\n");
+  const gatewayReplacement = [
+    "        !unref(gatewayStore).running && agentMode.value === \"openclaw\" ? (openBlock(), createElementBlock(\"div\", _hoisted_2$9, [",
+    "          createBaseVNode(\"div\", { class: \"hint-icon\" }, [",
+    "            createBaseVNode(\"span\", { class: \"iconfont icon-clawhuanjingjiancha\" })",
+    "          ]),",
+    "          createBaseVNode(\"h2\", null, \"Gateway 未运行\"),",
+    "          createBaseVNode(\"p\", null, \"请先在首页启动 Gateway，或切换到 Hermes Agent 独立会话。\"),",
+    "          createBaseVNode(\"div\", { class: \"agent-mode-switch gateway-mode-switch\" }, [",
+    "            createBaseVNode(\"button\", { class: \"active\", onClick: ($event) => selectAgentMode(\"openclaw\") }, \"OpenClaw\"),",
+    "            createBaseVNode(\"button\", { onClick: ($event) => selectAgentMode(\"hermes\") }, \"Hermes\"),",
+    "            createBaseVNode(\"button\", { onClick: ($event) => selectAgentMode(\"collab\") }, \"协同\")",
+    "          ])",
+    "        ])) : (openBlock(), createElementBlock(\"div\", _hoisted_3$8, ["
+  ].join("\n");
+  if (!source.includes(gatewayAnchor)) {
+    throw new Error("Could not find AiChat gateway hint block.");
+  }
+  source = source.replace(gatewayAnchor, gatewayReplacement);
+
+  const titleAnchor = [
+    "              createBaseVNode(\"span\", _hoisted_11$1, toDisplayString(currentSessionTitle.value), 1),",
+    "              createBaseVNode(\"div\", _hoisted_12, ["
+  ].join("\n");
+  const titleReplacement = [
+    "              createBaseVNode(\"span\", _hoisted_11$1, toDisplayString(agentMode.value === \"openclaw\" ? currentSessionTitle.value : agentMode.value === \"collab\" ? \"OpenClaw / Hermes 协同会话\" : \"Hermes Agent 会话\"), 1),",
+    "              createBaseVNode(\"div\", { class: \"agent-mode-switch\" }, [",
+    "                createBaseVNode(\"button\", {",
+    "                  class: normalizeClass({ active: agentMode.value === \"openclaw\" }),",
+    "                  onClick: ($event) => selectAgentMode(\"openclaw\")",
+    "                }, \"OpenClaw\", 2),",
+    "                createBaseVNode(\"button\", {",
+    "                  class: normalizeClass({ active: agentMode.value === \"hermes\" }),",
+    "                  onClick: ($event) => selectAgentMode(\"hermes\")",
+    "                }, \"Hermes\", 2),",
+    "                createBaseVNode(\"button\", {",
+    "                  class: normalizeClass({ active: agentMode.value === \"collab\" }),",
+    "                  onClick: ($event) => selectAgentMode(\"collab\")",
+    "                }, \"协同\", 2)",
+    "              ]),",
+    "              createBaseVNode(\"div\", _hoisted_12, ["
+  ].join("\n");
+  if (!source.includes(titleAnchor)) {
+    throw new Error("Could not find AiChat topbar title insertion point.");
+  }
+  source = source.replace(titleAnchor, titleReplacement);
+
+  const selectorAnchor = [
+    "                createVNode(ModelSelector, {",
+    "                  models: sessionModels.value,",
+    "                  currentModel: sessionCurrentModelId.value,",
+    "                  isReady: unref(store).isReady,",
+    "                  loadingModels: loadingModels.value,",
+    "                  onSelect: handleModelSelect,",
+    "                  onRefresh: handleRefreshModels",
+    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"]),"
+  ].join("\n");
+  const selectorReplacement = [
+    "                agentMode.value === \"openclaw\" ? (openBlock(), createBlock(ModelSelector, {",
+    "                  key: 0,",
+    "                  models: sessionModels.value,",
+    "                  currentModel: sessionCurrentModelId.value,",
+    "                  isReady: unref(store).isReady,",
+    "                  loadingModels: loadingModels.value,",
+    "                  onSelect: handleModelSelect,",
+    "                  onRefresh: handleRefreshModels",
+    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"])) : (openBlock(), createElementBlock(\"div\", { key: 1, class: \"hermes-chat-status\" }, toDisplayString(agentMode.value === \"collab\" ? \"协同编排\" : \"Hermes Agent\"), 1)),",
+    "                agentMode.value !== \"openclaw\" ? (openBlock(), createElementBlock(\"button\", {",
+    "                  key: 2,",
+    "                  class: \"icon-btn hermes-open-btn\",",
+    "                  onClick: handleHermesChatConfig,",
+    "                  title: \"打开 Hermes 配置中心\"",
+    "                }, \"配置\")) : createCommentVNode(\"\", true),",
+    "                agentMode.value !== \"openclaw\" ? (openBlock(), createElementBlock(\"button\", {",
+    "                  key: 3,",
+    "                  class: \"icon-btn hermes-open-btn\",",
+    "                  onClick: handleHermesChatApi,",
+    "                  title: \"启动 Hermes Agent API\"",
+    "                }, \"API\")) : createCommentVNode(\"\", true),"
+  ].join("\n");
+  if (!source.includes(selectorAnchor)) {
+    throw new Error("Could not find AiChat model selector block.");
+  }
+  source = source.replace(selectorAnchor, selectorReplacement);
+
+  source = source.replace(
+    "              unref(store).currentMessages.length === 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_13, [..._cache[20] || (_cache[20] = [",
+    "              activeMessages.value.length === 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_13, [..._cache[20] || (_cache[20] = ["
+  );
+  source = source.replace(
+    "              (openBlock(true), createElementBlock(Fragment, null, renderList(unref(store).currentMessages, (msg, idx) => {",
+    "              (openBlock(true), createElementBlock(Fragment, null, renderList(activeMessages.value, (msg, idx) => {"
+  );
+  source = source.replace(
+    "                  profile: unref(store).profile",
+    "                  profile: activeProfile.value"
+  );
+  source = source.replace(
+    "                }, null, 8, [\"message\", \"profile\"]);",
+    "                }, null, 8, [\"message\", \"profile\"]);"
+  );
+  source = source.replaceAll("unref(store).profile.aiColor", "activeProfile.value.aiColor");
+  source = source.replaceAll("unref(store).profile.aiAvatarImg", "activeProfile.value.aiAvatarImg");
+  source = source.replaceAll("unref(store).profile.aiAvatar", "activeProfile.value.aiAvatar");
+
+  const inputAnchor = [
+    "                modelValue: unref(store).inputText,",
+    "                \"onUpdate:modelValue\": _cache[3] || (_cache[3] = ($event) => unref(store).inputText = $event),",
+    "                isReady: unref(store).isReady,",
+    "                sending: unref(store).sending,",
+    "                onSend: handleSend,",
+    "                onStop: _cache[4] || (_cache[4] = ($event) => unref(store).abortMessage()),",
+    "                onCommand: handleCommand",
+    "              }, null, 8, [\"modelValue\", \"isReady\", \"sending\"])"
+  ].join("\n");
+  const inputReplacement = [
+    "                modelValue: agentMode.value === \"openclaw\" ? unref(store).inputText : hermesInputText.value,",
+    "                \"onUpdate:modelValue\": ($event) => agentMode.value === \"openclaw\" ? unref(store).inputText = $event : hermesInputText.value = $event,",
+    "                isReady: activeReady.value,",
+    "                sending: activeSending.value,",
+    "                onSend: handleSend,",
+    "                onStop: handleStop,",
+    "                onCommand: handleCommand",
+    "              }, null, 8, [\"modelValue\", \"isReady\", \"sending\"])"
+  ].join("\n");
+  if (!source.includes(inputAnchor)) {
+    throw new Error("Could not find AiChat input binding block.");
+  }
+  source = source.replace(inputAnchor, inputReplacement);
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesHomeStyles(filePath) {
   let source = fs.readFileSync(filePath, "utf8");
   if (source.includes(".home-hermes-card")) return;
@@ -622,6 +1009,86 @@ function patchHermesModelStyles(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesAiChatStyles(filePath) {
+  let source = fs.readFileSync(filePath, "utf8");
+  if (source.includes(".agent-mode-switch")) return;
+  source += `
+
+.agent-mode-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 29px;
+  padding: 2px;
+  border: 1px solid rgba(173, 198, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  flex: 0 0 auto;
+}
+
+.agent-mode-switch button {
+  height: 23px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.agent-mode-switch button.active,
+.agent-mode-switch button:hover {
+  background: #4edea3;
+  color: #002113;
+}
+
+.gateway-mode-switch {
+  margin-top: 16px;
+}
+
+.hermes-chat-status {
+  height: 29px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid rgba(78, 222, 163, 0.36);
+  border-radius: 8px;
+  background: rgba(78, 222, 163, 0.12);
+  color: #4edea3;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.hermes-open-btn {
+  color: #4edea3 !important;
+}
+
+@media (max-width: 900px) {
+  .chat-topbar[data-v-f16be7f3] {
+    flex-wrap: wrap;
+  }
+
+  .session-title[data-v-f16be7f3] {
+    flex-basis: calc(100% - 42px);
+  }
+
+  .agent-mode-switch {
+    order: 3;
+  }
+
+  .topbar-right[data-v-f16be7f3] {
+    order: 4;
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+`;
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -663,11 +1130,13 @@ copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), 
 patchHermesEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
+patchHermesAiChat(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);
 patchHermesHomeStyles(rendererStyleTarget);
 patchHermesModelStyles(rendererStyleTarget);
+patchHermesAiChatStyles(rendererStyleTarget);
 copyFile(baselineHtml, path.join(targetApp, "dist", "assets", "main", "index.html"));
 
 for (const asset of ["icon.ico", "icon.png", "logo.png"]) {
@@ -680,4 +1149,5 @@ console.log("Added non-invasive Hermes tray menu entries.");
 console.log("Added Hermes controls to the original OpenClaw home console.");
 console.log("Added Hermes runtime status to the original environment checks.");
 console.log("Added Hermes Agent tab to the original model configuration page.");
+console.log("Added OpenClaw / Hermes / collaborative modes to the original AI chat page.");
 console.log("Hermes dist-injected patch assets were intentionally not copied.");
