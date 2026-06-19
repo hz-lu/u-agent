@@ -151,7 +151,27 @@ function patchHermesRuntimeEnv(filePath) {
     "    const root = this.getPortableRoot();",
     "    const hermesBin = this.getHermesBin();",
     "    const python = this.getPortablePython();",
+    "    const nodeDir = fs$1.existsSync(path$1.join(root, \"node-windows-x64\")) ? path$1.join(root, \"node-windows-x64\") : path$1.join(root, \"node\");",
+    "    const nodeBin = process.platform === \"win32\" ? path$1.join(nodeDir, \"node.exe\") : path$1.join(nodeDir, \"bin\", \"node\");",
+    "    const npmBin = process.platform === \"win32\" ? path$1.join(nodeDir, \"npm.cmd\") : path$1.join(nodeDir, \"bin\", \"npm\");",
     "    const data = path$1.join(getAppRoot(), \"data\", \".hermes\");",
+    "    const skillsRoot = path$1.join(data, \"skills\");",
+    "    let skillCount = 0;",
+    "    try {",
+    "      skillCount = fs$1.existsSync(skillsRoot) ? fs$1.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory() || entry.name.toLowerCase().endsWith(\".md\")).length : 0;",
+    "    } catch {",
+    "      skillCount = 0;",
+    "    }",
+    "    function readJsonSafe(filePath) {",
+    "      try {",
+    "        if (!fs$1.existsSync(filePath)) return null;",
+    "        return JSON.parse(fs$1.readFileSync(filePath, \"utf8\"));",
+    "      } catch {",
+    "        return null;",
+    "      }",
+    "    }",
+    "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));",
+    "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
     "    return {",
     "      status: this.status,",
     "      pid: this.proc?.pid ?? this.dashboardProc?.pid ?? this.apiProc?.pid ?? null,",
@@ -161,9 +181,24 @@ function patchHermesRuntimeEnv(filePath) {
     "      model: this.model,",
     "      runtimeRoot: root,",
     "      dataRoot: data,",
+    "      configRoot: path$1.join(data, \"config\"),",
+    "      logsRoot: path$1.join(data, \"logs\"),",
+    "      skillsRoot,",
+    "      nodeBin,",
+    "      npmBin,",
+    "      hermesBin,",
+    "      pythonBin: python,",
     "      hermesReady: fs$1.existsSync(hermesBin),",
     "      pythonReady: fs$1.existsSync(python),",
+    "      nodeReady: fs$1.existsSync(nodeBin),",
+    "      npmReady: fs$1.existsSync(npmBin),",
     "      sourceReady: fs$1.existsSync(path$1.join(root, \"hermes-agent\", \"pyproject.toml\")),",
+    "      dataReady: fs$1.existsSync(data),",
+    "      configDirReady: fs$1.existsSync(path$1.join(data, \"config\")),",
+    "      skillsReady: fs$1.existsSync(skillsRoot),",
+    "      skillCount,",
+    "      modelBridgeReady: !!primaryModel,",
+    "      modelBridge: primaryModel || \"未配置 OpenClaw 当前模型\",",
     "      lastError: this.lastError",
     "    };"
   ].join("\n");
@@ -313,10 +348,135 @@ function patchHermesRuntimeEnv(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesSkillBridge(filePath) {
+  const marker = "sync-hermes-skills";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+
+  const toggleAnchor = [
+    "  electron.ipcMain.handle(\"toggle-skill\", async (_, { skillName, enabled }) => {",
+    "    try {",
+    "      await writeOpenClawConfig({",
+    "        skills: {",
+    "          entries: {",
+    "            [skillName]: { enabled }",
+    "          }",
+    "        }",
+    "      }, \"skills\");",
+    "      return { ok: true };",
+    "    } catch (err) {",
+    "      console.error(\"toggle-skill 失败:\", err);",
+    "      return { ok: false, error: err.message };",
+    "    }",
+    "  });"
+  ].join("\n");
+  const syncBlock = [
+    toggleAnchor,
+    "",
+    "  electron.ipcMain.handle(\"sync-hermes-skills\", async () => {",
+    "    try {",
+    "      const hermesSkillsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"skills\");",
+    "      fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });",
+    "      let extraDirs = [];",
+    "      let skillEntries = {};",
+    "      if (fs$1.existsSync(configPath)) {",
+    "        try {",
+    "          const config = JSON.parse(fs$1.readFileSync(configPath, \"utf-8\"));",
+    "          extraDirs = config.skills?.load?.extraDirs || [];",
+    "          skillEntries = config.skills?.entries || {};",
+    "        } catch (e) {",
+    "          console.warn(\"读取 openclaw skills 配置失败:\", e.message);",
+    "        }",
+    "      }",
+    "      let copied = 0;",
+    "      const seen = new Set();",
+    "      function copySkillEntry(skillPath, name) {",
+    "        if (!name || seen.has(name) || skillEntries[name]?.enabled === false) return;",
+    "        seen.add(name);",
+    "        const target = path$1.join(hermesSkillsRoot, name.replace(/[\\\\/:*?\\\"<>|]/g, \"_\"));",
+    "        fs$1.rmSync(target, { recursive: true, force: true });",
+    "        if (fs$1.statSync(skillPath).isDirectory()) {",
+    "          fs$1.cpSync(skillPath, target, { recursive: true });",
+    "        } else {",
+    "          fs$1.mkdirSync(target, { recursive: true });",
+    "          fs$1.copyFileSync(skillPath, path$1.join(target, \"SKILL.md\"));",
+    "        }",
+    "        copied += 1;",
+    "      }",
+    "      for (const extraDir of extraDirs) {",
+    "        let resolvedDir = extraDir;",
+    "        if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);",
+    "        if (!fs$1.existsSync(resolvedDir)) continue;",
+    "        for (const entry of fs$1.readdirSync(resolvedDir, { withFileTypes: true })) {",
+    "          const skillPath = path$1.join(resolvedDir, entry.name);",
+    "          if (entry.isDirectory()) {",
+    "            const skillFile = path$1.join(skillPath, \"SKILL.md\");",
+    "            if (!fs$1.existsSync(skillFile)) continue;",
+    "            const meta = parseSkillMeta(skillFile);",
+    "            copySkillEntry(skillPath, meta?.name || entry.name);",
+    "          } else if (entry.name.toLowerCase().endsWith(\".md\")) {",
+    "            const meta = parseSkillMeta(skillPath);",
+    "            copySkillEntry(skillPath, meta?.name || entry.name.replace(/\\.md$/i, \"\"));",
+    "          }",
+    "        }",
+    "      }",
+    "      safeSend(\"hermes-log\", { type: \"system\", msg: \"[skills] synced \" + copied + \" OpenClaw skills to Hermes: \" + hermesSkillsRoot });",
+    "      return { ok: true, copied, path: hermesSkillsRoot };",
+    "    } catch (err) {",
+    "      console.error(\"sync-hermes-skills 失败:\", err);",
+    "      return { ok: false, error: err.message };",
+    "    }",
+    "  });"
+  ].join("\n");
+  if (!source.includes(toggleAnchor)) {
+    throw new Error("Could not find toggle-skill IPC block.");
+  }
+  source = source.replace(toggleAnchor, syncBlock);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesPreload(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("ipcSyncHermesSkills")) return;
+  const anchor = "  ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke(\"toggle-skill\", { skillName, enabled }),";
+  const replacement = [
+    anchor,
+    "  ipcSyncHermesSkills: () => electron.ipcRenderer.invoke(\"sync-hermes-skills\"),"
+  ].join("\n");
+  if (!source.includes(anchor)) {
+    throw new Error("Could not find preload skill IPC insertion point.");
+  }
+  source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesHomeDashboard(filePath) {
   const marker = "home-hermes-card";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
   if (source.includes(marker)) return;
+
+  const setupAnchor = [
+    "    const logs = computed(() => gatewayStore.logs);",
+    "    function extractTimestamp(msg) {"
+  ].join("\n");
+  const setupReplacement = [
+    "    const logs = computed(() => gatewayStore.logs);",
+    "    const hermesStatus = /* @__PURE__ */ ref({ status: \"idle\" });",
+    "    const hermesLogs = /* @__PURE__ */ ref([]);",
+    "    const activeLogSource = /* @__PURE__ */ ref(\"openclaw\");",
+    "    const hermesRunning = computed(() => hermesStatus.value?.status === \"running\");",
+    "    const hermesStatusText = computed(() => {",
+    "      if (hermesStatus.value?.status === \"running\") return \"运行中\";",
+    "      if (hermesStatus.value?.status === \"error\") return \"异常\";",
+    "      return \"未启动\";",
+    "    });",
+    "    const activeLogs = computed(() => activeLogSource.value === \"hermes\" ? hermesLogs.value : logs.value);",
+    "    function extractTimestamp(msg) {"
+  ].join("\n");
+  if (!source.includes(setupAnchor)) {
+    throw new Error("Could not find Home log setup block.");
+  }
+  source = source.replace(setupAnchor, setupReplacement);
 
   const openAnchor = [
     "    function handleOpen() {",
@@ -325,9 +485,49 @@ function patchHermesHomeDashboard(filePath) {
   ].join("\n");
   const openReplacement = [
     openAnchor,
+    "    async function refreshHermesStatus() {",
+    "      try {",
+    "        hermesStatus.value = await window.uclaw.ipcGetHermesStatus();",
+    "      } catch (e) {",
+    "        hermesStatus.value = { status: \"error\", lastError: e.message };",
+    "      }",
+    "    }",
+    "    function appendHermesLog(log) {",
+    "      const typeLabel = { stdout: \"[stdout]\", stderr: \"[stderr]\", system: \"[system]\", error: \"[error]\", exit: \"[exit]\" }[log.type] || \"[log]\";",
+    "      const typeColor = { stdout: \"#4ade80\", stderr: \"#f87171\", system: \"#60a5fa\", error: \"#f87171\", exit: \"#a78bfa\" }[log.type] || \"#ffffff\";",
+    "      const msg = String(log.msg || \"\");",
+    "      hermesLogs.value.push({ id: Date.now() + Math.random(), typeLabel, typeColor, message: cleanLogMessage(msg), timestamp: extractTimestamp(msg) });",
+    "      if (hermesLogs.value.length > 500) hermesLogs.value.shift();",
+    "      nextTick(() => {",
+    "        const container = document.getElementById(\"terminal-logs\");",
+    "        if (container && activeLogSource.value === \"hermes\") container.scrollTop = container.scrollHeight;",
+    "      });",
+    "    }",
+    "    async function handleHermesStart() {",
+    "      try {",
+    "        await window.uclaw.ipcStartHermes({ open: false });",
+    "        await refreshHermesStatus();",
+    "        activeLogSource.value = \"hermes\";",
+    "        showToast(\"Hermes 已启动\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes 启动失败: \" + e.message, true);",
+    "      }",
+    "    }",
+    "    async function handleHermesRestart() {",
+    "      try {",
+    "        await window.uclaw.ipcStopHermes();",
+    "        await window.uclaw.ipcStartHermes({ open: false });",
+    "        await refreshHermesStatus();",
+    "        activeLogSource.value = \"hermes\";",
+    "        showToast(\"Hermes 已重启\");",
+    "      } catch (e) {",
+    "        showToast(\"Hermes 重启失败: \" + e.message, true);",
+    "      }",
+    "    }",
     "    async function handleHermesConfig() {",
     "      try {",
     "        await window.uclaw.ipcOpenHermesConfig();",
+    "        await refreshHermesStatus();",
     "        showToast(\"Hermes 配置中心已打开\");",
     "      } catch (e) {",
     "        showToast(\"Hermes 配置中心打开失败: \" + e.message, true);",
@@ -336,6 +536,7 @@ function patchHermesHomeDashboard(filePath) {
     "    async function handleHermesDashboard() {",
     "      try {",
     "        await window.uclaw.ipcOpenHermesDashboard();",
+    "        await refreshHermesStatus();",
     "        showToast(\"Hermes Dashboard 已打开\");",
     "      } catch (e) {",
     "        showToast(\"Hermes Dashboard 打开失败: \" + e.message, true);",
@@ -344,6 +545,7 @@ function patchHermesHomeDashboard(filePath) {
     "    async function handleHermesApi() {",
     "      try {",
     "        await window.uclaw.ipcOpenHermesApiServer();",
+    "        await refreshHermesStatus();",
     "        showToast(\"Hermes Agent API 已启动\");",
     "      } catch (e) {",
     "        showToast(\"Hermes Agent API 启动失败: \" + e.message, true);",
@@ -352,6 +554,7 @@ function patchHermesHomeDashboard(filePath) {
     "    async function handleHermesStop() {",
     "      try {",
     "        await window.uclaw.ipcStopHermes();",
+    "        await refreshHermesStatus();",
     "        showToast(\"Hermes 已停止\");",
     "      } catch (e) {",
     "        showToast(\"Hermes 停止失败: \" + e.message, true);",
@@ -362,6 +565,40 @@ function patchHermesHomeDashboard(filePath) {
     throw new Error("Could not find Home open-dashboard handler in OpenClaw renderer bundle.");
   }
   source = source.replace(openAnchor, openReplacement);
+
+  const mountedAnchor = [
+    "      runAllChecks();",
+    "      startLiveLogs();"
+  ].join("\n");
+  source = source.replace(mountedAnchor, "      runAllChecks();\n      refreshHermesStatus();\n      startLiveLogs();");
+
+  const liveLogsAnchor = [
+    "        nextTick(() => {",
+    "          const container = document.getElementById(\"terminal-logs\");",
+    "          if (container) container.scrollTop = container.scrollHeight;",
+    "        });",
+    "      });",
+    "    }"
+  ].join("\n");
+  const liveLogsReplacement = [
+    "        nextTick(() => {",
+    "          const container = document.getElementById(\"terminal-logs\");",
+    "          if (container && activeLogSource.value === \"openclaw\") container.scrollTop = container.scrollHeight;",
+    "        });",
+    "      });",
+    "      if (window.uclaw.ipcOnHermesLog) window.uclaw.ipcOnHermesLog((log) => appendHermesLog(log));",
+    "      if (window.uclaw.ipcOnHermesStatus) window.uclaw.ipcOnHermesStatus((status) => hermesStatus.value = status);",
+    "    }"
+  ].join("\n");
+  if (!source.includes(liveLogsAnchor)) {
+    throw new Error("Could not find Home live log closing block.");
+  }
+  source = source.replace(liveLogsAnchor, liveLogsReplacement);
+
+  source = source.replace(
+    "        showToast(\"日志已复制\");\n      }\n    }\n    function clearTerminal() {\n      gatewayStore.clearLogs();\n    }",
+    "        showToast(\"日志已复制\");\n      }\n    }\n    function clearTerminal() {\n      if (activeLogSource.value === \"hermes\") {\n        hermesLogs.value = [];\n        return;\n      }\n      gatewayStore.clearLogs();\n    }"
+  );
 
   const panelAnchor = [
     "        ]),",
@@ -374,14 +611,23 @@ function patchHermesHomeDashboard(filePath) {
     "            createBaseVNode(\"div\", { class: \"home-hermes-icon\" }, \"H\"),",
     "            createBaseVNode(\"div\", { class: \"home-hermes-copy\" }, [",
     "              createBaseVNode(\"div\", { class: \"home-hermes-title\" }, \"Hermes Agent 协同控制台\"),",
-    "              createBaseVNode(\"div\", { class: \"home-hermes-desc\" }, \"在保留 OpenClaw Gateway 的同时，可启动 Hermes 配置中心、Dashboard 与 Agent API，实现双 Agent 协同。\")",
+    "              createBaseVNode(\"div\", { class: \"home-hermes-desc\" }, \"启动后可在 AI 会话中切换 Hermes 或协同模式；模型默认复用当前 OpenClaw 配置。\"),",
+    "              createBaseVNode(\"div\", { class: \"home-hermes-status-row\" }, [",
+    "                createBaseVNode(\"span\", {",
+    "                  class: normalizeClass([\"home-hermes-status\", hermesRunning.value ? \"running\" : hermesStatus.value?.status === \"error\" ? \"error\" : \"idle\"])",
+    "                }, toDisplayString(hermesStatusText.value), 3),",
+    "                createBaseVNode(\"span\", null, \"PID: \" + toDisplayString(hermesStatus.value?.pid || \"--\"), 1),",
+    "                createBaseVNode(\"span\", null, \"API: \" + toDisplayString(hermesStatus.value?.apiServerReady ? \"已就绪\" : \"未启动\"), 1)",
+    "              ])",
     "            ])",
     "          ]),",
     "          createBaseVNode(\"div\", { class: \"home-hermes-actions\" }, [",
-    "            createBaseVNode(\"button\", { class: \"home-hermes-btn primary\", onClick: handleHermesConfig }, \"配置中心\"),",
-    "            createBaseVNode(\"button\", { class: \"home-hermes-btn\", onClick: handleHermesDashboard }, \"Dashboard\"),",
-    "            createBaseVNode(\"button\", { class: \"home-hermes-btn\", onClick: handleHermesApi }, \"Agent API\"),",
-    "            createBaseVNode(\"button\", { class: \"home-hermes-btn danger\", onClick: handleHermesStop }, \"停止 Hermes\")",
+    "            !hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 0, class: \"home-hermes-btn primary\", onClick: handleHermesStart, title: \"启动 Hermes 配置服务和本地运行环境\" }, \"启动 Hermes\")) : createCommentVNode(\"\", true),",
+    "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 1, class: \"home-hermes-btn\", onClick: handleHermesConfig, title: \"打开 Hermes 配置中心\" }, \"配置中心\")) : createCommentVNode(\"\", true),",
+    "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 2, class: \"home-hermes-btn\", onClick: handleHermesDashboard, title: \"打开 Hermes 官方 Dashboard\" }, \"Dashboard\")) : createCommentVNode(\"\", true),",
+    "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 3, class: \"home-hermes-btn\", onClick: handleHermesApi, title: \"启动 Hermes OpenAI 兼容 Agent API\" }, \"Agent API\")) : createCommentVNode(\"\", true),",
+    "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 4, class: \"home-hermes-btn\", onClick: handleHermesRestart, title: \"停止并重新启动 Hermes\" }, \"重启\")) : createCommentVNode(\"\", true),",
+    "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 5, class: \"home-hermes-btn danger\", onClick: handleHermesStop, title: \"停止 Hermes 配置服务、Dashboard 和 Agent API\" }, \"停止\")) : createCommentVNode(\"\", true)",
     "          ])",
     "        ]),",
     "        createBaseVNode(\"div\", _hoisted_10$h, ["
@@ -390,15 +636,32 @@ function patchHermesHomeDashboard(filePath) {
     throw new Error("Could not find Home dashboard insertion point in OpenClaw renderer bundle.");
   }
   source = source.replace(panelAnchor, hermesPanel);
+
+  source = source.replace(
+    "_cache[15] || (_cache[15] = createBaseVNode(\"span\", { class: \"home-terminal-title\" }, \"实时日志\", -1)),",
+    "createBaseVNode(\"div\", { class: \"home-terminal-title-row\" }, [\n              createBaseVNode(\"span\", { class: \"home-terminal-title\" }, \"实时日志\"),\n              createBaseVNode(\"div\", { class: \"home-log-tabs\" }, [\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"openclaw\" }), onClick: ($event) => activeLogSource.value = \"openclaw\" }, \"OpenClaw\", 2),\n                createBaseVNode(\"button\", { class: normalizeClass({ active: activeLogSource.value === \"hermes\" }), onClick: ($event) => activeLogSource.value = \"hermes\" }, \"Hermes\", 2)\n              ])\n            ]),"
+  );
+  source = source.replaceAll("logs.value.length", "activeLogs.value.length");
+  source = source.replace("renderList(logs.value, (log) => {", "renderList(activeLogs.value, (log) => {");
   fs.writeFileSync(filePath, source, "utf8");
 }
 
 function patchHermesEnvCheck(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("id: \"hermes\"")) return;
+  if (source.includes("id: \"hermes-cli\"")) return;
 
   const listAnchor = "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" }\n";
-  const listReplacement = "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" },\n    { id: \"hermes\", title: \"Hermes Agent\", icon: \"icon-clawopenclaw\", status: \"checking\", statusText: \"检测中\", detail: \"\" }\n";
+  const listReplacement = [
+    "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-python\", title: \"Hermes Python\", icon: \"icon-clawnodejs\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-node\", title: \"Hermes Node.js\", icon: \"icon-clawnodejs\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-cli\", title: \"Hermes CLI\", icon: \"icon-clawopenclaw\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-data\", title: \"Hermes 数据目录\", icon: \"icon-clawmoxingpeizhi\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-model\", title: \"Hermes 模型桥接\", icon: \"icon-clawmoxingpeizhi\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-skills\", title: \"Hermes 技能\", icon: \"icon-clawjinengguanli\", status: \"checking\", statusText: \"检测中\", detail: \"\" },",
+    "    { id: \"hermes-ports\", title: \"Hermes 端口\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" }",
+    ""
+  ].join("\n");
   if (!source.includes(listAnchor)) {
     throw new Error("Could not find env check item insertion point in OpenClaw renderer bundle.");
   }
@@ -417,16 +680,23 @@ function patchHermesEnvCheck(filePath) {
   const portReplacement = [
     portAnchor,
     "  async function checkHermes() {",
-    "    updateItem(\"hermes\", { status: \"checking\", statusText: \"检测中\", detail: \"\" });",
+    "    for (const id of [\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-skills\", \"hermes-ports\"]) {",
+    "      updateItem(id, { status: \"checking\", statusText: \"检测中\", detail: \"\" });",
+    "    }",
     "    try {",
     "      const status = await window.uclaw.ipcGetHermesStatus();",
-    "      if (status?.hermesReady && status?.pythonReady) {",
-    "        updateItem(\"hermes\", { status: \"pass\", statusText: status.status === \"running\" ? \"运行中\" : \"已就绪\", detail: status.dataRoot || \"Hermes runtime ready\" });",
-    "      } else {",
-    "        updateItem(\"hermes\", { status: \"warn\", statusText: \"未完整\", detail: status?.lastError || \"Hermes runtime 待补齐\" });",
-    "      }",
+    "      updateItem(\"hermes-python\", status?.pythonReady ? { status: \"pass\", statusText: \"正常\", detail: status.pythonBin || \"Portable Python 已就绪\" } : { status: \"fail\", statusText: \"缺失\", detail: status?.pythonBin || \"未找到 portable python\" });",
+    "      updateItem(\"hermes-node\", status?.nodeReady ? { status: \"pass\", statusText: \"正常\", detail: status.nodeBin || \"Portable Node.js 已就绪\" } : { status: \"warn\", statusText: \"未找到\", detail: status?.nodeBin || \"Hermes Node runtime 待补齐\" });",
+    "      updateItem(\"hermes-cli\", status?.hermesReady && status?.sourceReady ? { status: \"pass\", statusText: \"正常\", detail: status.hermesBin || \"Hermes CLI 已就绪\" } : { status: \"fail\", statusText: \"缺失\", detail: status?.lastError || status?.hermesBin || \"Hermes CLI 或源码不完整\" });",
+    "      updateItem(\"hermes-data\", status?.dataReady && status?.configDirReady ? { status: \"pass\", statusText: \"零痕迹\", detail: status.dataRoot || \"data/.hermes\" } : { status: \"warn\", statusText: \"待初始化\", detail: status?.dataRoot || \"首次启动后创建 U 盘数据目录\" });",
+    "      updateItem(\"hermes-model\", status?.modelBridgeReady ? { status: \"pass\", statusText: \"已桥接\", detail: status.modelBridge } : { status: \"warn\", statusText: \"未配置\", detail: \"在模型配置页应用模型后，Hermes 自动复用\" });",
+    "      updateItem(\"hermes-skills\", status?.skillsReady ? { status: \"pass\", statusText: \"可用\", detail: `${status.skillCount || 0} 个技能可供 Hermes 使用` } : { status: \"warn\", statusText: \"待同步\", detail: status?.skillsRoot || \"请在技能管理页同步\" });",
+    "      const ports = [`配置 ${status?.configReady ? \"就绪\" : \"未启动\"}`, `Dashboard ${status?.dashboardReady ? \"就绪\" : \"未启动\"}`, `API ${status?.apiServerReady ? \"就绪\" : \"未启动\"}`].join(\" / \");",
+    "      updateItem(\"hermes-ports\", status?.configReady || status?.dashboardReady || status?.apiServerReady ? { status: \"pass\", statusText: \"运行中\", detail: ports } : { status: \"warn\", statusText: \"未启动\", detail: \"首页点击启动 Hermes 后检查端口\" });",
     "    } catch (e) {",
-    "      updateItem(\"hermes\", { status: \"fail\", statusText: \"异常\", detail: e.message });",
+    "      for (const id of [\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-skills\", \"hermes-ports\"]) {",
+    "        updateItem(id, { status: \"fail\", statusText: \"异常\", detail: e.message });",
+    "      }",
     "    }",
     "  }"
   ].join("\n");
@@ -442,132 +712,102 @@ function patchHermesEnvCheck(filePath) {
 
 function patchHermesModelConfig(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("model-hermes-tab")) return;
-
-  const saveCustomAnchor = [
-    "    function saveCustomModel() {",
-    "      if (!customUrl.value) {",
-    "        showToast(\"请填写 API URL，不可为空\", true);",
-    "        return;",
-    "      }",
-    "      if (!customKey.value) {",
-    "        showToast(\"请填写 API Key，不可为空\", true);",
-    "        return;",
-    "      }",
-    "      if (!customModelName.value) {",
-    "        showToast(\"请填写自定义模型名称\", true);",
-    "        return;",
-    "      }",
-    "      const modelValue2 = `custom-${customModelName.value}`;",
-    "      const exists = modelsStore.selectedModels.some((m) => m.value === modelValue2);",
-    "      if (exists) {",
-    "        showToast(\"不可重复添加模型\", true);",
-    "        return;",
-    "      }",
-    "      const modelInfo = {",
-    "        label: customModelName.value,",
-    "        value: modelValue2,",
-    "        source: \"custom\",",
-    "        base: customUrl.value,",
-    "        key: customKey.value,",
-    "        model: customModelName.value,",
-    "        provider: \"custom\",",
-    "        api: customApiType.value",
-    "      };",
-    "      const updatedModels = [...modelsStore.selectedModels];",
-    "      updatedModels.push({ ...modelInfo, isCurrent: updatedModels.length === 0 });",
-    "      modelsStore.setSelectedModels(updatedModels);",
-    "      showToast(\"模型添加成功\");",
-    "      customUrl.value = \"\";",
-    "      customKey.value = \"\";",
-    "      customModelName.value = \"\";",
-    "      customApiType.value = \"openai-completions\";",
-    "    }"
-  ].join("\n");
-  const saveCustomReplacement = [
-    saveCustomAnchor,
-    "    async function handleHermesModelConfig() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesConfig();",
-    "        showToast(\"Hermes 配置中心已打开\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes 配置中心打开失败: \" + e.message, true);",
-    "      }",
-    "    }",
-    "    async function handleHermesModelDashboard() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesDashboard();",
-    "        showToast(\"Hermes Dashboard 已打开\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes Dashboard 打开失败: \" + e.message, true);",
-    "      }",
-    "    }",
-    "    async function handleHermesModelApi() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesApiServer();",
-    "        showToast(\"Hermes Agent API 已启动\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes Agent API 启动失败: \" + e.message, true);",
-    "      }",
-    "    }"
-  ].join("\n");
-  if (!source.includes(saveCustomAnchor)) {
-    throw new Error("Could not find custom model save function in OpenClaw renderer bundle.");
-  }
-  source = source.replace(saveCustomAnchor, saveCustomReplacement);
-
-  const customTabAnchor = [
-    "          createBaseVNode(\"button\", {",
-    "            class: normalizeClass([\"model-model-tab\", { \"model-active\": activeTab.value === \"custom\" }]),",
-    "            onClick: _cache[3] || (_cache[3] = ($event) => activeTab.value = \"custom\")",
-    "          }, \" 自定义模型 \", 2)"
-  ].join("\n");
-  const customTabReplacement = [
-    customTabAnchor + ",",
-    "          createBaseVNode(\"button\", {",
-    "            class: normalizeClass([\"model-model-tab\", { \"model-active\": activeTab.value === \"hermes\" }]),",
-    "            onClick: ($event) => activeTab.value = \"hermes\"",
-    "          }, \" Hermes Agent \", 2)"
-  ].join("\n");
-  if (!source.includes(customTabAnchor)) {
-    throw new Error("Could not find model tab insertion point in OpenClaw renderer bundle.");
-  }
-  source = source.replace(customTabAnchor, customTabReplacement);
-
-  const customCloseAnchor = [
-    "        withDirectives(createBaseVNode(\"div\", _hoisted_44$2, [",
-    "          _cache[42] || (_cache[42] = createBaseVNode(\"div\", { class: \"model-custom-intro\" }, ["
-  ].join("\n");
-  const hermesPanel = [
-    "        withDirectives(createBaseVNode(\"div\", { class: \"model-tab-content model-hermes-tab\" }, [",
-    "          createBaseVNode(\"div\", { class: \"model-hermes-panel\" }, [",
-    "            createBaseVNode(\"div\", { class: \"model-hermes-head\" }, [",
-    "              createBaseVNode(\"div\", { class: \"model-hermes-mark\" }, \"H\"),",
-    "              createBaseVNode(\"div\", { class: \"model-hermes-copy\" }, [",
-    "                createBaseVNode(\"h3\", null, \"Hermes Agent 模型配置\"),",
-    "                createBaseVNode(\"p\", null, \"Hermes 使用独立配置中心管理 provider、模型、Key、记忆、技能和沙箱。OpenClaw 模型继续用于原 Gateway，Hermes 可作为独立 Agent 或协同 Agent 调用。\")",
-    "              ])",
-    "            ]),",
-    "            createBaseVNode(\"div\", { class: \"model-hermes-actions\" }, [",
-    "              createBaseVNode(\"button\", { class: \"model-hermes-btn primary\", onClick: handleHermesModelConfig }, \"打开配置中心\"),",
-    "              createBaseVNode(\"button\", { class: \"model-hermes-btn\", onClick: handleHermesModelDashboard }, \"Dashboard\"),",
-    "              createBaseVNode(\"button\", { class: \"model-hermes-btn\", onClick: handleHermesModelApi }, \"启动 Agent API\")",
-    "            ]),",
-    "            createBaseVNode(\"div\", { class: \"model-hermes-notes\" }, [",
-    "              createBaseVNode(\"span\", null, \"配置保存到 U 盘 data/.hermes\"),",
-    "              createBaseVNode(\"span\", null, \"不会覆盖 OpenClaw 当前模型\"),",
-    "              createBaseVNode(\"span\", null, \"后续会在 AI 会话中加入 OpenClaw / Hermes / 协同模式切换\")",
-    "            ])",
-    "          ])",
-    "        ], 512), [",
-    "          [vShow, activeTab.value === \"hermes\"]",
+  if (source.includes("model-unified-hermes-note")) return;
+  const tabAnchor = "        createBaseVNode(\"div\", _hoisted_12$d, [";
+  const note = [
+    "        createBaseVNode(\"div\", { class: \"model-unified-hermes-note\" }, [",
+    "          createBaseVNode(\"span\", { class: \"model-unified-hermes-mark\" }, \"H\"),",
+    "          createBaseVNode(\"span\", null, \"当前应用的模型会同时供 OpenClaw 与 Hermes 使用；Hermes 会话无需单独配置 Key。\")",
     "        ]),",
-    customCloseAnchor
+    tabAnchor
   ].join("\n");
-  if (!source.includes(customCloseAnchor)) {
-    throw new Error("Could not find custom model tab content insertion point in OpenClaw renderer bundle.");
+  if (!source.includes(tabAnchor)) {
+    throw new Error("Could not find model tab bar insertion point.");
   }
-  source = source.replace(customCloseAnchor, hermesPanel);
+  source = source.replace(tabAnchor, note);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesSkillManagement(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("skill-hermes-sync")) return;
+
+  const setupAnchor = [
+    "    const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);",
+    "    function openSkillStore() {"
+  ].join("\n");
+  const setupReplacement = [
+    "    const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);",
+    "    const hermesSyncing = /* @__PURE__ */ ref(false);",
+    "    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");",
+    "    async function syncHermesSkills() {",
+    "      hermesSyncing.value = true;",
+    "      hermesSyncMessage.value = \"正在同步已启用技能到 Hermes...\";",
+    "      try {",
+    "        const result = await window.uclaw.ipcSyncHermesSkills();",
+    "        if (!result?.ok) throw new Error(result?.error || \"同步失败\");",
+    "        hermesSyncMessage.value = `已同步 ${result.copied || 0} 个技能到 Hermes`;",
+    "      } catch (err) {",
+    "        hermesSyncMessage.value = \"同步失败: \" + (err?.message || err);",
+    "      } finally {",
+    "        hermesSyncing.value = false;",
+    "      }",
+    "    }",
+    "    function openSkillStore() {"
+  ].join("\n");
+  if (!source.includes(setupAnchor)) {
+    throw new Error("Could not find Skill setup insertion point.");
+  }
+  source = source.replace(setupAnchor, setupReplacement);
+
+  const storeButtonAnchor = [
+    "            createVNode(TechButton, {",
+    "              variant: \"primary\",",
+    "              size: \"small\",",
+    "              onClick: openSkillStore,",
+    "              title: \"技能商店\"",
+    "            }, {",
+    "              icon: withCtx(() => [..._cache[3] || (_cache[3] = [",
+    "                createBaseVNode(\"span\", { class: \"iconfont icon-clawwaibutiaozhuanlianjie\" }, null, -1)",
+    "              ])]),",
+    "              default: withCtx(() => [",
+    "                _cache[4] || (_cache[4] = createTextVNode(\" 技能商店 \", -1))",
+    "              ]),",
+    "              _: 1",
+    "            })"
+  ].join("\n");
+  const buttonReplacement = [
+    "            createBaseVNode(\"div\", { class: \"skill-hermes-actions\" }, [",
+    "              createVNode(TechButton, {",
+    "                variant: \"secondary\",",
+    "                size: \"small\",",
+    "                loading: hermesSyncing.value,",
+    "                onClick: syncHermesSkills,",
+    "                title: \"将当前已启用的 OpenClaw 技能同步到 Hermes 技能目录\"",
+    "              }, {",
+    "                icon: withCtx(() => [_cache[8] || (_cache[8] = createBaseVNode(\"span\", { class: \"iconfont icon-clawzhongqi\" }, null, -1))]),",
+    "                default: withCtx(() => [_cache[9] || (_cache[9] = createTextVNode(\" 同步到 Hermes \", -1))]),",
+    "                _: 1",
+    "              }, 8, [\"loading\"]),",
+    storeButtonAnchor,
+    "            ])"
+  ].join("\n");
+  if (!source.includes(storeButtonAnchor)) {
+    throw new Error("Could not find Skill store button block.");
+  }
+  source = source.replace(storeButtonAnchor, buttonReplacement);
+
+  const searchAnchor = [
+    "          createBaseVNode(\"div\", _hoisted_7$l, ["
+  ].join("\n");
+  const searchReplacement = [
+    "          hermesSyncMessage.value ? (openBlock(), createElementBlock(\"div\", { key: 0, class: \"skill-hermes-sync\" }, toDisplayString(hermesSyncMessage.value), 1)) : createCommentVNode(\"\", true),",
+    "          createBaseVNode(\"div\", _hoisted_7$l, ["
+  ].join("\n");
+  if (!source.includes(searchAnchor)) {
+    throw new Error("Could not find Skill search insertion point.");
+  }
+  source = source.replace(searchAnchor, searchReplacement);
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -1315,6 +1555,128 @@ function patchHermesAiChatStyles(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesUxStyles(filePath) {
+  let source = fs.readFileSync(filePath, "utf8");
+  if (source.includes(".model-unified-hermes-note")) return;
+  source += `
+
+.home-hermes-status-row {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #c2c6d6;
+  font-size: 12px;
+}
+
+.home-hermes-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.home-hermes-status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.home-hermes-status.running {
+  color: #4edea3;
+}
+
+.home-hermes-status.running::before {
+  background: #4edea3;
+}
+
+.home-hermes-status.error {
+  color: #ffb3ad;
+}
+
+.home-hermes-status.error::before {
+  background: #ff6b6b;
+}
+
+.home-terminal-title-row,
+.home-log-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.home-log-tabs {
+  padding: 2px;
+  border: 1px solid rgba(100, 116, 139, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.home-log-tabs button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.home-log-tabs button.active {
+  background: #4f83ff;
+  color: #fff;
+}
+
+.model-unified-hermes-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(79, 131, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(79, 131, 255, 0.08);
+  color: #334155;
+  font-size: 13px;
+}
+
+.model-unified-hermes-mark {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #4edea3;
+  color: #002113;
+  font-weight: 800;
+  flex: 0 0 auto;
+}
+
+.skill-hermes-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skill-hermes-sync {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(79, 131, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(79, 131, 255, 0.08);
+  color: #334155;
+  font-size: 13px;
+}
+`;
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -1349,20 +1711,24 @@ copyDir(path.join(backupRoot, "assets"), path.join(targetApp, "assets"));
 const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
+patchHermesSkillBridge(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
-copyFile(path.join(backupRoot, "dist", "preload", "index.js"), path.join(targetApp, "dist", "preload", "index.js"));
+const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
+copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
+patchHermesPreload(preloadTarget);
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
+patchHermesSkillManagement(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);
 patchHermesHomeStyles(rendererStyleTarget);
-patchHermesModelStyles(rendererStyleTarget);
 patchHermesAiChatStyles(rendererStyleTarget);
+patchHermesUxStyles(rendererStyleTarget);
 copyFile(baselineHtml, path.join(targetApp, "dist", "assets", "main", "index.html"));
 
 for (const asset of ["icon.ico", "icon.png", "logo.png"]) {
@@ -1374,6 +1740,7 @@ console.log(`Restored original OpenClaw shell to ${targetApp}`);
 console.log("Added non-invasive Hermes tray menu entries.");
 console.log("Added Hermes controls to the original OpenClaw home console.");
 console.log("Added Hermes runtime status to the original environment checks.");
-console.log("Added Hermes Agent tab to the original model configuration page.");
+console.log("Unified model configuration for OpenClaw and Hermes.");
 console.log("Added OpenClaw / Hermes / collaborative modes to the original AI chat page.");
+console.log("Added Hermes skill sync to the original skill management page.");
 console.log("Hermes dist-injected patch assets were intentionally not copied.");
