@@ -85,9 +85,48 @@ function patchHermesTrayMenu(filePath) {
 
 function patchHermesRuntimeEnv(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  const gatewayEnvAnchor = [
+    "  return {",
+    "    ...process.env,",
+    "    OPENCLAW_HOME: getDataRoot(),",
+    "    OPENCLAW_WORKSPACE: path$1.join(getDataRoot(), \".openclaw\", \"workspace\"),",
+    "    NODE_PATH: path$1.join(runtimePath, \"node_modules\"),",
+    "    PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,",
+    "    NODE_OPTIONS: nodeOptions,",
+    "    NO_PROXY: noProxy,",
+    "    NO_COLOR: \"1\"",
+    "  };"
+  ].join("\n");
+  const gatewayEnvReplacement = [
+    "  const portableStateRoot = path$1.join(getDataRoot(), \".openclaw\");",
+    "  const portableTmp = path$1.join(portableStateRoot, \"tmp\");",
+    "  const portableHome = path$1.join(portableStateRoot, \"home\");",
+    "  fs$1.mkdirSync(portableTmp, { recursive: true });",
+    "  fs$1.mkdirSync(portableHome, { recursive: true });",
+    "  return {",
+    "    ...process.env,",
+    "    HOME: portableHome,",
+    "    USERPROFILE: portableHome,",
+    "    OPENCLAW_HOME: getDataRoot(),",
+    "    OPENCLAW_STATE_DIR: portableStateRoot,",
+    "    OPENCLAW_CONFIG: path$1.join(portableStateRoot, \"openclaw.json\"),",
+    "    OPENCLAW_CONFIG_PATH: path$1.join(portableStateRoot, \"openclaw.json\"),",
+    "    OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, \"workspace\"),",
+    "    TMP: portableTmp,",
+    "    TEMP: portableTmp,",
+    "    NODE_PATH: path$1.join(runtimePath, \"node_modules\"),",
+    "    PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,",
+    "    NODE_OPTIONS: nodeOptions,",
+    "    NO_PROXY: noProxy,",
+    "    NO_COLOR: \"1\"",
+    "  };"
+  ].join("\n");
+  if (source.includes(gatewayEnvAnchor)) {
+    source = source.replace(gatewayEnvAnchor, gatewayEnvReplacement);
+  }
   source = source.replace(
     "      OPENCLAW_HOME: this.dataDir,\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`",
-    "      OPENCLAW_HOME: this.dataDir,\n      OPENCLAW_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      CLAWDBOT_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      OPENCLAW_CONFIG: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`"
+    "      OPENCLAW_HOME: this.dataDir,\n      OPENCLAW_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      OPENCLAW_CONFIG: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      OPENCLAW_CONFIG_PATH: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`"
   );
   source = source.replace(
     "      const accountsFile = path$1.join(this.dataDir, \"openclaw-weixin\", \"accounts.json\");",
@@ -100,6 +139,18 @@ function patchHermesRuntimeEnv(filePath) {
   source = source.replace(
     "      this.emit(\"login-exit\", code);",
     "      if (code === 0 || this.status === \"connected\") {\n        const restart = this.restartGateway();\n        this.emit(\"log\", restart.success ? \"[weixin] Gateway 已刷新，微信账号配置已加载\" : `[weixin] Gateway 刷新失败: ${restart.error}`);\n      }\n      this.emit(\"login-exit\", code);"
+  );
+  source = source.replace(
+    "        const urlMatch = clean2.match(/(https?:\\/\\/[^\\s]+(?:weixin|qrcode)[^\\s]*)/);",
+    "        const urlMatch = clean2.match(/(https?:\\/\\/[^\\s]+(?:weixin|qrcode|liteapp)[^\\s]*)/);"
+  );
+  source = source.replace(
+    "          this.emit(\"qr-url\", url2);",
+    "          this.emit(\"qr-url\", url2);"
+  );
+  source = source.replace(
+    "      if (clean2.includes(\"寰俊杩炴帴鎴愬姛\") || clean2.includes(\"鐧诲綍鎴愬姛\") || clean2.includes(\"logged in\") || clean2.includes(\"connected\")) {",
+    "      if ((clean2.match(/[█▄▀]{4,}/g) || []).length >= 2 || clean2.includes(\"二维码\") || clean2.includes(\"浜岀淮鐮\")) {\n        this.emit(\"qr-text\", clean2);\n        this.status = \"scanning\";\n        this.emit(\"status\", this.status);\n      }\n      if (clean2.includes(\"寰俊杩炴帴鎴愬姛\") || clean2.includes(\"鐧诲綍鎴愬姛\") || clean2.includes(\"logged in\") || clean2.includes(\"connected\")) {"
   );
   const envAnchor = [
     "  getHermesEnv() {",
@@ -565,6 +616,33 @@ function patchHermesSkillBridge(filePath) {
 
 function patchHermesLogAndWechatDiagnostics(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("wechat-login-gateway-restart")) {
+    const initAnchor = [
+      "function registerWechatIPCHandler({ gateway }) {",
+      "  initWechat();"
+    ].join("\n");
+    const initReplacement = [
+      "function registerWechatIPCHandler({ gateway }) {",
+      "  initWechat();",
+      "  const wechatManagerForGateway = getWechatManagerInstance();",
+      "  wechatManagerForGateway?.on(\"login-exit\", async (code) => {",
+      "    try {",
+      "      if (code === 0 || wechatManagerForGateway.getStatus() === \"connected\") {",
+      "        wechatManagerForGateway.emit(\"log\", \"[weixin] login complete, restarting desktop Gateway... /* wechat-login-gateway-restart */\");",
+      "        await gateway.restartGateway();",
+      "        wechatManagerForGateway.emit(\"log\", \"[weixin] Gateway 已重启，微信账号配置已加载\");",
+      "      }",
+      "    } catch (err) {",
+      "      wechatManagerForGateway?.emit(\"log\", \"[weixin] Gateway 重启失败: \" + (err instanceof Error ? err.message : String(err)));",
+      "    }",
+      "  });"
+    ].join("\n");
+    if (!source.includes(initAnchor)) {
+      throw new Error("Could not find WeChat IPC init insertion point.");
+    }
+    source = source.replace(initAnchor, initReplacement);
+  }
+
   if (!source.includes("hermes:getLogs")) {
     const statusAnchor = [
       "  electron.ipcMain.handle(\"hermes:getStatus\", async () => {",
@@ -638,7 +716,7 @@ function patchHermesLogAndWechatDiagnostics(filePath) {
 
 function patchHermesPreload(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics")) return;
+  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics") && source.includes("ipcOnWeChatQrText")) return;
   const anchor = "  ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke(\"toggle-skill\", { skillName, enabled }),";
   const replacement = [
     anchor,
@@ -650,6 +728,10 @@ function patchHermesPreload(filePath) {
     throw new Error("Could not find preload skill IPC insertion point.");
   }
   source = source.replace(anchor, replacement);
+  source = source.replace(
+    "  ipcOnWeChatQrUrl: (callback) => electron.ipcRenderer.on(\"wechat-qr-url\", (_, url) => callback(url)),",
+    "  ipcOnWeChatQrUrl: (callback) => electron.ipcRenderer.on(\"wechat-qr-url\", (_, url) => callback(url)),\n  ipcOnWeChatQrText: (callback) => electron.ipcRenderer.on(\"wechat-qr-text\", (_, text) => callback(text)),"
+  );
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -695,6 +777,10 @@ function patchWeChatDiagnosticsUi(filePath) {
     "      window.uclaw.ipcGetWeChatStatus().then((payload) => { setStatus(normalizeWechatStatus(payload)); appendWechatDiagnostics(payload); }).catch(() => {});"
   );
   source = source.replace(
+    "      window.uclaw.ipcOnWeChatQrUrl((url) => {\n        console.log(\"WeChat QR URL received:\", url);\n        setQrCode(`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`, \"\");\n      });",
+    "      window.uclaw.ipcOnWeChatQrUrl((url) => {\n        console.log(\"WeChat QR URL received:\", url);\n        setStatus(\"scanning\");\n        setQrCode(`https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(url)}`, \"\");\n      });\n      window.uclaw.ipcOnWeChatQrText?.((text) => {\n        setStatus(\"scanning\");\n        setQrCode(\"\", text);\n      });"
+  );
+  source = source.replace(
     "    function startScan() {",
     "    async function startScan() {"
   );
@@ -708,7 +794,11 @@ function patchWeChatDiagnosticsUi(filePath) {
   );
   source = source.replace(
     "    function handleWechatStatus(status) {\n      wechatStore.setStatus(status === \"refreshing\" ? \"scanning\" : status);",
-    "    function handleWechatStatus(status) {\n      const normalized = normalizeWechatStatus(status);\n      appendWechatDiagnostics(status);\n      wechatStore.setStatus(normalized === \"refreshing\" ? \"scanning\" : normalized);"
+    "    function handleWechatStatus(status) {\n      const payload = status && typeof status === \"object\" ? status : { status };\n      const normalized = payload.status || \"disconnected\";\n      const diag = payload.diagnostics;\n      if (diag && typeof diag === \"object\") {\n        const count = Number(diag.accountCount || 0);\n        wechatStore.addLog(count > 0 ? `[diagnostics] 已发现 ${count} 个微信账号凭据，目录：${diag.weixinRoot || \"未知\"}` : `[diagnostics] 未发现微信账号凭据，请重新扫码。账号目录：${diag.weixinRoot || \"未知\"}`);\n      }\n      wechatStore.setStatus(normalized === \"refreshing\" ? \"scanning\" : normalized);"
+  );
+  source = source.replace(
+    "      if (status === \"connected\") {\n        wechatStore.checkInstalled();\n      }",
+    "      if (normalized === \"connected\") {\n        wechatStore.checkInstalled();\n      }"
   );
   source = source.replace(
     "        const status = await window.uclaw.ipcGetWeChatStatus();\n        handleWechatStatus(status);",
@@ -2295,6 +2385,101 @@ function patchHermesUxStyles(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchInstalledWeixinPlugin(usbRootPath) {
+  const pluginRoot = path.join(usbRootPath, "data", ".openclaw", "extensions", "openclaw-weixin");
+  const apiPath = path.join(pluginRoot, "src", "api", "api.ts");
+  if (!fs.existsSync(apiPath)) {
+    console.log(`Weixin plugin not installed, skip patch: ${apiPath}`);
+    return;
+  }
+  let source = fs.readFileSync(apiPath, "utf8").replace(/\r\n/g, "\n");
+  source = source.replace(
+    "    \"Content-Length\": String(Buffer.byteLength(opts.body, \"utf-8\")),\n",
+    ""
+  );
+  if (!source.includes("import https from \"node:https\";")) {
+    source = source.replace(
+      "import fs from \"node:fs\";\n",
+      "import fs from \"node:fs\";\nimport https from \"node:https\";\n"
+    );
+  }
+  const fallbackMarker = "function describeApiFetchError";
+  if (!source.includes(fallbackMarker)) {
+    const anchor = [
+      "function buildHeaders(opts: { token?: string; body: string }): Record<string, string> {",
+      "  const headers: Record<string, string> = {"
+    ].join("\n");
+    const helper = [
+      "function describeApiFetchError(err: unknown): string {",
+      "  const anyErr = err as { name?: string; message?: string; cause?: { code?: string; name?: string; message?: string } };",
+      "  const parts = [anyErr?.name, anyErr?.message].filter(Boolean).join(\": \") || String(err);",
+      "  const cause = anyErr?.cause;",
+      "  if (!cause) return parts;",
+      "  return `${parts}; cause=${[cause.name, cause.code, cause.message].filter(Boolean).join(\"/\")}`;",
+      "}",
+      "",
+      "function postWithHttps(url: URL, headers: Record<string, string>, body: string, timeoutMs: number): Promise<{ status: number; statusText: string; text: string }> {",
+      "  return new Promise((resolve, reject) => {",
+      "    const req = https.request(url, {",
+      "      method: \"POST\",",
+      "      headers,",
+      "      timeout: timeoutMs,",
+      "    }, (res) => {",
+      "      const chunks: Buffer[] = [];",
+      "      res.on(\"data\", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));",
+      "      res.on(\"end\", () => {",
+      "        resolve({",
+      "          status: res.statusCode ?? 0,",
+      "          statusText: res.statusMessage ?? \"\",",
+      "          text: Buffer.concat(chunks).toString(\"utf8\"),",
+      "        });",
+      "      });",
+      "    });",
+      "    req.on(\"timeout\", () => {",
+      "      req.destroy(Object.assign(new Error(`https timeout after ${timeoutMs}ms`), { name: \"AbortError\" }));",
+      "    });",
+      "    req.on(\"error\", reject);",
+      "    req.write(body);",
+      "    req.end();",
+      "  });",
+      "}",
+      ""
+    ].join("\n");
+    if (!source.includes(anchor)) {
+      throw new Error("Could not find Weixin api.ts helper insertion point.");
+    }
+    source = source.replace(anchor, helper + anchor);
+  }
+  const oldCatch = [
+    "  } catch (err) {",
+    "    clearTimeout(t);",
+    "    throw err;",
+    "  }"
+  ].join("\n");
+  const newCatch = [
+    "  } catch (err) {",
+    "    clearTimeout(t);",
+    "    logger.warn(`${params.label} fetch failed, retrying with node:https: ${describeApiFetchError(err)}`);",
+    "    try {",
+    "      const fallback = await postWithHttps(url, hdrs, params.body, params.timeoutMs);",
+    "      logger.debug(`${params.label} https-fallback status=${fallback.status} raw=${redactBody(fallback.text)}`);",
+    "      if (fallback.status < 200 || fallback.status >= 300) {",
+    "        throw new Error(`${params.label} ${fallback.status}: ${fallback.text}`);",
+    "      }",
+    "      return fallback.text;",
+    "    } catch (fallbackErr) {",
+    "      logger.error(`${params.label} https-fallback failed: ${describeApiFetchError(fallbackErr)}`);",
+    "      throw err;",
+    "    }",
+    "  }"
+  ].join("\n");
+  if (source.includes(oldCatch) && !source.includes("retrying with node:https")) {
+    source = source.replace(oldCatch, newCatch);
+  }
+  fs.writeFileSync(apiPath, source, "utf8");
+  console.log(`Patched Weixin plugin fetch fallback: ${apiPath}`);
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -2358,6 +2543,8 @@ for (const asset of ["icon.ico", "icon.png", "logo.png"]) {
   const source = path.join(backupRoot, "dist", "assets", asset);
   if (fs.existsSync(source)) copyFile(source, path.join(targetApp, "dist", "assets", asset));
 }
+
+patchInstalledWeixinPlugin(usbRoot);
 
 console.log(`Restored original OpenClaw shell to ${targetApp}`);
 console.log("Added non-invasive Hermes tray menu entries.");
