@@ -17,7 +17,8 @@
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",
-    "fetch:hermes": "node scripts/fetch-hermes.mjs"
+    "fetch:hermes": "node scripts/fetch-hermes.mjs",
+    "restore:openclaw-shell": "node scripts/restore-openclaw-shell.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
