@@ -83,6 +83,97 @@ function patchHermesTrayMenu(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesRuntimeEnv(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  const envAnchor = [
+    "  getHermesEnv() {",
+    "    const root = this.getPortableRoot();",
+    "    const home = path$1.join(root, \"_home\");",
+    "    const data = path$1.join(root, \"data\");"
+  ].join("\n");
+  const envReplacement = [
+    "  getHermesEnv() {",
+    "    const root = this.getPortableRoot();",
+    "    const usbRoot = getAppRoot();",
+    "    const data = path$1.join(usbRoot, \"data\", \".hermes\");",
+    "    const home = path$1.join(data, \"home\");"
+  ].join("\n");
+  if (source.includes(envAnchor)) {
+    source = source.replace(envAnchor, envReplacement);
+  }
+  const mkdirAnchor = [
+    "    if (!fs$1.existsSync(home)) fs$1.mkdirSync(home, { recursive: true });",
+    "    if (!fs$1.existsSync(data)) fs$1.mkdirSync(data, { recursive: true });"
+  ].join("\n");
+  const mkdirReplacement = [
+    "    for (const dir of [data, home, path$1.join(data, \"config\"), path$1.join(data, \"cache\"), path$1.join(data, \"logs\"), path$1.join(data, \"memories\"), path$1.join(data, \"skills\"), path$1.join(data, \"tmp\")]) {",
+    "      if (!fs$1.existsSync(dir)) fs$1.mkdirSync(dir, { recursive: true });",
+    "    }"
+  ].join("\n");
+  if (source.includes(mkdirAnchor)) {
+    source = source.replace(mkdirAnchor, mkdirReplacement);
+  }
+  const homeEnvAnchor = [
+    "      HOME: home,",
+    "      USERPROFILE: home,",
+    "      HERMES_HOME: data,",
+    "      HERMES_BROWSER_OPENED: \"1\","
+  ].join("\n");
+  const homeEnvReplacement = [
+    "      HOME: home,",
+    "      USERPROFILE: home,",
+    "      XDG_CONFIG_HOME: path$1.join(data, \"config\"),",
+    "      XDG_CACHE_HOME: path$1.join(data, \"cache\"),",
+    "      HERMES_HOME: data,",
+    "      HERMES_LOG_DIR: path$1.join(data, \"logs\"),",
+    "      HERMES_MEMORY_PATH: path$1.join(data, \"memories\"),",
+    "      HERMES_SKILLS_PATH: path$1.join(data, \"skills\"),",
+    "      TMP: path$1.join(data, \"tmp\"),",
+    "      TEMP: path$1.join(data, \"tmp\"),",
+    "      HERMES_BROWSER_OPENED: \"1\","
+  ].join("\n");
+  if (source.includes(homeEnvAnchor)) {
+    source = source.replace(homeEnvAnchor, homeEnvReplacement);
+  }
+
+  const snapshotAnchor = [
+    "    return {",
+    "      status: this.status,",
+    "      pid: this.proc?.pid ?? null,",
+    "      memoryMb: this.memoryMb,",
+    "      iterations: this.iterations,",
+    "      memoryPath: this.memoryPath,",
+    "      model: this.model,",
+    "      lastError: this.lastError",
+    "    };"
+  ].join("\n");
+  const snapshotReplacement = [
+    "    const root = this.getPortableRoot();",
+    "    const hermesBin = this.getHermesBin();",
+    "    const python = this.getPortablePython();",
+    "    const data = path$1.join(getAppRoot(), \"data\", \".hermes\");",
+    "    return {",
+    "      status: this.status,",
+    "      pid: this.proc?.pid ?? this.dashboardProc?.pid ?? this.apiProc?.pid ?? null,",
+    "      memoryMb: this.memoryMb,",
+    "      iterations: this.iterations,",
+    "      memoryPath: path$1.join(data, \"memories\"),",
+    "      model: this.model,",
+    "      runtimeRoot: root,",
+    "      dataRoot: data,",
+    "      hermesReady: fs$1.existsSync(hermesBin),",
+    "      pythonReady: fs$1.existsSync(python),",
+    "      sourceReady: fs$1.existsSync(path$1.join(root, \"hermes-agent\", \"pyproject.toml\")),",
+    "      lastError: this.lastError",
+    "    };"
+  ].join("\n");
+  if (source.includes(snapshotAnchor)) {
+    source = source.replace(snapshotAnchor, snapshotReplacement);
+  }
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesHomeDashboard(filePath) {
   const marker = "home-hermes-card";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -160,6 +251,53 @@ function patchHermesHomeDashboard(filePath) {
     throw new Error("Could not find Home dashboard insertion point in OpenClaw renderer bundle.");
   }
   source = source.replace(panelAnchor, hermesPanel);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesEnvCheck(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("id: \"hermes\"")) return;
+
+  const listAnchor = "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" }\n";
+  const listReplacement = "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" },\n    { id: \"hermes\", title: \"Hermes Agent\", icon: \"icon-clawopenclaw\", status: \"checking\", statusText: \"检测中\", detail: \"\" }\n";
+  if (!source.includes(listAnchor)) {
+    throw new Error("Could not find env check item insertion point in OpenClaw renderer bundle.");
+  }
+  source = source.replace(listAnchor, listReplacement);
+
+  const portAnchor = [
+    "  function checkPort() {",
+    "    updateItem(\"port\", { status: \"checking\", statusText: \"检测中\", detail: \"\" });",
+    "    try {",
+    "      updateItem(\"port\", { status: \"pass\", statusText: \"正常\", detail: `端口可用` });",
+    "    } catch (e) {",
+    "      updateItem(\"port\", { status: \"fail\", statusText: \"异常\", detail: e.message });",
+    "    }",
+    "  }"
+  ].join("\n");
+  const portReplacement = [
+    portAnchor,
+    "  async function checkHermes() {",
+    "    updateItem(\"hermes\", { status: \"checking\", statusText: \"检测中\", detail: \"\" });",
+    "    try {",
+    "      const status = await window.uclaw.ipcGetHermesStatus();",
+    "      if (status?.hermesReady && status?.pythonReady) {",
+    "        updateItem(\"hermes\", { status: \"pass\", statusText: status.status === \"running\" ? \"运行中\" : \"已就绪\", detail: status.dataRoot || \"Hermes runtime ready\" });",
+    "      } else {",
+    "        updateItem(\"hermes\", { status: \"warn\", statusText: \"未完整\", detail: status?.lastError || \"Hermes runtime 待补齐\" });",
+    "      }",
+    "    } catch (e) {",
+    "      updateItem(\"hermes\", { status: \"fail\", statusText: \"异常\", detail: e.message });",
+    "    }",
+    "  }"
+  ].join("\n");
+  if (!source.includes(portAnchor)) {
+    throw new Error("Could not find checkPort function in OpenClaw renderer bundle.");
+  }
+  source = source.replace(portAnchor, portReplacement);
+
+  source = source.replace("    checkPort();\n", "    checkPort();\n    checkHermes();\n");
+  source = source.replace("    checkPort\n", "    checkPort,\n    checkHermes\n");
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -296,10 +434,12 @@ copyDir(path.join(backupRoot, "assets"), path.join(targetApp, "assets"));
 
 const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
+patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), path.join(targetApp, "dist", "preload", "index.js"));
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
+patchHermesEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
@@ -315,4 +455,5 @@ for (const asset of ["icon.ico", "icon.png", "logo.png"]) {
 console.log(`Restored original OpenClaw shell to ${targetApp}`);
 console.log("Added non-invasive Hermes tray menu entries.");
 console.log("Added Hermes controls to the original OpenClaw home console.");
+console.log("Added Hermes runtime status to the original environment checks.");
 console.log("Hermes dist-injected patch assets were intentionally not copied.");
