@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot();
 const runtimeRoot = path.join(usbRoot, "runtime");
 const dataRoot = path.join(usbRoot, "data", ".openclaw");
 const configFile = path.join(dataRoot, "openclaw.json");

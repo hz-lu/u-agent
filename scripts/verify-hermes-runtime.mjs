@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import net from "node:net";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot();
 const hermesRoot = path.join(usbRoot, "runtime", "HermesPortable");
 const hermesExe = path.join(hermesRoot, "venv", "Scripts", "hermes.exe");
 const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");

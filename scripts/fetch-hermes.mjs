@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot(projectRoot);
 const vendorRoot = path.join(projectRoot, "vendor", "hermes-agent");
 const existingRuntimeSource = path.join(usbRoot, "runtime", "HermesPortable", "hermes-agent");
 const repo = "https://github.com/NousResearch/hermes-agent.git";

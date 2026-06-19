@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot(projectRoot);
 const backupRoot = process.env.OPENCLAW_BASELINE_APP || path.join(usbRoot, "backups", "app-before-full-source-20260618164815");
 const targetApp = path.join(usbRoot, "win-unpacked", "resources", "app");
 const backupsRoot = path.join(usbRoot, "backups");
@@ -85,6 +86,44 @@ function patchHermesTrayMenu(filePath) {
 
 function patchHermesRuntimeEnv(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("codex-portable-openclaw-config-rewrite")) {
+    const anchor = "function getGatewayEnv() {";
+    const helper = [
+      "function rewritePortableOpenClawConfigPaths() {",
+      "  /* codex-portable-openclaw-config-rewrite */",
+      "  const configPath = path$1.join(getDataRoot(), \".openclaw\", \"openclaw.json\");",
+      "  try {",
+      "    if (!fs$1.existsSync(configPath)) return;",
+      "    const config = JSON.parse(fs$1.readFileSync(configPath, \"utf8\"));",
+      "    let changed = false;",
+      "    const extraDirs = config?.skills?.load?.extraDirs;",
+      "    if (Array.isArray(extraDirs)) {",
+      "      const normalized = extraDirs.map((entry) => {",
+      "        if (typeof entry !== \"string\") return entry;",
+      "        const clean = entry.replace(/\\\\/g, \"/\");",
+      "        if (/^[A-Za-z]:\\/skills\\/?$/i.test(clean) || clean === \"skills\" || clean.endsWith(\"/skills\")) return \"skills\";",
+      "        return entry;",
+      "      });",
+      "      if (JSON.stringify(normalized) !== JSON.stringify(extraDirs)) {",
+      "        config.skills.load.extraDirs = normalized;",
+      "        changed = true;",
+      "      }",
+      "    }",
+      "    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + \"\\n\", \"utf8\");",
+      "  } catch (err) {",
+      "    console.warn(\"[portable] failed to rewrite OpenClaw config paths:\", err instanceof Error ? err.message : String(err));",
+      "  }",
+      "}",
+      ""
+    ].join("\n");
+    if (source.includes(anchor)) {
+      source = source.replace(anchor, helper + anchor);
+    }
+  }
+  source = source.replace(
+    "function getGatewayEnv() {\n  const usbRuntime = path$1.join(getAppRoot(), \"runtime\");",
+    "function getGatewayEnv() {\n  rewritePortableOpenClawConfigPaths();\n  const usbRuntime = path$1.join(getAppRoot(), \"runtime\");"
+  );
   const gatewayEnvAnchor = [
     "  return {",
     "    ...process.env,",

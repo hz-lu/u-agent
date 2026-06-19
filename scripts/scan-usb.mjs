@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot();
 
 const paths = {
   usbRoot,

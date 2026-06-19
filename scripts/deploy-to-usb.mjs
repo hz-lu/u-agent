@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolvePortableRoot } from "./portable-root.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const usbRoot = process.env.AGENT_HUB_ROOT || "E:\\";
+const usbRoot = resolvePortableRoot(projectRoot);
 const targetApp = path.join(usbRoot, "win-unpacked", "resources", "app");
 const backupsRoot = path.join(usbRoot, "backups");
 
