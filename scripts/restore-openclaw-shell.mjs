@@ -464,6 +464,10 @@ function patchHermesHomeDashboard(filePath) {
     "    const hermesStatus = /* @__PURE__ */ ref({ status: \"idle\" });",
     "    const hermesLogs = /* @__PURE__ */ ref([]);",
     "    const activeLogSource = /* @__PURE__ */ ref(\"openclaw\");",
+    "    const hermesPanelTitle = /* @__PURE__ */ ref(\"\");",
+    "    const hermesPanelUrl = /* @__PURE__ */ ref(\"\");",
+    "    const hermesPanelKind = /* @__PURE__ */ ref(\"\");",
+    "    const hermesActionBusy = /* @__PURE__ */ ref(\"\");",
     "    const hermesRunning = computed(() => hermesStatus.value?.status === \"running\");",
     "    const hermesStatusText = computed(() => {",
     "      if (hermesStatus.value?.status === \"running\") return \"运行中\";",
@@ -505,16 +509,22 @@ function patchHermesHomeDashboard(filePath) {
     "    }",
     "    async function handleHermesStart() {",
     "      try {",
+    "        hermesActionBusy.value = \"start\";",
+    "        showToast(\"正在启动 Hermes...\");",
     "        await window.uclaw.ipcStartHermes({ open: false });",
     "        await refreshHermesStatus();",
     "        activeLogSource.value = \"hermes\";",
     "        showToast(\"Hermes 已启动\");",
     "      } catch (e) {",
     "        showToast(\"Hermes 启动失败: \" + e.message, true);",
+    "      } finally {",
+    "        hermesActionBusy.value = \"\";",
     "      }",
     "    }",
     "    async function handleHermesRestart() {",
     "      try {",
+    "        hermesActionBusy.value = \"restart\";",
+    "        showToast(\"正在重启 Hermes...\");",
     "        await window.uclaw.ipcStopHermes();",
     "        await window.uclaw.ipcStartHermes({ open: false });",
     "        await refreshHermesStatus();",
@@ -522,42 +532,56 @@ function patchHermesHomeDashboard(filePath) {
     "        showToast(\"Hermes 已重启\");",
     "      } catch (e) {",
     "        showToast(\"Hermes 重启失败: \" + e.message, true);",
+    "      } finally {",
+    "        hermesActionBusy.value = \"\";",
+    "      }",
+    "    }",
+    "    async function showHermesPanel(kind, title, targetUrl, starter) {",
+    "      hermesPanelKind.value = kind;",
+    "      hermesPanelTitle.value = title;",
+    "      hermesPanelUrl.value = \"\";",
+    "      hermesActionBusy.value = kind;",
+    "      try {",
+    "        showToast(\"正在打开 \" + title + \"...\");",
+    "        const status = await starter();",
+    "        await refreshHermesStatus();",
+    "        const url = targetUrl || status?.configUrl || hermesStatus.value?.configUrl;",
+    "        if (kind === \"api\") {",
+    "          hermesPanelUrl.value = \"\";",
+    "        } else if (window.uclaw.ipcGetHermesFrameUrl) {",
+    "          hermesPanelUrl.value = await window.uclaw.ipcGetHermesFrameUrl(url);",
+    "        } else {",
+    "          hermesPanelUrl.value = url;",
+    "        }",
+    "        showToast(title + \" 已打开\");",
+    "      } catch (e) {",
+    "        showToast(title + \" 打开失败: \" + e.message, true);",
+    "      } finally {",
+    "        hermesActionBusy.value = \"\";",
     "      }",
     "    }",
     "    async function handleHermesConfig() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesConfig();",
-    "        await refreshHermesStatus();",
-    "        showToast(\"Hermes 配置中心已打开\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes 配置中心打开失败: \" + e.message, true);",
-    "      }",
+    "      await showHermesPanel(\"config\", \"Hermes 配置中心\", \"http://127.0.0.1:17520\", () => window.uclaw.ipcStartHermes({ open: false }));",
     "    }",
     "    async function handleHermesDashboard() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesDashboard();",
-    "        await refreshHermesStatus();",
-    "        showToast(\"Hermes Dashboard 已打开\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes Dashboard 打开失败: \" + e.message, true);",
-    "      }",
+    "      await showHermesPanel(\"dashboard\", \"Hermes Dashboard\", \"http://127.0.0.1:9119\", () => window.uclaw.ipcStartHermesDashboard({ open: false }));",
     "    }",
     "    async function handleHermesApi() {",
-    "      try {",
-    "        await window.uclaw.ipcOpenHermesApiServer();",
-    "        await refreshHermesStatus();",
-    "        showToast(\"Hermes Agent API 已启动\");",
-    "      } catch (e) {",
-    "        showToast(\"Hermes Agent API 启动失败: \" + e.message, true);",
-    "      }",
+    "      await showHermesPanel(\"api\", \"Hermes Agent API\", \"http://127.0.0.1:8642/v1\", () => window.uclaw.ipcStartHermesApiServer({ open: false }));",
     "    }",
     "    async function handleHermesStop() {",
     "      try {",
+    "        hermesActionBusy.value = \"stop\";",
     "        await window.uclaw.ipcStopHermes();",
     "        await refreshHermesStatus();",
+    "        hermesPanelTitle.value = \"\";",
+    "        hermesPanelUrl.value = \"\";",
+    "        hermesPanelKind.value = \"\";",
     "        showToast(\"Hermes 已停止\");",
     "      } catch (e) {",
     "        showToast(\"Hermes 停止失败: \" + e.message, true);",
+    "      } finally {",
+    "        hermesActionBusy.value = \"\";",
     "      }",
     "    }"
   ].join("\n");
@@ -630,6 +654,20 @@ function patchHermesHomeDashboard(filePath) {
     "            hermesRunning.value ? (openBlock(), createElementBlock(\"button\", { key: 5, class: \"home-hermes-btn danger\", onClick: handleHermesStop, title: \"停止 Hermes 配置服务、Dashboard 和 Agent API\" }, \"停止\")) : createCommentVNode(\"\", true)",
     "          ])",
     "        ]),",
+    "        hermesPanelTitle.value ? (openBlock(), createElementBlock(\"div\", { key: 6, class: \"home-hermes-panel\" }, [",
+    "          createBaseVNode(\"div\", { class: \"home-hermes-panel-head\" }, [",
+    "            createBaseVNode(\"div\", null, [",
+    "              createBaseVNode(\"strong\", null, toDisplayString(hermesPanelTitle.value), 1),",
+    "              createBaseVNode(\"span\", null, toDisplayString(hermesActionBusy.value ? \"正在准备服务...\" : hermesPanelKind.value === \"api\" ? \"本地 OpenAI 兼容接口已准备给外部工具调用\" : \"已在下方内嵌打开\"), 1)",
+    "            ]),",
+    "            createBaseVNode(\"button\", { class: \"home-hermes-panel-close\", onClick: ($event) => { hermesPanelTitle.value = \"\"; hermesPanelUrl.value = \"\"; hermesPanelKind.value = \"\"; } }, \"收起\")",
+    "          ]),",
+    "          hermesPanelKind.value === \"api\" ? (openBlock(), createElementBlock(\"div\", { key: 0, class: \"home-hermes-api-info\" }, [",
+    "            createBaseVNode(\"div\", null, [createBaseVNode(\"span\", null, \"Base URL\"), createBaseVNode(\"code\", null, \"http://127.0.0.1:8642/v1\")]),",
+    "            createBaseVNode(\"div\", null, [createBaseVNode(\"span\", null, \"鉴权\"), createBaseVNode(\"code\", null, \"Bearer openclaw-local-hermes\")]),",
+    "            createBaseVNode(\"div\", null, [createBaseVNode(\"span\", null, \"用途\"), createBaseVNode(\"p\", null, \"供本地工具、子代理或 OpenAI 兼容客户端调用 Hermes Agent。普通用户聊天请到 AI 会话中切换 Hermes 或协同模式。\")])",
+    "          ])) : hermesPanelUrl.value ? (openBlock(), createElementBlock(\"iframe\", { key: 1, class: \"home-hermes-frame\", src: hermesPanelUrl.value }, null, 8, [\"src\"])) : (openBlock(), createElementBlock(\"div\", { key: 2, class: \"home-hermes-loading\" }, \"正在加载...\"))",
+    "        ])) : createCommentVNode(\"\", true),",
     "        createBaseVNode(\"div\", _hoisted_10$h, ["
   ].join("\n");
   if (!source.includes(panelAnchor)) {
@@ -825,6 +863,7 @@ function patchHermesAiChat(filePath) {
     "    const hermesMessages = /* @__PURE__ */ ref([]);",
     "    const hermesSending = /* @__PURE__ */ ref(false);",
     "    const hermesInputText = /* @__PURE__ */ ref(\"\");",
+    "    const hermesRunState = /* @__PURE__ */ ref(\"\");",
     "    const messagesArea = /* @__PURE__ */ ref(null);"
   ].join("\n");
   if (!source.includes(refsAnchor)) {
@@ -895,6 +934,40 @@ function patchHermesAiChat(filePath) {
     openWebAnchor,
     "    function selectAgentMode(mode) {",
     "      agentMode.value = mode;",
+    "      localStorage.setItem(\"uclaw_agent_mode\", mode);",
+    "      nextTick(() => scrollToBottom(0));",
+    "    }",
+    "    function saveHermesSession() {",
+    "      try {",
+    "        localStorage.setItem(\"uclaw_hermes_chat_state\", JSON.stringify({ messages: hermesMessages.value, input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value }));",
+    "        window.__uclawHermesChatState = { messages: hermesMessages.value, input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value };",
+    "        window.dispatchEvent(new CustomEvent(\"uclaw-hermes-chat-state\"));",
+    "      } catch {",
+    "      }",
+    "    }",
+    "    function loadHermesSession() {",
+    "      try {",
+    "        const liveState = window.__uclawHermesChatState;",
+    "        if (liveState) {",
+    "          if (Array.isArray(liveState.messages)) hermesMessages.value = liveState.messages;",
+    "          if (typeof liveState.input === \"string\") hermesInputText.value = liveState.input;",
+    "          if (typeof liveState.runState === \"string\") hermesRunState.value = liveState.runState;",
+    "          if ([\"openclaw\", \"hermes\", \"collab\"].includes(liveState.mode)) agentMode.value = liveState.mode;",
+    "        }",
+    "        const raw = localStorage.getItem(\"uclaw_hermes_chat_state\");",
+    "        if (raw) {",
+    "          const state = JSON.parse(raw);",
+    "          if (Array.isArray(state.messages)) hermesMessages.value = state.messages;",
+    "          if (typeof state.input === \"string\") hermesInputText.value = state.input;",
+    "          if (typeof state.runState === \"string\") hermesRunState.value = state.runState;",
+    "        }",
+    "        const mode = localStorage.getItem(\"uclaw_agent_mode\");",
+    "        if ([\"openclaw\", \"hermes\", \"collab\"].includes(mode)) agentMode.value = mode;",
+    "      } catch {",
+    "      }",
+    "    }",
+    "    function handleHermesStateEvent() {",
+    "      loadHermesSession();",
     "      nextTick(() => scrollToBottom(0));",
     "    }",
     "    function getHermesReply(result) {",
@@ -910,6 +983,7 @@ function patchHermesAiChat(filePath) {
     "        timestamp: Date.now(),",
     "        status",
     "      }];",
+    "      saveHermesSession();",
     "    }",
     "    function getLatestOpenClawAssistant(afterLength) {",
     "      const messages = store.currentMessages || [];",
@@ -947,6 +1021,8 @@ function patchHermesAiChat(filePath) {
     "      };",
     "      hermesMessages.value = [...hermesMessages.value, userMessage];",
     "      hermesSending.value = true;",
+    "      hermesRunState.value = \"Hermes 正在调用模型，切换页面不会中断显示记录。\";",
+    "      saveHermesSession();",
     "      scrollToBottom();",
     "      try {",
     "        const result = await window.uclaw.ipcHermesChat({",
@@ -963,6 +1039,7 @@ function patchHermesAiChat(filePath) {
     "          timestamp: Date.now(),",
     "          status: ok ? \"done\" : \"error\"",
     "        }];",
+    "        hermesRunState.value = ok ? \"Hermes 已完成回复。\" : \"Hermes 调用失败。\";",
     "      } catch (e) {",
     "        hermesMessages.value = [...hermesMessages.value, {",
     "          id: `hermes-error-${Date.now()}`,",
@@ -972,8 +1049,10 @@ function patchHermesAiChat(filePath) {
     "          timestamp: Date.now(),",
     "          status: \"error\"",
     "        }];",
+    "        hermesRunState.value = \"Hermes 调用失败。\";",
     "      } finally {",
     "        hermesSending.value = false;",
+    "        saveHermesSession();",
     "        scrollToBottom();",
     "      }",
     "    }",
@@ -994,6 +1073,8 @@ function patchHermesAiChat(filePath) {
     "        status: \"done\"",
     "      }];",
     "      hermesSending.value = true;",
+    "      hermesRunState.value = \"协同执行中：OpenClaw 先出草案，Hermes 再复核整理。\";",
+    "      saveHermesSession();",
     "      scrollToBottom();",
     "      const beforeLength = store.currentMessages.length;",
     "      try {",
@@ -1021,10 +1102,13 @@ function patchHermesAiChat(filePath) {
     "        });",
     "        const ok = result?.ok !== false;",
     "        appendHermesAssistant(ok ? getHermesReply(result) : `Hermes 协同复核失败: ${result?.error || \"unknown error\"}`, \"Hermes 协同复核\", ok ? \"done\" : \"error\");",
+    "        hermesRunState.value = ok ? \"协同流程已完成。\" : \"协同流程失败。\";",
     "      } catch (e) {",
     "        appendHermesAssistant(\"协同流程失败: \" + (e?.message || e), \"协同编排\", \"error\");",
+    "        hermesRunState.value = \"协同流程失败。\";",
     "      } finally {",
     "        hermesSending.value = false;",
+    "        saveHermesSession();",
     "        scrollToBottom();",
     "      }",
     "    }",
@@ -1049,6 +1133,23 @@ function patchHermesAiChat(filePath) {
     throw new Error("Could not find AiChat open-web handler.");
   }
   source = source.replace(openWebAnchor, openWebReplacement);
+
+  const mountedAnchor = [
+    "    onMounted(() => {",
+    "      nextTick(() => scrollToBottom());",
+    "    });"
+  ].join("\n");
+  const mountedReplacement = [
+    "    onMounted(() => {",
+    "      loadHermesSession();",
+    "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);",
+    "      nextTick(() => scrollToBottom());",
+    "    });"
+  ].join("\n");
+  if (!source.includes(mountedAnchor)) {
+    throw new Error("Could not find AiChat mounted scroll block.");
+  }
+  source = source.replace(mountedAnchor, mountedReplacement);
 
   const sendAnchor = [
     "    function handleSend(text2, attachments) {",
@@ -1082,6 +1183,8 @@ function patchHermesAiChat(filePath) {
     "      }",
     "      if (cmd === \"/new\" || cmd === \"/reset\") {",
     "        hermesMessages.value = [];",
+    "        hermesRunState.value = \"Hermes 会话已重置。\";",
+    "        saveHermesSession();",
     "        showToast(\"Hermes 会话已重置\");",
     "        return;",
     "      }",
@@ -1128,6 +1231,8 @@ function patchHermesAiChat(filePath) {
     "    async function confirmClear() {",
     "      if (agentMode.value !== \"openclaw\") {",
     "        hermesMessages.value = [];",
+    "        hermesRunState.value = \"Hermes 会话已清空。\";",
+    "        saveHermesSession();",
     "        showToast(\"Hermes 会话已清空\");",
     "        showClearDialog.value = false;",
     "        return;",
@@ -1218,7 +1323,7 @@ function patchHermesAiChat(filePath) {
     "                  loadingModels: loadingModels.value,",
     "                  onSelect: handleModelSelect,",
     "                  onRefresh: handleRefreshModels",
-    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"])) : (openBlock(), createElementBlock(\"div\", { key: 1, class: \"hermes-chat-status\" }, toDisplayString(agentMode.value === \"collab\" ? store.isReady ? \"协同就绪\" : \"需启动 Gateway\" : \"Hermes Agent\"), 1)),",
+    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"])) : (openBlock(), createElementBlock(\"div\", { key: 1, class: \"hermes-chat-status\" }, toDisplayString(agentMode.value === \"collab\" ? store.isReady ? \"协同：OpenClaw 草案 → Hermes 复核\" : \"协同需先启动 Gateway\" : hermesRunState.value || \"Hermes 独立会话\"), 1)),",
     "                agentMode.value !== \"openclaw\" ? (openBlock(), createElementBlock(\"button\", {",
     "                  key: 2,",
     "                  class: \"icon-btn hermes-open-btn\",",
@@ -1242,6 +1347,10 @@ function patchHermesAiChat(filePath) {
     "              activeMessages.value.length === 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_13, [..._cache[20] || (_cache[20] = ["
   );
   source = source.replace(
+    "            }, [\n              activeMessages.value.length === 0 ?",
+    "            }, [\n              agentMode.value === \"collab\" ? (openBlock(), createElementBlock(\"div\", { key: \"collab-note\", class: \"hermes-collab-note\" }, \"协作模式：OpenClaw 先生成草案，Hermes 再复核、补充记忆和技能视角，最后输出整理结果。\")) : createCommentVNode(\"\", true),\n              agentMode.value === \"hermes\" ? (openBlock(), createElementBlock(\"div\", { key: \"hermes-note\", class: \"hermes-collab-note\" }, \"Hermes 独立会话会复用模型配置页当前模型，并保存对话状态；切换页面回来仍可继续查看。\")) : createCommentVNode(\"\", true),\n              activeMessages.value.length === 0 ?"
+  );
+  source = source.replace(
     "              (openBlock(true), createElementBlock(Fragment, null, renderList(unref(store).currentMessages, (msg, idx) => {",
     "              (openBlock(true), createElementBlock(Fragment, null, renderList(activeMessages.value, (msg, idx) => {"
   );
@@ -1256,6 +1365,28 @@ function patchHermesAiChat(filePath) {
   source = source.replaceAll("unref(store).profile.aiColor", "activeProfile.value.aiColor");
   source = source.replaceAll("unref(store).profile.aiAvatarImg", "activeProfile.value.aiAvatarImg");
   source = source.replaceAll("unref(store).profile.aiAvatar", "activeProfile.value.aiAvatar");
+
+  const unmountedAnchor = [
+    "    function handleProfileSave(p2) {",
+    "      store.saveProfile(p2);",
+    "      showProfile.value = false;",
+    "    }",
+    "    onUnmounted(() => {",
+    "    });"
+  ].join("\n");
+  const unmountedReplacement = [
+    "    function handleProfileSave(p2) {",
+    "      store.saveProfile(p2);",
+    "      showProfile.value = false;",
+    "    }",
+    "    onUnmounted(() => {",
+    "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);",
+    "    });"
+  ].join("\n");
+  if (!source.includes(unmountedAnchor)) {
+    throw new Error("Could not find AiChat unmounted cleanup block.");
+  }
+  source = source.replace(unmountedAnchor, unmountedReplacement);
 
   const inputAnchor = [
     "                modelValue: unref(store).inputText,",
@@ -1370,6 +1501,95 @@ function patchHermesHomeStyles(filePath) {
 
 .home-hermes-btn:hover {
   filter: brightness(1.08);
+}
+
+.home-hermes-panel {
+  margin: -8px 0 16px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.home-hermes-panel-head {
+  min-height: 46px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.home-hermes-panel-head strong {
+  display: block;
+  color: #1f2937;
+  font-size: 14px;
+}
+
+.home-hermes-panel-head span {
+  display: block;
+  margin-top: 2px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.home-hermes-panel-close {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(100, 116, 139, 0.22);
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+}
+
+.home-hermes-frame {
+  display: block;
+  width: 100%;
+  height: min(620px, 68vh);
+  border: 0;
+  background: #fff;
+}
+
+.home-hermes-loading {
+  padding: 28px;
+  color: #64748b;
+  text-align: center;
+}
+
+.home-hermes-api-info {
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.home-hermes-api-info div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.home-hermes-api-info span {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.home-hermes-api-info code {
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: #eef2ff;
+  color: #1e3a8a;
+  word-break: break-all;
+}
+
+.home-hermes-api-info p {
+  margin: 0;
+  color: #334155;
+  line-height: 1.5;
+  font-size: 13px;
 }
 
 @media (max-width: 900px) {
@@ -1550,6 +1770,18 @@ function patchHermesAiChatStyles(filePath) {
     justify-content: flex-start;
     flex-wrap: wrap;
   }
+}
+
+.hermes-collab-note {
+  margin: 10px auto 12px;
+  max-width: 760px;
+  padding: 9px 12px;
+  border: 1px solid rgba(79, 131, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(79, 131, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 `;
   fs.writeFileSync(filePath, source, "utf8");
