@@ -253,9 +253,9 @@ export class HermesRuntime implements AgentRuntime {
 
   async getStatus(): Promise<AgentStatus> {
     this.ensurePortableDirs();
-    const memoryReport = this.verifyMemory({ silent: true });
+    const memoryReport = this.readMemoryReport() || this.createMemoryReportSnapshot();
     const growthReport = this.readSkillGrowthReport();
-    const skillReport = this.readSkillReport() || this.syncAndVerifySkills({ silent: true });
+    const skillReport = this.readSkillReport() || this.createSkillReportSnapshot();
     const configReady = await checkTcpPort(17520);
     const dashboardReady = await checkTcpPort(9119);
     const apiReady = await checkTcpPort(8642);
@@ -882,6 +882,25 @@ export class HermesRuntime implements AgentRuntime {
     }
   }
 
+  private createSkillReportSnapshot(): HermesSkillReport {
+    const mirrorRoot = path.join(this.dataRoot, "skills", "openclaw");
+    return {
+      ok: false,
+      checkedAt: new Date().toISOString(),
+      sourceCount: this.findOpenClawSkillSources().length,
+      mirroredCount: this.countSkillFiles(mirrorRoot),
+      visibleCount: 0,
+      commandCount: 0,
+      usageTracked: fs.existsSync(path.join(this.dataRoot, "skills", ".usage.json")),
+      mirrorRoot,
+      path: mirrorRoot,
+      reportPath: this.skillReportPath(),
+      sampleCommands: [],
+      missingNames: [],
+      error: "Skill visibility has not been verified yet."
+    };
+  }
+
   private readJsonSafe(filePath: string): unknown | null {
     try {
       if (!fs.existsSync(filePath)) return null;
@@ -911,6 +930,41 @@ export class HermesRuntime implements AgentRuntime {
     } catch {
       return null;
     }
+  }
+
+  private readMemoryReport(): HermesMemoryReport | null {
+    const reportPath = this.memoryReportPath();
+    if (!fs.existsSync(reportPath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(reportPath, "utf8")) as HermesMemoryReport;
+    } catch {
+      return null;
+    }
+  }
+
+  private createMemoryReportSnapshot(): HermesMemoryReport {
+    const memoryDir = path.join(this.dataRoot, "memories");
+    return {
+      ok: false,
+      checkedAt: new Date().toISOString(),
+      memoryEnabled: true,
+      userProfileEnabled: true,
+      memoryDir,
+      memoryFile: path.join(memoryDir, "MEMORY.md"),
+      userFile: path.join(memoryDir, "USER.md"),
+      configPath: path.join(this.dataRoot, "config.yaml"),
+      reportPath: this.memoryReportPath(),
+      memoryEntryCount: 0,
+      userEntryCount: 0,
+      memoryFileExists: fs.existsSync(path.join(memoryDir, "MEMORY.md")),
+      userFileExists: fs.existsSync(path.join(memoryDir, "USER.md")),
+      memoryWritable: false,
+      userWritable: false,
+      memorySnapshotReady: false,
+      userSnapshotReady: false,
+      testEntryRemoved: false,
+      error: "Memory persistence has not been verified yet."
+    };
   }
 
   private writeJson(filePath: string, payload: unknown): void {
