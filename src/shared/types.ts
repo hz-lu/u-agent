@@ -23,6 +23,7 @@ export interface AgentStatus {
   startedAt?: string;
   diagnostics: string[];
   capabilities: Record<string, boolean>;
+  hermesSkills?: HermesSkillReport;
 }
 
 export interface ModelConfig {
@@ -81,6 +82,27 @@ export interface ActionResult {
   message: string;
   path?: string;
   details?: string[];
+}
+
+export interface HermesSkillReport {
+  ok: boolean;
+  checkedAt: string;
+  sourceCount: number;
+  copied?: number;
+  mirroredCount: number;
+  visibleCount: number;
+  commandCount: number;
+  invocationCommand?: string;
+  invocationLoaded?: boolean;
+  invocationStatus?: "not-run" | "passed" | "failed";
+  usageTracked: boolean;
+  mirrorRoot: string;
+  path?: string;
+  reportPath: string;
+  sampleCommands: string[];
+  missingNames: string[];
+  unchanged?: boolean;
+  error?: string;
 }
 
 export interface ConfigImportResult extends ActionResult {

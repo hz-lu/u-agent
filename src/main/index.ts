@@ -71,6 +71,7 @@ function registerIpc(): void {
   ipcMain.handle("hermes:write-config", async (_, config) => hermes.writeConfig(config));
   ipcMain.handle("hermes:test-connector", async (_, id: ConnectorConfig["id"]) => hermes.testConnector(id));
   ipcMain.handle("hermes:test-sandbox", async (_, id: SandboxConfig["id"]) => hermes.testSandbox(id));
+  ipcMain.handle("hermes:sync-skills", async () => hermes.syncAndVerifySkills({ silent: false }));
   ipcMain.handle("hermes:add-schedule", async (_, input: ScheduleInput) => hermes.addSchedule(input));
   ipcMain.handle("hermes:remove-schedule", async (_, id: string) => hermes.removeSchedule(id));
   ipcMain.handle("hermes:export-config", async () => hermes.exportConfig());

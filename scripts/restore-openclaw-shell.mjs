@@ -32,6 +32,14 @@ function copyDir(source, target) {
   fs.cpSync(source, target, { recursive: true });
 }
 
+function replaceMethodBlock(source, startMarker, nextMarker, replacement, label) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error(`Could not find ${label} start marker.`);
+  const end = source.indexOf(nextMarker, start + startMarker.length);
+  if (end < 0) throw new Error(`Could not find ${label} end marker.`);
+  return source.slice(0, start) + replacement + source.slice(end);
+}
+
 function patchHermesTrayMenu(filePath) {
   const marker = "label: \"🧠 Hermes Agent\"";
   let source = fs.readFileSync(filePath, "utf8");
@@ -243,15 +251,16 @@ function patchHermesRuntimeEnv(filePath) {
   }
 
   const syncMethodMarker = "  syncOpenClawSkillsToHermes(options = {}) {";
-  if (!source.includes(syncMethodMarker)) {
-    const repairAnchor = "  repairShims() {";
-    const syncMethod = [
+  const repairAnchor = "  repairShims() {";
+  const syncMethod = [
       "  syncOpenClawSkillsToHermes(options = {}) {",
       "    const silent = options?.silent !== false;",
       "    const hermesSkillsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"skills\");",
       "    const openClawTargetRoot = path$1.join(hermesSkillsRoot, \"openclaw\");",
       "    const manifestPath = path$1.join(openClawTargetRoot, \".openclaw_sync_manifest.json\");",
+      "    const reportPath = path$1.join(getAppRoot(), \"data\", \".hermes\", \"reports\", \"skills\", \"visibility-last.json\");",
       "    fs$1.mkdirSync(openClawTargetRoot, { recursive: true });",
+      "    fs$1.mkdirSync(path$1.dirname(reportPath), { recursive: true });",
       "    function readJsonSafe(filePath) {",
       "      try {",
       "        if (!fs$1.existsSync(filePath)) return null;",
@@ -260,8 +269,30 @@ function patchHermesRuntimeEnv(filePath) {
       "        return null;",
       "      }",
       "    }",
+      "    function writeJson(filePath, value) {",
+      "      fs$1.mkdirSync(path$1.dirname(filePath), { recursive: true });",
+      "      fs$1.writeFileSync(filePath, JSON.stringify(value, null, 2) + \"\\n\", \"utf8\");",
+      "    }",
       "    function safeSkillDirName(name, fallback) {",
       "      return String(name || fallback || \"skill\").replace(/[\\\\/:*?\\\"<>|]/g, \"_\").trim() || \"skill\";",
+      "    }",
+      "    function skillSlug(value) {",
+      "      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");",
+      "    }",
+      "    function uniqueTargetName(name, used) {",
+      "      let candidate = name;",
+      "      let index = 2;",
+      "      while (used.has(candidate.toLowerCase())) {",
+      "        candidate = name + \"-\" + index;",
+      "        index += 1;",
+      "      }",
+      "      used.add(candidate.toLowerCase());",
+      "      return candidate;",
+      "    }",
+      "    function shouldCopySkillPath(rootDir, sourcePath) {",
+      "      const rel = path$1.relative(rootDir, sourcePath).replace(/\\\\/g, \"/\");",
+      "      const excluded = new Set([\".git\", \".github\", \".hub\", \".archive\", \"node_modules\", \"__pycache__\", \".venv\", \"venv\", \"dist\", \"build\", \".next\", \".cache\"]);",
+      "      return !rel.split(\"/\").some((part) => excluded.has(part));",
       "    }",
       "    function findSkillSources(rootDir) {",
       "      const rows = [];",
@@ -282,6 +313,36 @@ function patchHermesRuntimeEnv(filePath) {
       "      }",
       "      return rows;",
       "    }",
+      "    function verifyHermesSkills(python, sourceRoot, env2) {",
+      "      if (!fs$1.existsSync(python)) throw new Error(\"Hermes portable Python was not found: \" + python);",
+      "      if (!fs$1.existsSync(path$1.join(sourceRoot, \"agent\", \"skill_commands.py\"))) throw new Error(\"Hermes skill_commands.py was not found: \" + sourceRoot);",
+      "      const script = [",
+      "        \"import json, sys\",",
+      "        \"sys.path.insert(0, \" + JSON.stringify(sourceRoot) + \")\",",
+      "        \"from agent.skill_commands import reload_skills, get_skill_commands\",",
+      "        \"result = reload_skills()\",",
+      "        \"commands = get_skill_commands()\",",
+      "        \"names = sorted(set((info or {}).get('name') or key.lstrip('/') for key, info in commands.items()))\",",
+      "        \"cmd_keys = sorted(commands.keys())\",",
+      "        \"print(json.dumps({'ok': True, 'reload': result, 'commands': cmd_keys, 'names': names}, ensure_ascii=False))\"",
+      "      ].join(\"; \");",
+      "      const result = child_process.spawnSync(python, [\"-c\", script], {",
+      "        cwd: path$1.join(getAppRoot(), \"data\", \".hermes\"),",
+      "        env: env2,",
+      "        encoding: \"utf8\",",
+      "        windowsHide: true,",
+      "        timeout: 45000",
+      "      });",
+      "      if (result.status !== 0) throw new Error((result.stderr || result.stdout || \"Hermes skill scan exited with \" + result.status).trim());",
+      "      const parsed = JSON.parse((result.stdout || \"{}\").trim());",
+      "      return {",
+      "        ok: !!parsed.ok,",
+      "        names: Array.isArray(parsed.names) ? parsed.names.map(String) : [],",
+      "        commands: Array.isArray(parsed.commands) ? parsed.commands.map(String) : [],",
+      "        invocationCommand: \"\",",
+      "        invocationLoaded: false",
+      "      };",
+      "    }",
       "    try {",
       "      const config = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\")) || {};",
       "      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];",
@@ -292,43 +353,70 @@ function patchHermesRuntimeEnv(filePath) {
       "      for (const rootDir of sourceRoots) {",
       "        for (const item of findSkillSources(rootDir)) {",
       "          const disabled = skillEntries[item.name]?.enabled === false || skillEntries[item.key]?.enabled === false;",
-      "          const targetName = safeSkillDirName(item.key || item.name, item.name);",
-      "          if (disabled || seenKeys.has(targetName)) continue;",
-      "          seenKeys.add(targetName);",
+      "          if (disabled) continue;",
+      "          const targetName = uniqueTargetName(safeSkillDirName(item.key || item.name, item.name), seenKeys);",
       "          const stat = fs$1.statSync(item.skillFile);",
       "          sources.push({ ...item, targetName, skillMtimeMs: Math.round(stat.mtimeMs), rootDir });",
       "        }",
       "      }",
-      "      const nextManifest = { version: 2, sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };",
+      "      const nextManifest = { version: 3, syncedAt: new Date().toISOString(), sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };",
       "      const oldManifest = readJsonSafe(manifestPath);",
-      "      if (oldManifest && JSON.stringify(oldManifest) === JSON.stringify(nextManifest)) {",
-      "        return { ok: true, copied: 0, total: sources.length, path: openClawTargetRoot, unchanged: true };",
-      "      }",
-      "      fs$1.rmSync(openClawTargetRoot, { recursive: true, force: true });",
-      "      fs$1.mkdirSync(openClawTargetRoot, { recursive: true });",
-      "      fs$1.writeFileSync(path$1.join(openClawTargetRoot, \"DESCRIPTION.md\"), \"# OpenClaw Skills\\n\\nOpenClaw skills synchronized from the portable USB skills directory. Hermes scans this folder recursively before each run.\\n\", \"utf8\");",
+      "      const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: nextManifest.syncedAt }) === JSON.stringify(nextManifest);",
       "      let copied = 0;",
-      "      for (const item of sources) {",
-      "        const target = path$1.join(openClawTargetRoot, item.targetName);",
-      "        if (fs$1.statSync(item.source).isDirectory()) {",
-      "          fs$1.cpSync(item.source, target, { recursive: true });",
-      "        } else {",
-      "          fs$1.mkdirSync(target, { recursive: true });",
-      "          fs$1.copyFileSync(item.source, path$1.join(target, \"SKILL.md\"));",
+      "      if (!unchanged) {",
+      "        fs$1.rmSync(openClawTargetRoot, { recursive: true, force: true });",
+      "        fs$1.mkdirSync(openClawTargetRoot, { recursive: true });",
+      "        fs$1.writeFileSync(path$1.join(openClawTargetRoot, \"DESCRIPTION.md\"), \"# OpenClaw Skills\\n\\nOpenClaw skills synchronized from the portable USB skills directory and verified through Hermes native skill command scanning.\\n\", \"utf8\");",
+      "        for (const item of sources) {",
+      "          const target = path$1.join(openClawTargetRoot, item.targetName);",
+      "          if (fs$1.statSync(item.source).isDirectory()) {",
+      "            fs$1.cpSync(item.source, target, { recursive: true, filter: (sourcePath) => shouldCopySkillPath(item.source, sourcePath) });",
+      "          } else {",
+      "            fs$1.mkdirSync(target, { recursive: true });",
+      "            fs$1.copyFileSync(item.source, path$1.join(target, \"SKILL.md\"));",
+      "          }",
+      "          copied += 1;",
       "        }",
-      "        copied += 1;",
+      "        fs$1.writeFileSync(manifestPath, JSON.stringify(nextManifest, null, 2) + \"\\n\", \"utf8\");",
       "      }",
-      "      fs$1.writeFileSync(manifestPath, JSON.stringify(nextManifest, null, 2), \"utf8\");",
-      "      if (!silent) safeSend(\"hermes-log\", { type: \"system\", msg: \"[skills] synced \" + copied + \" OpenClaw skills into \" + openClawTargetRoot });",
-      "      return { ok: true, copied, total: sources.length, path: openClawTargetRoot, unchanged: false };",
+      "      const verification = verifyHermesSkills(this.getPortablePython(), path$1.join(this.getPortableRoot(), \"hermes-agent\"), this.getHermesEnv());",
+      "      const visibleSet = new Set([...verification.names, ...verification.commands.map((cmd) => cmd.replace(/^\\//, \"\"))].map(skillSlug));",
+      "      const missingNames = sources.map((item) => item.name).filter((name) => !visibleSet.has(skillSlug(name))).slice(0, 50);",
+      "      const report = {",
+      "        ok: verification.ok,",
+      "        checkedAt: new Date().toISOString(),",
+      "        sourceCount: sources.length,",
+      "        copied,",
+      "        mirroredCount: sources.length,",
+      "        visibleCount: verification.names.length,",
+      "        commandCount: verification.commands.length,",
+      "        invocationCommand: \"\",",
+      "        invocationLoaded: false,",
+      "        invocationStatus: \"not-run\",",
+      "        usageTracked: fs$1.existsSync(path$1.join(hermesSkillsRoot, \".usage.json\")),",
+      "        mirrorRoot: openClawTargetRoot,",
+      "        path: openClawTargetRoot,",
+      "        reportPath,",
+      "        sampleCommands: verification.commands.slice(0, 20),",
+      "        missingNames,",
+      "        unchanged",
+      "      };",
+      "      writeJson(reportPath, report);",
+      "      if (!silent) safeSend(\"hermes-log\", { type: \"system\", msg: \"[skills] synced=\" + copied + \" source=\" + report.sourceCount + \" visible=\" + report.visibleCount + \" commands=\" + report.commandCount + \" report=\" + reportPath });",
+      "      return report;",
       "    } catch (err) {",
       "      const error = err instanceof Error ? err.message : String(err);",
+      "      const report = { ok: false, checkedAt: new Date().toISOString(), copied: 0, sourceCount: 0, mirroredCount: 0, visibleCount: 0, commandCount: 0, usageTracked: fs$1.existsSync(path$1.join(hermesSkillsRoot, \".usage.json\")), mirrorRoot: openClawTargetRoot, path: openClawTargetRoot, reportPath, sampleCommands: [], missingNames: [], error };",
+      "      writeJson(reportPath, report);",
       "      safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[skills] sync failed: \" + error });",
-      "      return { ok: false, copied: 0, total: 0, path: openClawTargetRoot, error };",
+      "      return report;",
       "    }",
       "  }",
       ""
     ].join("\n");
+  if (source.includes(syncMethodMarker)) {
+    source = replaceMethodBlock(source, syncMethodMarker, repairAnchor, syncMethod, "Hermes skills sync method");
+  } else {
     if (!source.includes(repairAnchor)) {
       throw new Error("Could not find Hermes repairShims insertion point.");
     }
@@ -382,7 +470,7 @@ function patchHermesRuntimeEnv(filePath) {
     "    }",
     "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));",
     "    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
-    "    this.syncOpenClawSkillsToHermes({ silent: true });",
+    "    const skillReport = this.syncOpenClawSkillsToHermes({ silent: true });",
     "    const skillCount = countHermesSkills(skillsRoot);",
     "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
     "    return {",
@@ -410,6 +498,12 @@ function patchHermesRuntimeEnv(filePath) {
     "      configDirReady: fs$1.existsSync(path$1.join(data, \"config\")),",
     "      skillsReady: fs$1.existsSync(skillsRoot),",
     "      skillCount,",
+    "      skillVisibleCount: skillReport?.visibleCount || 0,",
+    "      skillCommandCount: skillReport?.commandCount || 0,",
+    "      skillMissingNames: skillReport?.missingNames || [],",
+    "      skillReportPath: skillReport?.reportPath || path$1.join(data, \"reports\", \"skills\", \"visibility-last.json\"),",
+    "      skillsUsageTracked: !!skillReport?.usageTracked,",
+    "      skillsReport: skillReport,",
     "      modelBridgeReady: !!primaryModel,",
     "      modelBridge: primaryModel || \"未配置 OpenClaw 当前模型\",",
     "      lastError: this.lastError",
@@ -417,6 +511,14 @@ function patchHermesRuntimeEnv(filePath) {
   ].join("\n");
   if (source.includes(snapshotAnchor)) {
     source = source.replace(snapshotAnchor, snapshotReplacement);
+  } else if (source.includes("  snapshot() {")) {
+    const snapshotMethod = [
+      "  snapshot() {",
+      ...snapshotReplacement.split("\n"),
+      "  }",
+      ""
+    ].join("\n");
+    source = replaceMethodBlock(source, "  snapshot() {", "  emitStatus() {", snapshotMethod, "Hermes snapshot method");
   }
 
   const chatStart = source.indexOf("  async chat(options = {}) {");
@@ -1097,7 +1199,18 @@ function patchHermesHomeDashboard(filePath) {
 
 function patchHermesEnvCheck(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("id: \"hermes-cli\"")) return;
+  if (source.includes("id: \"hermes-cli\"")) {
+    source = source.replace(
+      "updateItem(\"hermes-skills\", status?.skillsReady ? { status: \"pass\", statusText: \"可用\", detail: `${status.skillCount || 0} 个技能可供 Hermes 使用` } : { status: \"warn\", statusText: \"待同步\", detail: status?.skillsRoot || \"请在技能管理页同步\" });",
+      "updateItem(\"hermes-skills\", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: \"pass\", statusText: \"可见\", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || \"未生成\"}` } : { status: \"warn\", statusText: \"待验证\", detail: status?.skillReportPath || status?.skillsRoot || \"请在技能管理页同步并验证\" });"
+    );
+    source = source.replace(
+      "updateItem(\"hermes-skills\", status?.skillsReady ? { status: \"pass\", statusText: \"鍙敤\", detail: `${status.skillCount || 0} 涓妧鑳藉彲渚?Hermes 浣跨敤` } : { status: \"warn\", statusText: \"寰呭悓姝\", detail: status?.skillsRoot || \"璇峰湪鎶€鑳界鐞嗛〉鍚屾\" });",
+      "updateItem(\"hermes-skills\", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: \"pass\", statusText: \"可见\", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || \"未生成\"}` } : { status: \"warn\", statusText: \"待验证\", detail: status?.skillReportPath || status?.skillsRoot || \"请在技能管理页同步并验证\" });"
+    );
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
 
   const listAnchor = "    { id: \"port\", title: \"端口状态\", icon: \"icon-clawzhandianduankouhao\", status: \"checking\", statusText: \"检测中\", detail: \"\" }\n";
   const listReplacement = [
@@ -1139,7 +1252,7 @@ function patchHermesEnvCheck(filePath) {
     "      updateItem(\"hermes-cli\", status?.hermesReady && status?.sourceReady ? { status: \"pass\", statusText: \"正常\", detail: status.hermesBin || \"Hermes CLI 已就绪\" } : { status: \"fail\", statusText: \"缺失\", detail: status?.lastError || status?.hermesBin || \"Hermes CLI 或源码不完整\" });",
     "      updateItem(\"hermes-data\", status?.dataReady && status?.configDirReady ? { status: \"pass\", statusText: \"零痕迹\", detail: status.dataRoot || \"data/.hermes\" } : { status: \"warn\", statusText: \"待初始化\", detail: status?.dataRoot || \"首次启动后创建 U 盘数据目录\" });",
     "      updateItem(\"hermes-model\", status?.modelBridgeReady ? { status: \"pass\", statusText: \"已桥接\", detail: status.modelBridge } : { status: \"warn\", statusText: \"未配置\", detail: \"在模型配置页应用模型后，Hermes 自动复用\" });",
-    "      updateItem(\"hermes-skills\", status?.skillsReady ? { status: \"pass\", statusText: \"可用\", detail: `${status.skillCount || 0} 个技能可供 Hermes 使用` } : { status: \"warn\", statusText: \"待同步\", detail: status?.skillsRoot || \"请在技能管理页同步\" });",
+    "      updateItem(\"hermes-skills\", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: \"pass\", statusText: \"可见\", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || \"未生成\"}` } : { status: \"warn\", statusText: \"待验证\", detail: status?.skillReportPath || status?.skillsRoot || \"请在技能管理页同步并验证\" });",
     "      const ports = [`配置 ${status?.configReady ? \"就绪\" : \"未启动\"}`, `Dashboard ${status?.dashboardReady ? \"就绪\" : \"未启动\"}`, `API ${status?.apiServerReady ? \"就绪\" : \"未启动\"}`].join(\" / \");",
     "      updateItem(\"hermes-ports\", status?.configReady || status?.dashboardReady || status?.apiServerReady ? { status: \"pass\", statusText: \"运行中\", detail: ports } : { status: \"warn\", statusText: \"未启动\", detail: \"首页点击启动 Hermes 后检查端口\" });",
     "    } catch (e) {",
@@ -1182,7 +1295,19 @@ function patchHermesModelConfig(filePath) {
 
 function patchHermesSkillManagement(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("skill-hermes-sync")) return;
+  const richSyncMessage = "hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;";
+  if (source.includes("skill-hermes-sync")) {
+    source = source.replace(
+      "hermesSyncMessage.value = `已同步 ${result.copied || 0} 个技能到 Hermes`;",
+      richSyncMessage
+    );
+    source = source.replace(
+      /hermesSyncMessage\.value = `[^`]*\$\{result\.copied \|\| 0\}[^`]*Hermes`;/,
+      richSyncMessage
+    );
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
 
   const setupAnchor = [
     "    const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);",
@@ -1198,7 +1323,7 @@ function patchHermesSkillManagement(filePath) {
     "      try {",
     "        const result = await window.uclaw.ipcSyncHermesSkills();",
     "        if (!result?.ok) throw new Error(result?.error || \"同步失败\");",
-    "        hermesSyncMessage.value = `已同步 ${result.copied || 0} 个技能到 Hermes`;",
+    `        ${richSyncMessage}`,
     "      } catch (err) {",
     "        hermesSyncMessage.value = \"同步失败: \" + (err?.message || err);",
     "      } finally {",

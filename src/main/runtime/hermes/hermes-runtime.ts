@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { BrowserWindow, shell } from "electron";
 import { detectRuntimePlatform } from "../../../shared/platform.js";
 import {
@@ -11,6 +12,7 @@ import {
   ConfigImportResult,
   ConnectorConfig,
   HermesConfig,
+  HermesSkillReport,
   SandboxConfig,
   ScheduleConfig,
   ScheduleInput
@@ -248,6 +250,8 @@ export class HermesRuntime implements AgentRuntime {
   }
 
   async getStatus(): Promise<AgentStatus> {
+    this.ensurePortableDirs();
+    const skillReport = this.readSkillReport() || this.syncAndVerifySkills({ silent: true });
     const configReady = await checkTcpPort(17520);
     const dashboardReady = await checkTcpPort(9119);
     const apiReady = await checkTcpPort(8642);
@@ -285,7 +289,11 @@ export class HermesRuntime implements AgentRuntime {
         `python=${python || "missing"}`,
         `node=${node || "missing"}`,
         `source=${sourcePresent ? "present" : "missing"}`,
-        `configServer=${configServerPresent ? "present" : "missing"}`
+        `configServer=${configServerPresent ? "present" : "missing"}`,
+        `skills.source=${skillReport.sourceCount}`,
+        `skills.visible=${skillReport.visibleCount}`,
+        `skills.commands=${skillReport.commandCount}`,
+        `skills.report=${skillReport.reportPath}`
       ],
       capabilities: {
         sourcePresent,
@@ -295,16 +303,20 @@ export class HermesRuntime implements AgentRuntime {
         configServerPresent,
         memoryReady: fs.existsSync(path.join(this.dataRoot, "memories")),
         skillsReady: fs.existsSync(path.join(this.dataRoot, "skills")),
+        skillsVisible: skillReport.ok && skillReport.visibleCount > 0,
+        skillsUsageTracked: skillReport.usageTracked,
         connectorsReady: fs.existsSync(path.join(this.dataRoot, "connectors")),
         schedulesReady: fs.existsSync(path.join(this.dataRoot, "cron")),
         sandboxesReady: fs.existsSync(path.join(this.dataRoot, "sandboxes"))
-      }
+      },
+      hermesSkills: skillReport
     };
   }
 
   async start(): Promise<AgentStatus> {
     this.ensurePortableDirs();
     this.migrateLegacyData();
+    this.syncAndVerifySkills({ silent: false });
     this.writePortableArtifacts();
     await this.startConfigServer(false);
     await this.startDashboard(false);
@@ -397,6 +409,7 @@ export class HermesRuntime implements AgentRuntime {
   }
 
   async chat(message: string, messages: Array<{ role: string; content: string }> = []): Promise<ChatResponse> {
+    this.syncAndVerifySkills({ silent: true });
     await this.startApiServer(false);
     if (!(await checkTcpPort(8642, "127.0.0.1", 2000))) {
       return { ok: false, error: "Hermes Agent API is not ready on 127.0.0.1:8642." };
@@ -438,6 +451,70 @@ export class HermesRuntime implements AgentRuntime {
     });
   }
 
+  syncAndVerifySkills(options: { silent?: boolean } = {}): HermesSkillReport {
+    this.ensurePortableDirs();
+    const reportPath = this.skillReportPath();
+    const mirrorRoot = path.join(this.dataRoot, "skills", "openclaw");
+    try {
+      const sync = this.syncOpenClawSkillsToHermes();
+      const verification = this.verifyHermesSkillVisibility();
+      const visibleNames = new Set([...verification.names, ...verification.commands.map((command) => command.replace(/^\//, ""))].map((name) => this.skillSlug(name)));
+      const missingNames = sync.names.filter((name) => !visibleNames.has(this.skillSlug(name))).slice(0, 50);
+      const report: HermesSkillReport = {
+        ok: verification.ok,
+        checkedAt: new Date().toISOString(),
+        sourceCount: sync.sourceCount,
+        copied: sync.copied,
+        mirroredCount: sync.mirroredCount,
+        visibleCount: verification.names.length,
+        commandCount: verification.commands.length,
+        invocationCommand: "",
+        invocationLoaded: false,
+        invocationStatus: "not-run",
+        usageTracked: fs.existsSync(path.join(this.dataRoot, "skills", ".usage.json")),
+        mirrorRoot,
+        path: mirrorRoot,
+        reportPath,
+        sampleCommands: verification.commands.slice(0, 20),
+        missingNames,
+        unchanged: sync.unchanged
+      };
+      this.writeJson(reportPath, report);
+      if (!options.silent) {
+        this.logSink({
+          agent: "hermes",
+          level: report.ok ? "system" : "error",
+          message: `Hermes skills verified: source=${report.sourceCount}, mirrored=${report.mirroredCount}, visible=${report.visibleCount}, commands=${report.commandCount}`,
+          at: new Date().toISOString()
+        });
+      }
+      return report;
+    } catch (error) {
+      const report: HermesSkillReport = {
+        ok: false,
+        checkedAt: new Date().toISOString(),
+        sourceCount: 0,
+        mirroredCount: this.countSkillFiles(mirrorRoot),
+        visibleCount: 0,
+        commandCount: 0,
+        usageTracked: fs.existsSync(path.join(this.dataRoot, "skills", ".usage.json")),
+        mirrorRoot,
+        reportPath,
+        sampleCommands: [],
+        missingNames: [],
+        error: error instanceof Error ? error.message : String(error)
+      };
+      this.writeJson(reportPath, report);
+      this.logSink({
+        agent: "hermes",
+        level: "error",
+        message: `Hermes skills verification failed: ${report.error}`,
+        at: new Date().toISOString()
+      });
+      return report;
+    }
+  }
+
   private ensurePortableDirs(): void {
     for (const dir of [
       this.dataRoot,
@@ -452,6 +529,7 @@ export class HermesRuntime implements AgentRuntime {
       path.join(this.dataRoot, "sandboxes"),
       path.join(this.dataRoot, "exports"),
       path.join(this.dataRoot, "reports"),
+      path.join(this.dataRoot, "reports", "skills"),
       path.join(this.dataRoot, "reports", "connectors"),
       path.join(this.dataRoot, "reports", "sandboxes"),
       path.join(this.dataRoot, "tmp")
@@ -500,6 +578,213 @@ export class HermesRuntime implements AgentRuntime {
       TEMP: path.join(this.dataRoot, "tmp"),
       [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path.delimiter)
     };
+  }
+
+  private syncOpenClawSkillsToHermes(): { sourceCount: number; copied: number; mirroredCount: number; names: string[]; unchanged: boolean } {
+    const mirrorRoot = path.join(this.dataRoot, "skills", "openclaw");
+    const skillSources = this.findOpenClawSkillSources();
+    const manifestPath = path.join(mirrorRoot, ".openclaw_sync_manifest.json");
+    const usedTargets = new Set<string>();
+    const manifestSkills = skillSources.map((source) => ({
+      name: source.name,
+      key: source.key,
+      source: source.path,
+      targetName: this.uniqueTargetName(this.safeFileName(source.key || source.name), usedTargets),
+      skillMtimeMs: source.skillMtimeMs
+    }));
+    const manifest = {
+      version: 3,
+      syncedAt: new Date().toISOString(),
+      sourceRoots: [this.paths.skillsRoot],
+      mirrorRoot,
+      skills: manifestSkills
+    };
+    const oldManifest = this.readJsonSafe(manifestPath) as Record<string, unknown> | null;
+    const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: manifest.syncedAt }) === JSON.stringify(manifest);
+    if (unchanged) {
+      return { sourceCount: skillSources.length, copied: 0, mirroredCount: skillSources.length, names: skillSources.map((source) => source.name), unchanged: true };
+    }
+
+    fs.rmSync(mirrorRoot, { recursive: true, force: true });
+    fs.mkdirSync(mirrorRoot, { recursive: true });
+
+    const copiedNames: string[] = [];
+    for (const source of skillSources) {
+      const targetName = manifestSkills.find((row) => row.source === source.path)?.targetName || this.safeFileName(source.key || source.name);
+      const target = path.join(mirrorRoot, targetName);
+      if (source.isDirectory) {
+        fs.cpSync(source.path, target, {
+          recursive: true,
+          filter: (sourcePath) => this.shouldCopySkillPath(source.path, sourcePath)
+        });
+      } else {
+        fs.mkdirSync(target, { recursive: true });
+        fs.copyFileSync(source.path, path.join(target, "SKILL.md"));
+      }
+      copiedNames.push(source.name);
+    }
+
+    this.writeJson(manifestPath, manifest);
+    fs.writeFileSync(
+      path.join(mirrorRoot, "DESCRIPTION.md"),
+      "# OpenClaw Skills\n\nThese skills are mirrored from the portable OpenClaw skills directory and verified through Hermes native skill command scanning.\n",
+      "utf8"
+    );
+    return { sourceCount: skillSources.length, copied: copiedNames.length, mirroredCount: skillSources.length, names: copiedNames, unchanged: false };
+  }
+
+  private verifyHermesSkillVisibility(): { ok: boolean; names: string[]; commands: string[] } {
+    const python = this.findPython();
+    const sourceRoot = path.join(this.runtimeRoot, "hermes-agent");
+    if (!python) throw new Error("Hermes portable Python was not found.");
+    if (!fs.existsSync(path.join(sourceRoot, "agent", "skill_commands.py"))) {
+      throw new Error(`Hermes skill_commands.py was not found under ${sourceRoot}.`);
+    }
+    const script = [
+      "import json, sys",
+      `sys.path.insert(0, ${JSON.stringify(sourceRoot)})`,
+      "from agent.skill_commands import reload_skills, get_skill_commands",
+      "result = reload_skills()",
+      "commands = get_skill_commands()",
+      "names = sorted(set((info or {}).get('name') or key.lstrip('/') for key, info in commands.items()))",
+      "print(json.dumps({'ok': True, 'reload': result, 'commands': sorted(commands.keys()), 'names': names}, ensure_ascii=False))"
+    ].join("; ");
+    const result = spawnSync(python, ["-c", script], {
+      cwd: this.dataRoot,
+      env: this.buildHermesEnv(),
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 45000
+    });
+    if (result.status !== 0) {
+      throw new Error((result.stderr || result.stdout || `Hermes skill scan exited with ${result.status}`).trim());
+    }
+    const parsed = JSON.parse((result.stdout || "{}").trim());
+    return {
+      ok: !!parsed.ok,
+      names: Array.isArray(parsed.names) ? parsed.names.map(String) : [],
+      commands: Array.isArray(parsed.commands) ? parsed.commands.map(String) : []
+    };
+  }
+
+  private findOpenClawSkillSources(): Array<{ path: string; key: string; name: string; isDirectory: boolean; skillMtimeMs: number }> {
+    const sources: Array<{ path: string; key: string; name: string; isDirectory: boolean; skillMtimeMs: number }> = [];
+    const disabled = this.readDisabledOpenClawSkills();
+    if (!fs.existsSync(this.paths.skillsRoot)) return sources;
+    for (const entry of fs.readdirSync(this.paths.skillsRoot, { withFileTypes: true })) {
+      const sourcePath = path.join(this.paths.skillsRoot, entry.name);
+      if (entry.isDirectory()) {
+        const skillFile = path.join(sourcePath, "SKILL.md");
+        if (!fs.existsSync(skillFile)) continue;
+        const name = this.readSkillName(skillFile, entry.name);
+        if (disabled.has(name) || disabled.has(entry.name)) continue;
+        const stat = fs.statSync(skillFile);
+        sources.push({ path: sourcePath, key: entry.name, name, isDirectory: true, skillMtimeMs: Math.round(stat.mtimeMs) });
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+        const name = this.readSkillName(sourcePath, entry.name.replace(/\.md$/i, ""));
+        if (disabled.has(name) || disabled.has(entry.name)) continue;
+        const stat = fs.statSync(sourcePath);
+        sources.push({ path: sourcePath, key: entry.name.replace(/\.md$/i, ""), name, isDirectory: false, skillMtimeMs: Math.round(stat.mtimeMs) });
+      }
+    }
+    return sources;
+  }
+
+  private readDisabledOpenClawSkills(): Set<string> {
+    const configPath = path.join(this.paths.dataRoot, ".openclaw", "openclaw.json");
+    const disabled = new Set<string>();
+    if (!fs.existsSync(configPath)) return disabled;
+    try {
+      const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      const entries = config?.skills?.entries || {};
+      for (const [name, entry] of Object.entries(entries)) {
+        if ((entry as { enabled?: boolean })?.enabled === false) disabled.add(name);
+      }
+    } catch {
+      return disabled;
+    }
+    return disabled;
+  }
+
+  private readSkillName(skillFile: string, fallback: string): string {
+    try {
+      const content = fs.readFileSync(skillFile, "utf8");
+      const match = content.match(/^---\s*[\r\n]+([\s\S]*?)[\r\n]+---/);
+      const frontmatter = match ? match[1] : content.slice(0, 2048);
+      const nameMatch = frontmatter.match(/^name:\s*["']?([^"'\r\n]+)["']?\s*$/m);
+      return (nameMatch?.[1] || fallback).trim();
+    } catch {
+      return fallback;
+    }
+  }
+
+  private countSkillFiles(root: string): number {
+    if (!fs.existsSync(root)) return 0;
+    let count = 0;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      const full = path.join(root, entry.name);
+      if (entry.isDirectory()) count += this.countSkillFiles(full);
+      else if (entry.isFile() && entry.name === "SKILL.md") count += 1;
+    }
+    return count;
+  }
+
+  private readSkillReport(): HermesSkillReport | null {
+    const reportPath = this.skillReportPath();
+    if (!fs.existsSync(reportPath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(reportPath, "utf8")) as HermesSkillReport;
+    } catch {
+      return null;
+    }
+  }
+
+  private readJsonSafe(filePath: string): unknown | null {
+    try {
+      if (!fs.existsSync(filePath)) return null;
+      return JSON.parse(fs.readFileSync(filePath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  private skillReportPath(): string {
+    return path.join(this.dataRoot, "reports", "skills", "visibility-last.json");
+  }
+
+  private writeJson(filePath: string, payload: unknown): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  }
+
+  private safeFileName(value: string): string {
+    return String(value || "skill").replace(/[\\/:*?"<>|]/g, "_").trim() || "skill";
+  }
+
+  private skillSlug(value: string): string {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[\s_]+/g, "-")
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+  }
+
+  private shouldCopySkillPath(rootDir: string, sourcePath: string): boolean {
+    const rel = path.relative(rootDir, sourcePath).replace(/\\/g, "/");
+    const excluded = new Set([".git", ".github", ".hub", ".archive", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"]);
+    return !rel.split("/").some((part) => excluded.has(part));
+  }
+
+  private uniqueTargetName(name: string, used: Set<string>): string {
+    let candidate = name;
+    let index = 2;
+    while (used.has(candidate.toLowerCase())) {
+      candidate = `${name}-${index}`;
+      index += 1;
+    }
+    used.add(candidate.toLowerCase());
+    return candidate;
   }
 
   private writePortableArtifacts(config = this.readConfig()): void {

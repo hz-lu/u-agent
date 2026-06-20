@@ -11,6 +11,7 @@ const api = {
   writeHermesConfig: (config: HermesConfig) => ipcRenderer.invoke("hermes:write-config", config),
   testHermesConnector: (id: ConnectorConfig["id"]) => ipcRenderer.invoke("hermes:test-connector", id),
   testHermesSandbox: (id: SandboxConfig["id"]) => ipcRenderer.invoke("hermes:test-sandbox", id),
+  syncHermesSkills: () => ipcRenderer.invoke("hermes:sync-skills"),
   addHermesSchedule: (input: ScheduleInput) => ipcRenderer.invoke("hermes:add-schedule", input),
   removeHermesSchedule: (id: string) => ipcRenderer.invoke("hermes:remove-schedule", id),
   exportHermesConfig: () => ipcRenderer.invoke("hermes:export-config"),
