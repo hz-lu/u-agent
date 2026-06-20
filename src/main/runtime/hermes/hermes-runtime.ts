@@ -332,8 +332,6 @@ export class HermesRuntime implements AgentRuntime {
   async start(): Promise<AgentStatus> {
     this.ensurePortableDirs();
     this.migrateLegacyData();
-    this.verifyMemory({ silent: false });
-    this.syncAndVerifySkills({ silent: false });
     this.writePortableArtifacts();
     await this.startConfigServer(false);
     await this.startDashboard(false);
@@ -426,7 +424,6 @@ export class HermesRuntime implements AgentRuntime {
   }
 
   async chat(message: string, messages: Array<{ role: string; content: string }> = []): Promise<ChatResponse> {
-    this.syncAndVerifySkills({ silent: true });
     await this.startApiServer(false);
     if (!(await checkTcpPort(8642, "127.0.0.1", 2000))) {
       return { ok: false, error: "Hermes Agent API is not ready on 127.0.0.1:8642." };

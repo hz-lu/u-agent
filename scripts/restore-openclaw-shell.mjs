@@ -693,7 +693,6 @@ function patchHermesRuntimeEnv(filePath) {
     "    } catch (err) {",
     "      safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[hermes-chat] background start failed: \" + (err instanceof Error ? err.message : String(err)) });",
     "    }",
-    "    this.repairShims();",
     "    const args = [\"--oneshot\", message];",
     "    const provider = typeof options.provider === \"string\" && options.provider.trim() ? options.provider.trim() : mapProvider(runtimeModel.provider, runtimeModel.baseUrl);",
     "    const modelName = typeof options.modelName === \"string\" && options.modelName.trim() ? options.modelName.trim() : runtimeModel.model || \"\";",
@@ -767,10 +766,8 @@ function patchHermesRuntimeEnv(filePath) {
     "  }"
   ].join("\n");
   source = source.slice(0, chatStart) + chatReplacement + source.slice(chatEnd);
-  source = source.replaceAll(
-    "\n    this.repairShims();",
-    "\n    this.syncOpenClawSkillsToHermes({ silent: false });\n    this.repairShims();"
-  );
+  source = source.replaceAll("\n    this.syncOpenClawSkillsToHermes({ silent: false });", "");
+  source = source.replaceAll("\n    this.repairShims();", "");
 
   fs.writeFileSync(filePath, source, "utf8");
 }
