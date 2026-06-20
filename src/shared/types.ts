@@ -24,6 +24,7 @@ export interface AgentStatus {
   diagnostics: string[];
   capabilities: Record<string, boolean>;
   hermesSkills?: HermesSkillReport;
+  hermesMemory?: HermesMemoryReport;
 }
 
 export interface ModelConfig {
@@ -102,6 +103,28 @@ export interface HermesSkillReport {
   sampleCommands: string[];
   missingNames: string[];
   unchanged?: boolean;
+  error?: string;
+}
+
+export interface HermesMemoryReport {
+  ok: boolean;
+  checkedAt: string;
+  memoryEnabled: boolean;
+  userProfileEnabled: boolean;
+  memoryDir: string;
+  memoryFile: string;
+  userFile: string;
+  configPath: string;
+  reportPath: string;
+  memoryEntryCount: number;
+  userEntryCount: number;
+  memoryFileExists: boolean;
+  userFileExists: boolean;
+  memoryWritable: boolean;
+  userWritable: boolean;
+  memorySnapshotReady: boolean;
+  userSnapshotReady: boolean;
+  testEntryRemoved: boolean;
   error?: string;
 }
 

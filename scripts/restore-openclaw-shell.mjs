@@ -414,13 +414,108 @@ function patchHermesRuntimeEnv(filePath) {
       "  }",
       ""
     ].join("\n");
+  const memoryMethod = [
+      "  verifyHermesMemory(options = {}) {",
+      "    const silent = options?.silent !== false;",
+      "    const data = path$1.join(getAppRoot(), \"data\", \".hermes\");",
+      "    const memoryDir = path$1.join(data, \"memories\");",
+      "    const configPath = path$1.join(data, \"config.yaml\");",
+      "    const reportPath = path$1.join(data, \"reports\", \"memory\", \"persistence-last.json\");",
+      "    const memoryFile = path$1.join(memoryDir, \"MEMORY.md\");",
+      "    const userFile = path$1.join(memoryDir, \"USER.md\");",
+      "    function writeJson(filePath, value) {",
+      "      fs$1.mkdirSync(path$1.dirname(filePath), { recursive: true });",
+      "      fs$1.writeFileSync(filePath, JSON.stringify(value, null, 2) + \"\\n\", \"utf8\");",
+      "    }",
+      "    function writeConfigYaml() {",
+      "      fs$1.mkdirSync(data, { recursive: true });",
+      "      const yaml = [",
+      "        \"# Managed by OpenClawPro Agent Hub. Kept inside the USB data/.hermes directory.\",",
+      "        \"memory:\",",
+      "        \"  memory_enabled: true\",",
+      "        \"  user_profile_enabled: true\",",
+      "        \"  memory_char_limit: 2200\",",
+      "        \"  user_char_limit: 1375\",",
+      "        \"  provider: \\\"\\\"\",",
+      "        \"skills:\",",
+      "        \"  auto_skill_enabled: true\",",
+      "        \"paths:\",",
+      "        \"  home: \" + JSON.stringify(path$1.join(data, \"home\")),",
+      "        \"  logs: \" + JSON.stringify(path$1.join(data, \"logs\")),",
+      "        \"  memories: \" + JSON.stringify(memoryDir),",
+      "        \"  skills: \" + JSON.stringify(path$1.join(data, \"skills\")),",
+      "        \"\"",
+      "      ].join(\"\\n\");",
+      "      fs$1.writeFileSync(configPath, yaml, \"utf8\");",
+      "    }",
+      "    try {",
+      "      writeConfigYaml();",
+      "      fs$1.mkdirSync(path$1.dirname(reportPath), { recursive: true });",
+      "      const python = this.getPortablePython();",
+      "      const sourceRoot = path$1.join(this.getPortableRoot(), \"hermes-agent\");",
+      "      if (!fs$1.existsSync(python)) throw new Error(\"Hermes portable Python was not found: \" + python);",
+      "      if (!fs$1.existsSync(path$1.join(sourceRoot, \"tools\", \"memory_tool.py\"))) throw new Error(\"Hermes memory_tool.py was not found: \" + sourceRoot);",
+      "      const marker = \"openclaw-hermes-memory-verify-\" + Date.now();",
+      "      const script = [",
+      "        \"import json, sys\",",
+      "        \"sys.path.insert(0, \" + JSON.stringify(sourceRoot) + \")\",",
+      "        \"from tools.memory_tool import MemoryStore, get_memory_dir\",",
+      "        \"store = MemoryStore(memory_char_limit=2200, user_char_limit=1375)\",",
+      "        \"store.load_from_disk()\",",
+      "        \"marker = \" + JSON.stringify(marker),",
+      "        \"memory_content = f'{marker} memory persistence probe'\",",
+      "        \"user_content = f'{marker} user profile probe'\",",
+      "        \"memory_add = store.add('memory', memory_content)\",",
+      "        \"user_add = store.add('user', user_content)\",",
+      "        \"store.load_from_disk()\",",
+      "        \"memory_seen = memory_content in store.memory_entries\",",
+      "        \"user_seen = user_content in store.user_entries\",",
+      "        \"memory_remove = store.remove('memory', marker)\",",
+      "        \"user_remove = store.remove('user', marker)\",",
+      "        \"store.load_from_disk()\",",
+      "        \"memory_dir = get_memory_dir()\",",
+      "        \"payload = {\",",
+      "        \"  'ok': bool(memory_seen and user_seen and memory_add.get('success') and user_add.get('success')),\",",
+      "        \"  'memoryEntryCount': len(store.memory_entries),\",",
+      "        \"  'userEntryCount': len(store.user_entries),\",",
+      "        \"  'memoryFileExists': (memory_dir / 'MEMORY.md').exists(),\",",
+      "        \"  'userFileExists': (memory_dir / 'USER.md').exists(),\",",
+      "        \"  'memoryWritable': bool(memory_add.get('success') and memory_seen),\",",
+      "        \"  'userWritable': bool(user_add.get('success') and user_seen),\",",
+      "        \"  'testEntryRemoved': bool(memory_remove.get('success') and user_remove.get('success'))\",",
+      "        \"}\",",
+      "        \"print(json.dumps(payload, ensure_ascii=False))\"",
+      "      ].join(\"\\n\");",
+      "      const result = child_process.spawnSync(python, [\"-c\", script], {",
+      "        cwd: data,",
+      "        env: this.getHermesEnv(),",
+      "        encoding: \"utf8\",",
+      "        windowsHide: true,",
+      "        timeout: 45000",
+      "      });",
+      "      if (result.status !== 0) throw new Error((result.stderr || result.stdout || \"Hermes memory verification exited with \" + result.status).trim());",
+      "      const parsed = JSON.parse((result.stdout || \"{}\").trim());",
+      "      const report = { ok: !!parsed.ok, checkedAt: new Date().toISOString(), memoryEnabled: true, userProfileEnabled: true, memoryDir, memoryFile, userFile, configPath, reportPath, memoryEntryCount: parsed.memoryEntryCount || 0, userEntryCount: parsed.userEntryCount || 0, memoryFileExists: !!parsed.memoryFileExists, userFileExists: !!parsed.userFileExists, memoryWritable: !!parsed.memoryWritable, userWritable: !!parsed.userWritable, testEntryRemoved: !!parsed.testEntryRemoved };",
+      "      writeJson(reportPath, report);",
+      "      if (!silent) safeSend(\"hermes-log\", { type: report.ok ? \"system\" : \"stderr\", msg: \"[memory] verified=\" + report.ok + \" memoryEntries=\" + report.memoryEntryCount + \" userEntries=\" + report.userEntryCount + \" report=\" + reportPath });",
+      "      return report;",
+      "    } catch (err) {",
+      "      const error = err instanceof Error ? err.message : String(err);",
+      "      const report = { ok: false, checkedAt: new Date().toISOString(), memoryEnabled: true, userProfileEnabled: true, memoryDir, memoryFile, userFile, configPath, reportPath, memoryEntryCount: 0, userEntryCount: 0, memoryFileExists: fs$1.existsSync(memoryFile), userFileExists: fs$1.existsSync(userFile), memoryWritable: false, userWritable: false, testEntryRemoved: false, error };",
+      "      writeJson(reportPath, report);",
+      "      safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[memory] verification failed: \" + error });",
+      "      return report;",
+      "    }",
+      "  }",
+      ""
+    ].join("\n");
   if (source.includes(syncMethodMarker)) {
-    source = replaceMethodBlock(source, syncMethodMarker, repairAnchor, syncMethod, "Hermes skills sync method");
+    source = replaceMethodBlock(source, syncMethodMarker, repairAnchor, syncMethod + memoryMethod, "Hermes skills sync method");
   } else {
     if (!source.includes(repairAnchor)) {
       throw new Error("Could not find Hermes repairShims insertion point.");
     }
-    source = source.replace(repairAnchor, syncMethod + repairAnchor);
+    source = source.replace(repairAnchor, syncMethod + memoryMethod + repairAnchor);
   }
 
   const snapshotAnchor = [
@@ -470,6 +565,7 @@ function patchHermesRuntimeEnv(filePath) {
     "    }",
     "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));",
     "    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
+    "    const memoryReport = this.verifyHermesMemory({ silent: true });",
     "    const skillReport = this.syncOpenClawSkillsToHermes({ silent: true });",
     "    const skillCount = countHermesSkills(skillsRoot);",
     "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
@@ -479,6 +575,12 @@ function patchHermesRuntimeEnv(filePath) {
     "      memoryMb: this.memoryMb,",
     "      iterations: this.iterations,",
     "      memoryPath: path$1.join(data, \"memories\"),",
+    "      memoryReady: !!memoryReport?.ok,",
+    "      memoryWritable: !!memoryReport?.memoryWritable && !!memoryReport?.userWritable,",
+    "      memoryEntryCount: memoryReport?.memoryEntryCount || 0,",
+    "      userMemoryEntryCount: memoryReport?.userEntryCount || 0,",
+    "      memoryReportPath: memoryReport?.reportPath || path$1.join(data, \"reports\", \"memory\", \"persistence-last.json\"),",
+    "      memoryReport,",
     "      model: this.model,",
     "      runtimeRoot: root,",
     "      dataRoot: data,",
@@ -1272,6 +1374,27 @@ function patchHermesEnvCheck(filePath) {
   source = source.replace("    checkPort\n", "    checkPort,\n    checkHermes\n");
   source = source.replaceAll("      runAllChecks();\n      gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));", "      await runAllChecks();\n      gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));");
   source = source.replace("    if (gatewayStore.envCheckResults) {\n      checkItems.value = JSON.parse(JSON.stringify(gatewayStore.envCheckResults));\n    }\n    async function handleRecheck() {", "    if (gatewayStore.envCheckResults) {\n      checkItems.value = JSON.parse(JSON.stringify(gatewayStore.envCheckResults));\n      setTimeout(async () => {\n        await runAllChecks();\n        gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));\n      }, 0);\n    }\n    async function handleRecheck() {");
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesMemoryEnvCheck(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("id: \"hermes-memory\"")) {
+    source = source.replace(
+      "{ id: \"hermes-skills\"",
+      "{ id: \"hermes-memory\", title: \"Hermes 持久记忆\", icon: \"icon-clawmoxingpeizhi\", status: \"checking\", statusText: \"检测中\", detail: \"\" },\n    { id: \"hermes-skills\""
+    );
+  }
+  source = source.replaceAll(
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-skills\", \"hermes-ports\"]",
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-memory\", \"hermes-skills\", \"hermes-ports\"]"
+  );
+  if (!source.includes("updateItem(\"hermes-memory\"")) {
+    source = source.replace(
+      "      updateItem(\"hermes-skills\"",
+      "      updateItem(\"hermes-memory\", status?.memoryReady && status?.memoryWritable ? { status: \"pass\", statusText: \"可读写\", detail: `MEMORY ${status.memoryEntryCount || 0} 条；USER ${status.userMemoryEntryCount || 0} 条。报告：${status.memoryReportPath || \"未生成\"}` } : { status: \"warn\", statusText: \"待验证\", detail: status?.memoryReportPath || status?.memoryPath || \"请启动 Hermes 后重新检查\" });\n      updateItem(\"hermes-skills\""
+    );
+  }
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -2689,6 +2812,7 @@ patchHermesPreload(preloadTarget);
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
+patchHermesMemoryEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);

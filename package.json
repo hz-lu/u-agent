@@ -16,6 +16,7 @@
     "scan:usb": "node scripts/scan-usb.mjs",
     "audit:portable": "node scripts/audit-portable-release.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
+    "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",

@@ -12,6 +12,7 @@ import {
   ConfigImportResult,
   ConnectorConfig,
   HermesConfig,
+  HermesMemoryReport,
   HermesSkillReport,
   SandboxConfig,
   ScheduleConfig,
@@ -251,6 +252,7 @@ export class HermesRuntime implements AgentRuntime {
 
   async getStatus(): Promise<AgentStatus> {
     this.ensurePortableDirs();
+    const memoryReport = this.verifyMemory({ silent: true });
     const skillReport = this.readSkillReport() || this.syncAndVerifySkills({ silent: true });
     const configReady = await checkTcpPort(17520);
     const dashboardReady = await checkTcpPort(9119);
@@ -293,7 +295,12 @@ export class HermesRuntime implements AgentRuntime {
         `skills.source=${skillReport.sourceCount}`,
         `skills.visible=${skillReport.visibleCount}`,
         `skills.commands=${skillReport.commandCount}`,
-        `skills.report=${skillReport.reportPath}`
+        `skills.report=${skillReport.reportPath}`,
+        `memory.enabled=${memoryReport.memoryEnabled}`,
+        `memory.userProfile=${memoryReport.userProfileEnabled}`,
+        `memory.entries=${memoryReport.memoryEntryCount}`,
+        `memory.userEntries=${memoryReport.userEntryCount}`,
+        `memory.report=${memoryReport.reportPath}`
       ],
       capabilities: {
         sourcePresent,
@@ -301,7 +308,9 @@ export class HermesRuntime implements AgentRuntime {
         pythonPresent: !!python,
         nodePresent: !!node,
         configServerPresent,
-        memoryReady: fs.existsSync(path.join(this.dataRoot, "memories")),
+        memoryReady: memoryReport.ok,
+        memoryWritable: memoryReport.memoryWritable && memoryReport.userWritable,
+        memorySnapshotReady: memoryReport.ok,
         skillsReady: fs.existsSync(path.join(this.dataRoot, "skills")),
         skillsVisible: skillReport.ok && skillReport.visibleCount > 0,
         skillsUsageTracked: skillReport.usageTracked,
@@ -309,13 +318,15 @@ export class HermesRuntime implements AgentRuntime {
         schedulesReady: fs.existsSync(path.join(this.dataRoot, "cron")),
         sandboxesReady: fs.existsSync(path.join(this.dataRoot, "sandboxes"))
       },
-      hermesSkills: skillReport
+      hermesSkills: skillReport,
+      hermesMemory: memoryReport
     };
   }
 
   async start(): Promise<AgentStatus> {
     this.ensurePortableDirs();
     this.migrateLegacyData();
+    this.verifyMemory({ silent: false });
     this.syncAndVerifySkills({ silent: false });
     this.writePortableArtifacts();
     await this.startConfigServer(false);
@@ -515,6 +526,131 @@ export class HermesRuntime implements AgentRuntime {
     }
   }
 
+  verifyMemory(options: { silent?: boolean } = {}): HermesMemoryReport {
+    this.ensurePortableDirs();
+    this.writeHermesConfigYaml(this.readConfig());
+    const reportPath = this.memoryReportPath();
+    const memoryDir = path.join(this.dataRoot, "memories");
+    const memoryFile = path.join(memoryDir, "MEMORY.md");
+    const userFile = path.join(memoryDir, "USER.md");
+    const configPath = path.join(this.dataRoot, "config.yaml");
+    const python = this.findPython();
+    const sourceRoot = path.join(this.runtimeRoot, "hermes-agent");
+    try {
+      if (!python) throw new Error("Hermes portable Python was not found.");
+      if (!fs.existsSync(path.join(sourceRoot, "tools", "memory_tool.py"))) {
+        throw new Error(`Hermes memory_tool.py was not found under ${sourceRoot}.`);
+      }
+      const marker = `openclaw-hermes-memory-verify-${Date.now()}`;
+      const script = [
+        "import json, pathlib, sys",
+        `sys.path.insert(0, ${JSON.stringify(sourceRoot)})`,
+        "from tools.memory_tool import MemoryStore, get_memory_dir",
+        "store = MemoryStore(memory_char_limit=2200, user_char_limit=1375)",
+        "store.load_from_disk()",
+        `marker = ${JSON.stringify(marker)}`,
+        "memory_content = f'{marker} memory persistence probe'",
+        "user_content = f'{marker} user profile probe'",
+        "memory_add = store.add('memory', memory_content)",
+        "user_add = store.add('user', user_content)",
+        "store.load_from_disk()",
+        "memory_seen = memory_content in store.memory_entries",
+        "user_seen = user_content in store.user_entries",
+        "memory_remove = store.remove('memory', marker)",
+        "user_remove = store.remove('user', marker)",
+        "store.load_from_disk()",
+        "memory_dir = get_memory_dir()",
+        "payload = {",
+        "  'ok': bool(memory_seen and user_seen and memory_add.get('success') and user_add.get('success')),",
+        "  'memoryDir': str(memory_dir),",
+        "  'memoryFile': str(memory_dir / 'MEMORY.md'),",
+        "  'userFile': str(memory_dir / 'USER.md'),",
+        "  'memoryEntryCount': len(store.memory_entries),",
+        "  'userEntryCount': len(store.user_entries),",
+        "  'memoryFileExists': (memory_dir / 'MEMORY.md').exists(),",
+        "  'userFileExists': (memory_dir / 'USER.md').exists(),",
+        "  'memoryWritable': bool(memory_add.get('success') and memory_seen),",
+        "  'userWritable': bool(user_add.get('success') and user_seen),",
+        "  'memorySnapshotReady': store.format_for_system_prompt('memory') is not None,",
+        "  'userSnapshotReady': store.format_for_system_prompt('user') is not None,",
+        "  'testEntryRemoved': bool(memory_remove.get('success') and user_remove.get('success'))",
+        "}",
+        "print(json.dumps(payload, ensure_ascii=False))"
+      ].join("\n");
+      const result = spawnSync(python, ["-c", script], {
+        cwd: this.dataRoot,
+        env: this.buildHermesEnv(),
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 45000
+      });
+      if (result.status !== 0) {
+        throw new Error((result.stderr || result.stdout || `Hermes memory verification exited with ${result.status}`).trim());
+      }
+      const parsed = JSON.parse((result.stdout || "{}").trim()) as Partial<HermesMemoryReport>;
+      const report: HermesMemoryReport = {
+        ok: !!parsed.ok,
+        checkedAt: new Date().toISOString(),
+        memoryEnabled: true,
+        userProfileEnabled: true,
+        memoryDir,
+        memoryFile,
+        userFile,
+        configPath,
+        reportPath,
+        memoryEntryCount: Number(parsed.memoryEntryCount || 0),
+        userEntryCount: Number(parsed.userEntryCount || 0),
+        memoryFileExists: !!parsed.memoryFileExists,
+        userFileExists: !!parsed.userFileExists,
+        memoryWritable: !!parsed.memoryWritable,
+        userWritable: !!parsed.userWritable,
+        memorySnapshotReady: !!parsed.memorySnapshotReady,
+        userSnapshotReady: !!parsed.userSnapshotReady,
+        testEntryRemoved: !!parsed.testEntryRemoved
+      };
+      this.writeJson(reportPath, report);
+      if (!options.silent) {
+        this.logSink({
+          agent: "hermes",
+          level: report.ok ? "system" : "error",
+          message: `Hermes memory verified: memoryEntries=${report.memoryEntryCount}, userEntries=${report.userEntryCount}, report=${report.reportPath}`,
+          at: new Date().toISOString()
+        });
+      }
+      return report;
+    } catch (error) {
+      const report: HermesMemoryReport = {
+        ok: false,
+        checkedAt: new Date().toISOString(),
+        memoryEnabled: true,
+        userProfileEnabled: true,
+        memoryDir,
+        memoryFile,
+        userFile,
+        configPath,
+        reportPath,
+        memoryEntryCount: 0,
+        userEntryCount: 0,
+        memoryFileExists: fs.existsSync(memoryFile),
+        userFileExists: fs.existsSync(userFile),
+        memoryWritable: false,
+        userWritable: false,
+        memorySnapshotReady: false,
+        userSnapshotReady: false,
+        testEntryRemoved: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+      this.writeJson(reportPath, report);
+      this.logSink({
+        agent: "hermes",
+        level: "error",
+        message: `Hermes memory verification failed: ${report.error}`,
+        at: new Date().toISOString()
+      });
+      return report;
+    }
+  }
+
   private ensurePortableDirs(): void {
     for (const dir of [
       this.dataRoot,
@@ -530,6 +666,7 @@ export class HermesRuntime implements AgentRuntime {
       path.join(this.dataRoot, "exports"),
       path.join(this.dataRoot, "reports"),
       path.join(this.dataRoot, "reports", "skills"),
+      path.join(this.dataRoot, "reports", "memory"),
       path.join(this.dataRoot, "reports", "connectors"),
       path.join(this.dataRoot, "reports", "sandboxes"),
       path.join(this.dataRoot, "tmp")
@@ -752,6 +889,10 @@ export class HermesRuntime implements AgentRuntime {
     return path.join(this.dataRoot, "reports", "skills", "visibility-last.json");
   }
 
+  private memoryReportPath(): string {
+    return path.join(this.dataRoot, "reports", "memory", "persistence-last.json");
+  }
+
   private writeJson(filePath: string, payload: unknown): void {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
@@ -800,6 +941,7 @@ export class HermesRuntime implements AgentRuntime {
       "HERMES_API_KEY=" + config.model.apiKey
     ];
     fs.writeFileSync(path.join(this.dataRoot, "config", ".env"), `${lines.join("\n")}\n`, "utf8");
+    this.writeHermesConfigYaml(config);
     fs.writeFileSync(path.join(this.dataRoot, "config", "model.json"), `${JSON.stringify(this.redactConfig(config).model, null, 2)}\n`, "utf8");
     fs.writeFileSync(path.join(this.dataRoot, "cron", "schedules.json"), `${JSON.stringify(config.schedules, null, 2)}\n`, "utf8");
     fs.writeFileSync(path.join(this.dataRoot, "sandboxes", "backends.json"), `${JSON.stringify(config.sandboxes, null, 2)}\n`, "utf8");
@@ -815,6 +957,28 @@ export class HermesRuntime implements AgentRuntime {
         "utf8"
       );
     }
+  }
+
+  private writeHermesConfigYaml(config = this.readConfig()): void {
+    fs.mkdirSync(this.dataRoot, { recursive: true });
+    const yaml = [
+      "# Managed by OpenClawPro Agent Hub. Kept inside the USB data/.hermes directory.",
+      "memory:",
+      `  memory_enabled: ${config.memoryEnabled !== false ? "true" : "false"}`,
+      `  user_profile_enabled: ${config.memoryEnabled !== false ? "true" : "false"}`,
+      "  memory_char_limit: 2200",
+      "  user_char_limit: 1375",
+      "  provider: \"\"",
+      "skills:",
+      `  auto_skill_enabled: ${config.autoSkillEnabled !== false ? "true" : "false"}`,
+      "paths:",
+      `  home: ${JSON.stringify(path.join(this.dataRoot, "home"))}`,
+      `  logs: ${JSON.stringify(path.join(this.dataRoot, "logs"))}`,
+      `  memories: ${JSON.stringify(path.join(this.dataRoot, "memories"))}`,
+      `  skills: ${JSON.stringify(path.join(this.dataRoot, "skills"))}`,
+      ""
+    ].join("\n");
+    fs.writeFileSync(path.join(this.dataRoot, "config.yaml"), yaml, "utf8");
   }
 
   private normalizeConfig(config: HermesConfig, fallback = defaultHermesConfig): HermesConfig {
