@@ -962,7 +962,7 @@ function patchHermesLogAndWechatDiagnostics(filePath) {
 
 function patchHermesPreload(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics") && source.includes("ipcOnWeChatQrText")) return;
+  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics") && source.includes("ipcOnWeChatQrText") && source.includes("onGatewayRestarted")) return;
   const anchor = "  ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke(\"toggle-skill\", { skillName, enabled }),";
   const replacement = [
     anchor,
@@ -978,6 +978,69 @@ function patchHermesPreload(filePath) {
     "  ipcOnWeChatQrUrl: (callback) => electron.ipcRenderer.on(\"wechat-qr-url\", (_, url) => callback(url)),",
     "  ipcOnWeChatQrUrl: (callback) => electron.ipcRenderer.on(\"wechat-qr-url\", (_, url) => callback(url)),\n  ipcOnWeChatQrText: (callback) => electron.ipcRenderer.on(\"wechat-qr-text\", (_, text) => callback(text)),"
   );
+  source = source.replace(
+    "  offGatewayReady: (callback) => electron.ipcRenderer.removeListener(\"gateway-ready\", callback),",
+    "  offGatewayReady: (callback) => electron.ipcRenderer.removeListener(\"gateway-ready\", callback),\n  onGatewayRestarted: (callback) => electron.ipcRenderer.on(\"gateway-restarted\", (_, data) => callback(data)),\n  offGatewayRestarted: (callback) => electron.ipcRenderer.removeListener(\"gateway-restarted\", callback),"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchGatewayRestartStatus(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("codex-gateway-restart-status-recovery")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  const anchor = [
+    "    await new Promise((r) => setTimeout(r, 2e3));",
+    "    console.log(\"[restart] starting gateway...\");",
+    "    await startGateway();",
+    "    safeSend(\"gateway-restarting\", false);",
+    "    safeSend(\"gateway-restarted\", true);",
+    "    return { success: true };"
+  ].join("\n");
+  const replacement = [
+    "    await new Promise((r) => setTimeout(r, 2e3));",
+    "    console.log(\"[restart] starting gateway...\");",
+    "    const restartResult = await startGateway(port);",
+    "    const restartOk = restartResult?.success !== false;",
+    "    safeSend(\"gateway-restarting\", false);",
+    "    if (restartOk) {",
+    "      sendGatewayStatus(true);",
+    "      safeSend(\"gateway-ready\", true);",
+    "      safeSend(\"gateway-restarted\", { success: true, port, source: \"codex-gateway-restart-status-recovery\" });",
+    "      return { success: true };",
+    "    }",
+    "    sendGatewayStatus(false, restartResult?.error || \"Gateway restart failed\");",
+    "    safeSend(\"gateway-restarted\", { success: false, port, error: restartResult?.error || \"Gateway restart failed\", source: \"codex-gateway-restart-status-recovery\" });",
+    "    return restartResult || { success: false, error: \"Gateway restart failed\" };"
+  ].join("\n");
+  if (!source.includes(anchor)) {
+    throw new Error("Could not find Gateway restart status block.");
+  }
+  source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchGatewayRestartRecoveryUi(filePath) {
+  const marker = "codex-gateway-restart-ui-recovery";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+  source = source.replace(
+    "  let readyHandler = null;",
+    "  let readyHandler = null;\n  let restartedHandler = null;"
+  );
+  source = source.replace(
+    "  function cleanupReadyListener() {\n    if (readyHandler) {\n      window.uclaw.offGatewayReady(readyHandler);\n      readyHandler = null;\n    }\n  }",
+    "  function cleanupReadyListener() {\n    if (readyHandler) {\n      window.uclaw.offGatewayReady(readyHandler);\n      readyHandler = null;\n    }\n  }\n  function setupRestartedListener() {\n    if (restartedHandler || !window.uclaw.onGatewayRestarted) return;\n    restartedHandler = (data) => {\n      if (data && data.success === false) {\n        store.setRunning(false);\n        store.setGatewayReady(false);\n        return;\n      }\n      store.setRunning(true);\n      store.setGatewayReady(true);\n      if (data?.port) store.setPort(data.port);\n      console.log(\"[gateway] restart recovered UI state /* codex-gateway-restart-ui-recovery */\", data);\n    };\n    window.uclaw.onGatewayRestarted(restartedHandler);\n  }\n  function cleanupRestartedListener() {\n    if (restartedHandler && window.uclaw.offGatewayRestarted) {\n      window.uclaw.offGatewayRestarted(restartedHandler);\n      restartedHandler = null;\n    }\n  }"
+  );
+  source = source.replace(
+    "    cleanupReadyListener();\n  });\n  setupBootPhaseListener();\n  setupStatusListener();\n  setupReadyListener();",
+    "    cleanupReadyListener();\n    cleanupRestartedListener();\n  });\n  setupBootPhaseListener();\n  setupStatusListener();\n  setupReadyListener();\n  setupRestartedListener();"
+  );
+  if (!source.includes(marker)) {
+    throw new Error("Could not patch Gateway restart UI recovery.");
+  }
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -2830,6 +2893,7 @@ copyDir(path.join(backupRoot, "assets"), path.join(targetApp, "assets"));
 
 const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
+patchGatewayRestartStatus(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
@@ -2842,6 +2906,7 @@ copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), 
 patchHermesEnvCheck(rendererTarget);
 patchHermesMemoryEnvCheck(rendererTarget);
 patchHermesSkillGrowthEnvCheck(rendererTarget);
+patchGatewayRestartRecoveryUi(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
