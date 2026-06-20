@@ -439,6 +439,8 @@ function patchHermesRuntimeEnv(filePath) {
       "        \"  provider: \\\"\\\"\",",
       "        \"skills:\",",
       "        \"  auto_skill_enabled: true\",",
+      "        \"  external_dirs:\",",
+      "        \"    - \" + JSON.stringify(path$1.join(getAppRoot(), \"skills\")),",
       "        \"paths:\",",
       "        \"  home: \" + JSON.stringify(path$1.join(data, \"home\")),",
       "        \"  logs: \" + JSON.stringify(path$1.join(data, \"logs\")),",
@@ -567,6 +569,7 @@ function patchHermesRuntimeEnv(filePath) {
     "    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
     "    const memoryReport = this.verifyHermesMemory({ silent: true });",
     "    const skillReport = this.syncOpenClawSkillsToHermes({ silent: true });",
+    "    const skillGrowthReport = readJsonSafe(path$1.join(data, \"reports\", \"skills\", \"growth-last.json\"));",
     "    const skillCount = countHermesSkills(skillsRoot);",
     "    const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || \"\";",
     "    return {",
@@ -606,6 +609,9 @@ function patchHermesRuntimeEnv(filePath) {
     "      skillReportPath: skillReport?.reportPath || path$1.join(data, \"reports\", \"skills\", \"visibility-last.json\"),",
     "      skillsUsageTracked: !!skillReport?.usageTracked,",
     "      skillsReport: skillReport,",
+    "      skillGrowthReady: !!skillGrowthReport?.ok,",
+    "      skillGrowthReportPath: skillGrowthReport?.reportPath || path$1.join(data, \"reports\", \"skills\", \"growth-last.json\"),",
+    "      skillGrowthReport,",
     "      modelBridgeReady: !!primaryModel,",
     "      modelBridge: primaryModel || \"未配置 OpenClaw 当前模型\",",
     "      lastError: this.lastError",
@@ -1393,6 +1399,31 @@ function patchHermesMemoryEnvCheck(filePath) {
     source = source.replace(
       "      updateItem(\"hermes-skills\"",
       "      updateItem(\"hermes-memory\", status?.memoryReady && status?.memoryWritable ? { status: \"pass\", statusText: \"可读写\", detail: `MEMORY ${status.memoryEntryCount || 0} 条；USER ${status.userMemoryEntryCount || 0} 条。报告：${status.memoryReportPath || \"未生成\"}` } : { status: \"warn\", statusText: \"待验证\", detail: status?.memoryReportPath || status?.memoryPath || \"请启动 Hermes 后重新检查\" });\n      updateItem(\"hermes-skills\""
+    );
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesSkillGrowthEnvCheck(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("id: \"hermes-skill-growth\"")) {
+    source = source.replace(
+      "{ id: \"hermes-skills\"",
+      "{ id: \"hermes-skill-growth\", title: \"Hermes 自我成长\", icon: \"icon-clawjinengguanli\", status: \"checking\", statusText: \"检测中\", detail: \"\" },\n    { id: \"hermes-skills\""
+    );
+  }
+  source = source.replaceAll(
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-memory\", \"hermes-skills\", \"hermes-ports\"]",
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-memory\", \"hermes-skill-growth\", \"hermes-skills\", \"hermes-ports\"]"
+  );
+  source = source.replaceAll(
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-skills\", \"hermes-ports\"]",
+    "[\"hermes-python\", \"hermes-node\", \"hermes-cli\", \"hermes-data\", \"hermes-model\", \"hermes-skill-growth\", \"hermes-skills\", \"hermes-ports\"]"
+  );
+  if (!source.includes("updateItem(\"hermes-skill-growth\"")) {
+    source = source.replace(
+      "      updateItem(\"hermes-skills\"",
+      "      updateItem(\"hermes-skill-growth\", status?.skillGrowthReady ? { status: \"pass\", statusText: \"已闭环\", detail: status.skillGrowthReportPath || \"growth report ready\" } : { status: \"warn\", statusText: \"待验证\", detail: status?.skillGrowthReportPath || \"运行 verify:hermes-skill-growth 后显示结果\" });\n      updateItem(\"hermes-skills\""
     );
   }
   fs.writeFileSync(filePath, source, "utf8");
@@ -2813,6 +2844,7 @@ const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DI
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
 patchHermesMemoryEnvCheck(rendererTarget);
+patchHermesSkillGrowthEnvCheck(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);

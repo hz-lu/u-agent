@@ -30,6 +30,30 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+function writeHermesConfig() {
+  mkdirp(dataRoot);
+  const yaml = [
+    "# Managed by OpenClawPro Agent Hub. Kept inside the USB data/.hermes directory.",
+    "memory:",
+    "  memory_enabled: true",
+    "  user_profile_enabled: true",
+    "  memory_char_limit: 2200",
+    "  user_char_limit: 1375",
+    "  provider: \"\"",
+    "skills:",
+    "  auto_skill_enabled: true",
+    "  external_dirs:",
+    `    - ${JSON.stringify(skillsRoot)}`,
+    "paths:",
+    `  home: ${JSON.stringify(path.join(dataRoot, "home"))}`,
+    `  logs: ${JSON.stringify(path.join(dataRoot, "logs"))}`,
+    `  memories: ${JSON.stringify(path.join(dataRoot, "memories"))}`,
+    `  skills: ${JSON.stringify(path.join(dataRoot, "skills"))}`,
+    ""
+  ].join("\n");
+  fs.writeFileSync(path.join(dataRoot, "config.yaml"), yaml, "utf8");
+}
+
 function buildHermesEnv() {
   const home = path.join(dataRoot, "home");
   const cache = path.join(dataRoot, "cache");
@@ -208,6 +232,7 @@ function verifyOfficialVisibility() {
 
 let report;
 try {
+  writeHermesConfig();
   const rows = listOpenClawSkills();
   const sync = syncMirror(rows);
   const visibility = verifyOfficialVisibility();

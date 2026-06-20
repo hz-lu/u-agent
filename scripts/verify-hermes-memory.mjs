@@ -33,6 +33,8 @@ function writeMemoryConfig() {
     "  provider: \"\"",
     "skills:",
     "  auto_skill_enabled: true",
+    "  external_dirs:",
+    `    - ${JSON.stringify(path.join(usbRoot, "skills"))}`,
     "paths:",
     `  home: ${JSON.stringify(path.join(dataRoot, "home"))}`,
     `  logs: ${JSON.stringify(path.join(dataRoot, "logs"))}`,

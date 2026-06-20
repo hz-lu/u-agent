@@ -25,6 +25,7 @@ export interface AgentStatus {
   capabilities: Record<string, boolean>;
   hermesSkills?: HermesSkillReport;
   hermesMemory?: HermesMemoryReport;
+  hermesSkillGrowth?: HermesSkillGrowthReport;
 }
 
 export interface ModelConfig {
@@ -125,6 +126,22 @@ export interface HermesMemoryReport {
   memorySnapshotReady: boolean;
   userSnapshotReady: boolean;
   testEntryRemoved: boolean;
+  error?: string;
+}
+
+export interface HermesSkillGrowthReport {
+  ok: boolean;
+  checkedAt: string;
+  skillName?: string;
+  hermesSkillDir?: string;
+  openClawSkillDir?: string;
+  officialCreated?: boolean;
+  officialVisible?: boolean;
+  officialAgentCreated?: boolean;
+  openClawSynced?: boolean;
+  cleanupDeleted?: boolean;
+  cleanupStillVisible?: boolean;
+  reportPath: string;
   error?: string;
 }
 

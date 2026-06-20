@@ -13,6 +13,7 @@ import {
   ConnectorConfig,
   HermesConfig,
   HermesMemoryReport,
+  HermesSkillGrowthReport,
   HermesSkillReport,
   SandboxConfig,
   ScheduleConfig,
@@ -253,6 +254,7 @@ export class HermesRuntime implements AgentRuntime {
   async getStatus(): Promise<AgentStatus> {
     this.ensurePortableDirs();
     const memoryReport = this.verifyMemory({ silent: true });
+    const growthReport = this.readSkillGrowthReport();
     const skillReport = this.readSkillReport() || this.syncAndVerifySkills({ silent: true });
     const configReady = await checkTcpPort(17520);
     const dashboardReady = await checkTcpPort(9119);
@@ -296,6 +298,8 @@ export class HermesRuntime implements AgentRuntime {
         `skills.visible=${skillReport.visibleCount}`,
         `skills.commands=${skillReport.commandCount}`,
         `skills.report=${skillReport.reportPath}`,
+        `skills.growth=${growthReport?.ok ? "ready" : "not-verified"}`,
+        `skills.growthReport=${growthReport?.reportPath || this.skillGrowthReportPath()}`,
         `memory.enabled=${memoryReport.memoryEnabled}`,
         `memory.userProfile=${memoryReport.userProfileEnabled}`,
         `memory.entries=${memoryReport.memoryEntryCount}`,
@@ -314,12 +318,14 @@ export class HermesRuntime implements AgentRuntime {
         skillsReady: fs.existsSync(path.join(this.dataRoot, "skills")),
         skillsVisible: skillReport.ok && skillReport.visibleCount > 0,
         skillsUsageTracked: skillReport.usageTracked,
+        autoSkillGrowthReady: !!growthReport?.ok,
         connectorsReady: fs.existsSync(path.join(this.dataRoot, "connectors")),
         schedulesReady: fs.existsSync(path.join(this.dataRoot, "cron")),
         sandboxesReady: fs.existsSync(path.join(this.dataRoot, "sandboxes"))
       },
       hermesSkills: skillReport,
-      hermesMemory: memoryReport
+      hermesMemory: memoryReport,
+      hermesSkillGrowth: growthReport || undefined
     };
   }
 
@@ -889,8 +895,22 @@ export class HermesRuntime implements AgentRuntime {
     return path.join(this.dataRoot, "reports", "skills", "visibility-last.json");
   }
 
+  private skillGrowthReportPath(): string {
+    return path.join(this.dataRoot, "reports", "skills", "growth-last.json");
+  }
+
   private memoryReportPath(): string {
     return path.join(this.dataRoot, "reports", "memory", "persistence-last.json");
+  }
+
+  private readSkillGrowthReport(): HermesSkillGrowthReport | null {
+    const reportPath = this.skillGrowthReportPath();
+    if (!fs.existsSync(reportPath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(reportPath, "utf8")) as HermesSkillGrowthReport;
+    } catch {
+      return null;
+    }
   }
 
   private writeJson(filePath: string, payload: unknown): void {
@@ -971,6 +991,8 @@ export class HermesRuntime implements AgentRuntime {
       "  provider: \"\"",
       "skills:",
       `  auto_skill_enabled: ${config.autoSkillEnabled !== false ? "true" : "false"}`,
+      "  external_dirs:",
+      `    - ${JSON.stringify(this.paths.skillsRoot)}`,
       "paths:",
       `  home: ${JSON.stringify(path.join(this.dataRoot, "home"))}`,
       `  logs: ${JSON.stringify(path.join(this.dataRoot, "logs"))}`,
