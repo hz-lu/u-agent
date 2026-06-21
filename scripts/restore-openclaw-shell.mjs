@@ -738,8 +738,11 @@ function patchHermesRuntimeEnv(filePath) {
     "          child.kill(\"SIGKILL\");",
     "        } catch {",
     "        }",
-    "        resolve({ ok: false, error: \"Hermes 模型调用超时\" });",
-    "      }, 180000);",
+    "        const errTail = stderr.trim().slice(-1200);",
+    "        const timeoutMessage = \"Hermes 模型调用超时：本次请求超过 5 分钟未返回。请检查模型 API Key、网络、模型服务状态，或切换更快的模型后重试。\" + (errTail ? \"\\n最近日志：\" + errTail : \"\");",
+    "        safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[chat-timeout] \" + timeoutMessage });",
+    "        resolve({ ok: false, error: timeoutMessage });",
+    "      }, 300000);",
     "      child.stdout?.on(\"data\", (data) => {",
     "        stdout += Buffer.from(data).toString(\"utf8\");",
     "      });",
@@ -1491,19 +1494,254 @@ function patchHermesSkillGrowthEnvCheck(filePath) {
 
 function patchHermesModelConfig(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("model-unified-hermes-note")) return;
-  const tabAnchor = "        createBaseVNode(\"div\", _hoisted_12$d, [";
-  const note = [
-    "        createBaseVNode(\"div\", { class: \"model-unified-hermes-note\" }, [",
-    "          createBaseVNode(\"span\", { class: \"model-unified-hermes-mark\" }, \"H\"),",
-    "          createBaseVNode(\"span\", null, \"当前应用的模型会同时供 OpenClaw 与 Hermes 使用；Hermes 会话无需单独配置 Key。\")",
-    "        ]),",
-    tabAnchor
+  if (source.includes("model-api-purchase-card") && source.includes("model-edit-form")) return;
+  const tabSwitchAnchor = "    const selectedRecommendModel = /* @__PURE__ */ ref(null);";
+  const editState = [
+    "    const modelApiPurchaseUrl = \"\";",
+    "    const editingModelValue = /* @__PURE__ */ ref(\"\");",
+    "    const editUrl = /* @__PURE__ */ ref(\"\");",
+    "    const editKey = /* @__PURE__ */ ref(\"\");",
+    "    const editModelName = /* @__PURE__ */ ref(\"\");",
+    "    const editApiType = /* @__PURE__ */ ref(\"openai-completions\");",
+    "    const editProvider = /* @__PURE__ */ ref(\"custom\");",
+    "    const editSource = /* @__PURE__ */ ref(\"custom\");",
+    "    const editLabelPrefix = /* @__PURE__ */ ref(\"\");",
+    "    function openApiPurchasePlatform() {",
+    "      if (modelApiPurchaseUrl) {",
+    "        window.uclaw?.ipcOpenExternalUrl?.(modelApiPurchaseUrl);",
+    "        return;",
+    "      }",
+    "      showToast(\"模型 API 购买平台即将开放\");",
+    "    }",
+    "    function buildModelLabel(source, provider, modelName, fallbackLabel) {",
+    "      const cleanName = String(modelName || \"\").trim();",
+    "      if (source === \"recommend\") {",
+    "        const matched = recommendedModels.find((item) => item.provider === provider);",
+    "        const prefix = editLabelPrefix.value || matched?.name || provider || \"推荐模型\";",
+    "        return cleanName ? `${prefix} / ${cleanName}` : fallbackLabel || prefix;",
+    "      }",
+    "      return cleanName || fallbackLabel || \"自定义模型\";",
+    "    }",
+    "    function editModel(model) {",
+    "      editingModelValue.value = model.value || \"\";",
+    "      editUrl.value = model.base || \"\";",
+    "      editKey.value = model.key || \"\";",
+    "      editModelName.value = model.model || model.label || \"\";",
+    "      editApiType.value = model.api || \"openai-completions\";",
+    "      editProvider.value = model.provider || (model.source === \"custom\" ? \"custom\" : \"recommend\");",
+    "      editSource.value = model.source || \"custom\";",
+    "      editLabelPrefix.value = model.source === \"recommend\" ? String(model.label || \"\").split(\" / \")[0] : \"\";",
+    "    }",
+    "    function cancelEditModel() {",
+    "      editingModelValue.value = \"\";",
+    "      editUrl.value = \"\";",
+    "      editKey.value = \"\";",
+    "      editModelName.value = \"\";",
+    "      editApiType.value = \"openai-completions\";",
+    "      editProvider.value = \"custom\";",
+    "      editSource.value = \"custom\";",
+    "      editLabelPrefix.value = \"\";",
+    "    }",
+    "    function saveEditingModel() {",
+    "      const originalValue = editingModelValue.value;",
+    "      if (!originalValue) return;",
+    "      if (!editUrl.value.trim()) {",
+    "        showToast(\"请填写 API URL，不可为空\", true);",
+    "        return;",
+    "      }",
+    "      if (!editKey.value.trim()) {",
+    "        showToast(\"请填写 API Key，不可为空\", true);",
+    "        return;",
+    "      }",
+    "      if (!editModelName.value.trim()) {",
+    "        showToast(\"请填写模型名称\", true);",
+    "        return;",
+    "      }",
+    "      const nextSource = editSource.value || \"custom\";",
+    "      const nextProvider = editProvider.value || (nextSource === \"custom\" ? \"custom\" : \"recommend\");",
+    "      const nextModelName = editModelName.value.trim();",
+    "      const nextValue = nextSource === \"custom\" ? `custom-${nextModelName}` : `${nextProvider}-${nextModelName}`;",
+    "      const duplicated = modelsStore.selectedModels.some((item) => item.value === nextValue && item.value !== originalValue);",
+    "      if (duplicated) {",
+    "        showToast(\"已存在相同模型名称，请换一个名称\", true);",
+    "        return;",
+    "      }",
+    "      const updatedModels = modelsStore.selectedModels.map((item) => {",
+    "        if (item.value !== originalValue) return item;",
+    "        return {",
+    "          ...item,",
+    "          label: buildModelLabel(nextSource, nextProvider, nextModelName, item.label),",
+    "          value: nextValue,",
+    "          source: nextSource,",
+    "          base: editUrl.value.trim(),",
+    "          key: editKey.value.trim(),",
+    "          model: nextModelName,",
+    "          provider: nextProvider,",
+    "          api: editApiType.value || \"openai-completions\"",
+    "        };",
+    "      });",
+    "      modelsStore.setSelectedModels(updatedModels);",
+    "      cancelEditModel();",
+    "      showRestartCardNotice();",
+    "      showToast(\"模型配置已更新，OpenClaw 与 Hermes 将共用新配置\");",
+    "    }",
+    tabSwitchAnchor
   ].join("\n");
-  if (!source.includes(tabAnchor)) {
+  if (!source.includes("modelApiPurchaseUrl")) {
+    if (!source.includes(tabSwitchAnchor)) throw new Error("Could not find model edit state insertion point.");
+    source = source.replace(tabSwitchAnchor, editState);
+  }
+
+  const removeSwitchAnchor = "    function removeModel(model) {";
+  if (!source.includes("function saveEditingModel()") && !source.includes(removeSwitchAnchor)) {
+    throw new Error("Could not find model edit function insertion point.");
+  }
+
+  const selectedListAnchor = "        unref(modelsStore).selectedModels.length > 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_4$p, [";
+  if (source.includes(selectedListAnchor) && !source.includes("model-api-purchase-card")) {
+    const purchaseCard = [
+      "        createBaseVNode(\"div\", { class: \"model-api-purchase-card\" }, [",
+      "          createBaseVNode(\"div\", { class: \"model-api-purchase-main\" }, [",
+      "            createBaseVNode(\"div\", { class: \"model-api-purchase-title\" }, \"点击购买模型API，超低价格\"),",
+      "            createBaseVNode(\"div\", { class: \"model-api-purchase-desc\" }, \"后续可在这里直达官方平台购买 token 套餐，购买后回到本页填写 API Key 即可同时供 OpenClaw 与 Hermes 使用。\")",
+      "          ]),",
+      "          createBaseVNode(\"button\", {",
+      "            class: \"model-api-purchase-action\",",
+      "            onClick: openApiPurchasePlatform",
+      "          }, \"即将开放\")",
+      "        ]),",
+      selectedListAnchor
+    ].join("\n");
+    source = source.replace(selectedListAnchor, purchaseCard);
+  }
+
+  const removeModelOld = [
+    "    function removeModel(model) {",
+    "      if (!confirm(`确定要删除模型「${model.label}」吗？`)) {",
+    "        return;",
+    "      }",
+    "      removingId.value = model.value;",
+    "      setTimeout(() => {",
+    "        const updated = modelsStore.selectedModels.filter((m) => m.value !== model.value);",
+    "        modelsStore.setSelectedModels(updated);",
+    "        removingId.value = null;",
+    "      }, 400);",
+    "    }"
+  ].join("\n");
+  const removeModelNew = [
+    "    function removeModel(model) {",
+    "      if (!confirm(`确定要删除模型「${model.label}」吗？`)) {",
+    "        return;",
+    "      }",
+    "      removingId.value = model.value;",
+    "      setTimeout(() => {",
+    "        let updated = modelsStore.selectedModels.filter((m) => m.value !== model.value);",
+    "        if (updated.length > 0 && !updated.some((m) => m.isCurrent)) {",
+    "          updated = updated.map((m, index) => ({ ...m, isCurrent: index === 0 }));",
+    "        }",
+    "        modelsStore.setSelectedModels(updated);",
+    "        if (editingModelValue.value === model.value) cancelEditModel();",
+    "        removingId.value = null;",
+    "        showRestartCardNotice();",
+    "      }, 400);",
+    "    }"
+  ].join("\n");
+  if (source.includes(removeModelOld) && !source.includes("if (editingModelValue.value === model.value) cancelEditModel();")) {
+    source = source.replace(removeModelOld, removeModelNew);
+  }
+
+  const rowDeleteBlock = [
+    "                  unref(modelsStore).selectedModels.length > 1 && !model.isCurrent ? (openBlock(), createElementBlock(\"button\", {",
+    "                    key: 0,",
+    "                    onClick: withModifiers(($event) => removeModel(model), [\"stop\"]),",
+    "                    class: \"model-row-remove\",",
+    "                    title: \"删除\"",
+    "                  }, \"删除\", 8, _hoisted_11$e)) : createCommentVNode(\"\", true)"
+  ].join("\n");
+  const rowActionsBlock = [
+    "                  createBaseVNode(\"div\", { class: \"model-row-actions\" }, [",
+    "                    createBaseVNode(\"button\", {",
+    "                      onClick: withModifiers(($event) => editModel(model), [\"stop\"]),",
+    "                      class: normalizeClass([\"model-row-edit\", { active: editingModelValue.value === model.value }]),",
+    "                      title: \"编辑模型配置\"",
+    "                    }, toDisplayString(editingModelValue.value === model.value ? \"编辑中\" : \"编辑\"), 11, _hoisted_11$e),",
+    "                    unref(modelsStore).selectedModels.length > 1 && !model.isCurrent ? (openBlock(), createElementBlock(\"button\", {",
+    "                      key: 0,",
+    "                      onClick: withModifiers(($event) => removeModel(model), [\"stop\"]),",
+    "                      class: \"model-row-remove\",",
+    "                      title: \"删除\"",
+    "                    }, \"删除\", 8, _hoisted_11$e)) : createCommentVNode(\"\", true)",
+    "                  ])"
+  ].join("\n");
+  if (source.includes(rowDeleteBlock) && !source.includes("model-row-actions")) {
+    source = source.replace(rowDeleteBlock, rowActionsBlock);
+  }
+
+  const tabAnchor = "        createBaseVNode(\"div\", _hoisted_12$d, [";
+  if (!source.includes("model-unified-hermes-note")) {
+    const note = [
+      "        createBaseVNode(\"div\", { class: \"model-unified-hermes-note\" }, [",
+      "          createBaseVNode(\"span\", { class: \"model-unified-hermes-mark\" }, \"H\"),",
+      "          createBaseVNode(\"span\", null, \"当前应用的模型会同时供 OpenClaw 与 Hermes 使用；Hermes 会话无需单独配置 Key。\")",
+      "        ]),",
+      tabAnchor
+    ].join("\n");
+    if (!source.includes(tabAnchor)) {
+      throw new Error("Could not find model tab bar insertion point.");
+    }
+    source = source.replace(tabAnchor, note);
+  } else if (!source.includes(tabAnchor)) {
     throw new Error("Could not find model tab bar insertion point.");
   }
-  source = source.replace(tabAnchor, note);
+
+  const afterSelectedList = [
+    "        ])) : createCommentVNode(\"\", true),",
+    "        createBaseVNode(\"div\", { class: \"model-unified-hermes-note\" }, ["
+  ].join("\n");
+  if (!source.includes("model-edit-form")) {
+    const editForm = [
+      "        ])) : createCommentVNode(\"\", true),",
+      "        editingModelValue.value ? (openBlock(), createElementBlock(\"div\", { key: \"model-edit-form\", class: \"model-edit-form\" }, [",
+      "          createBaseVNode(\"div\", { class: \"model-edit-form-header\" }, [",
+      "            createBaseVNode(\"div\", null, [",
+      "              createBaseVNode(\"h4\", null, \"编辑模型配置\"),",
+      "              createBaseVNode(\"p\", null, \"保存后当前模型配置会同时应用到 OpenClaw 与 Hermes。\")",
+      "            ]),",
+      "            createBaseVNode(\"button\", { class: \"model-close-btn\", onClick: cancelEditModel }, \"×\")",
+      "          ]),",
+      "          createBaseVNode(\"div\", { class: \"model-edit-grid\" }, [",
+      "            createBaseVNode(\"label\", { class: \"model-form-group\" }, [",
+      "              createBaseVNode(\"span\", { class: \"model-form-label\" }, \"API URL\"),",
+      "              withDirectives(createBaseVNode(\"input\", { type: \"text\", class: \"model-form-input\", \"onUpdate:modelValue\": ($event) => editUrl.value = $event, placeholder: \"请输入 API 地址\" }, null, 512), [[vModelText, editUrl.value]])",
+      "            ]),",
+      "            createBaseVNode(\"label\", { class: \"model-form-group\" }, [",
+      "              createBaseVNode(\"span\", { class: \"model-form-label\" }, \"API Key\"),",
+      "              withDirectives(createBaseVNode(\"input\", { type: \"password\", class: \"model-form-input\", \"onUpdate:modelValue\": ($event) => editKey.value = $event, placeholder: \"请输入 API Key\" }, null, 512), [[vModelText, editKey.value]])",
+      "            ]),",
+      "            createBaseVNode(\"label\", { class: \"model-form-group\" }, [",
+      "              createBaseVNode(\"span\", { class: \"model-form-label\" }, \"API 类型\"),",
+      "              withDirectives(createBaseVNode(\"select\", { class: \"model-form-input\", \"onUpdate:modelValue\": ($event) => editApiType.value = $event }, [",
+      "                (openBlock(), createElementBlock(Fragment, null, renderList(apiTypeOptions, (opt) => {",
+      "                  return createBaseVNode(\"option\", { key: opt.value, value: opt.value }, toDisplayString(opt.label), 9, _hoisted_49$1);",
+      "                }), 64))",
+      "              ], 512), [[vModelSelect, editApiType.value]])",
+      "            ]),",
+      "            createBaseVNode(\"label\", { class: \"model-form-group\" }, [",
+      "              createBaseVNode(\"span\", { class: \"model-form-label\" }, \"模型名称\"),",
+      "              withDirectives(createBaseVNode(\"input\", { type: \"text\", class: \"model-form-input\", \"onUpdate:modelValue\": ($event) => editModelName.value = $event, placeholder: \"请输入模型名称\" }, null, 512), [[vModelText, editModelName.value]])",
+      "            ])",
+      "          ]),",
+      "          createBaseVNode(\"div\", { class: \"model-edit-actions\" }, [",
+      "            createBaseVNode(\"button\", { class: \"model-edit-cancel\", onClick: cancelEditModel }, \"取消\"),",
+      "            createBaseVNode(\"button\", { class: \"model-btn-save\", onClick: saveEditingModel }, \"保存修改\")",
+      "          ])",
+      "        ])) : createCommentVNode(\"\", true),",
+      "        createBaseVNode(\"div\", { class: \"model-unified-hermes-note\" }, ["
+    ].join("\n");
+    if (!source.includes(afterSelectedList)) throw new Error("Could not find selected model list closing point.");
+    source = source.replace(afterSelectedList, editForm);
+  }
+
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -2643,7 +2881,7 @@ function patchHermesAiChatStyles(filePath) {
 
 function patchHermesUxStyles(filePath) {
   let source = fs.readFileSync(filePath, "utf8");
-  if (source.includes(".model-unified-hermes-note")) return;
+  if (source.includes(".model-api-purchase-card") && source.includes(".model-edit-form")) return;
   source += `
 
 .home-hermes-status-row {
@@ -2741,6 +2979,192 @@ function patchHermesUxStyles(filePath) {
   color: #002113;
   font-weight: 800;
   flex: 0 0 auto;
+}
+
+.model-api-purchase-card {
+  margin: 0 0 12px;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(78, 222, 163, 0.38);
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(78, 222, 163, 0.14), rgba(79, 131, 255, 0.1));
+  color: #1e293b;
+}
+
+.model-api-purchase-main {
+  min-width: 0;
+}
+
+.model-api-purchase-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.model-api-purchase-desc {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.model-api-purchase-action {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px;
+  background: #0f172a;
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.model-api-purchase-action:hover {
+  background: #1e293b;
+}
+
+.model-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.model-model-view .model-model-row .model-row-edit {
+  min-width: 48px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(79, 131, 255, 0.28);
+  border-radius: 7px;
+  background: rgba(79, 131, 255, 0.08);
+  color: #2563eb;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.model-model-view .model-model-row .model-row-edit:hover,
+.model-model-view .model-model-row .model-row-edit.active {
+  background: #4f83ff;
+  color: #fff;
+}
+
+.model-edit-form {
+  margin: 0 0 12px;
+  padding: 14px;
+  border: 1px solid rgba(79, 131, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.95);
+}
+
+.model-edit-form-header {
+  margin-bottom: 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-edit-form-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.model-edit-form-header p {
+  margin: 3px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.model-edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+.model-edit-form .model-form-group {
+  margin: 0;
+}
+
+.model-edit-form .model-form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.model-edit-form .model-form-input {
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid rgba(100, 116, 139, 0.26);
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.model-edit-form .model-form-input:focus {
+  border-color: #4f83ff;
+  outline: none;
+}
+
+.model-edit-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-edit-actions .model-btn-save {
+  width: auto;
+  min-width: 96px;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  background: #4f83ff;
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.model-edit-actions .model-btn-save:hover {
+  opacity: 0.9;
+}
+
+.model-edit-cancel {
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(100, 116, 139, 0.26);
+  border-radius: 8px;
+  background: #fff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.model-edit-cancel:hover {
+  background: #f1f5f9;
+}
+
+@media (max-width: 720px) {
+  .model-api-purchase-card,
+  .model-edit-form-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .model-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .model-row-actions {
+    margin-left: 8px;
+  }
 }
 
 .skill-hermes-actions {
