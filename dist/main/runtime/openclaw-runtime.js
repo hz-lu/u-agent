@@ -21,6 +21,7 @@ export class OpenClawRuntime {
         this.logSink = callback;
     }
     async getStatus() {
+        this.rewritePortableConfigPaths();
         const ready = await checkTcpPort(18789);
         const command = this.findOpenClawCommand();
         const node = this.findNode();
@@ -57,6 +58,7 @@ export class OpenClawRuntime {
     }
     async start() {
         this.ensureRuntime();
+        this.rewritePortableConfigPaths();
         const command = this.findOpenClawCommand();
         if (!command) {
             this.logSink({ agent: "openclaw", level: "error", message: "OpenClaw runtime command is missing.", at: new Date().toISOString() });
@@ -80,6 +82,7 @@ export class OpenClawRuntime {
         return this.start();
     }
     async chat(message, messages = []) {
+        this.rewritePortableConfigPaths();
         const config = this.readOpenClawConfig();
         const modelRef = config?.agents?.defaults?.model?.primary || "";
         const [providerId, modelIdFromRef] = String(modelRef).split("/");
@@ -115,6 +118,42 @@ export class OpenClawRuntime {
         const result = spawnSync("tar.exe", ["-xf", zip, "-C", this.runtimeRoot], { encoding: "utf8", windowsHide: true });
         if (result.status !== 0) {
             this.logSink({ agent: "openclaw", level: "error", message: result.stderr || "Failed to extract openclaw.zip", at: new Date().toISOString() });
+        }
+    }
+    rewritePortableConfigPaths() {
+        const configFile = path.join(this.dataRoot, "openclaw.json");
+        if (!fs.existsSync(configFile))
+            return;
+        try {
+            const config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+            let changed = false;
+            const extraDirs = config?.skills?.load?.extraDirs;
+            if (Array.isArray(extraDirs)) {
+                const normalized = extraDirs.map((entry) => {
+                    if (typeof entry !== "string")
+                        return entry;
+                    const normalizedEntry = entry.replace(/\\/g, "/");
+                    if (/^[A-Za-z]:\/skills\/?$/.test(normalizedEntry) || normalizedEntry === "skills" || normalizedEntry.endsWith("/skills")) {
+                        return "skills";
+                    }
+                    return entry;
+                });
+                if (JSON.stringify(normalized) !== JSON.stringify(extraDirs)) {
+                    config.skills.load.extraDirs = normalized;
+                    changed = true;
+                }
+            }
+            if (changed) {
+                fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+            }
+        }
+        catch (error) {
+            this.logSink({
+                agent: "openclaw",
+                level: "warn",
+                message: `Failed to rewrite portable config paths: ${error instanceof Error ? error.message : String(error)}`,
+                at: new Date().toISOString()
+            });
         }
     }
     buildEnv() {

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PortablePaths } from "./portable-paths.js";
@@ -11,11 +12,40 @@ let paths;
 let hermes;
 let openclaw;
 const logs = [];
+function appendDesktopCrashLog(kind, payload) {
+    try {
+        const root = paths?.dataRoot || path.join(process.cwd(), "data");
+        const logDir = path.join(root, ".openclaw", "logs");
+        fs.mkdirSync(logDir, { recursive: true });
+        const text = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+        fs.appendFileSync(path.join(logDir, "desktop-crash.log"), `[${new Date().toISOString()}] ${kind}\n${text}\n\n`, "utf8");
+    }
+    catch {
+    }
+}
+function installCrashDiagnostics() {
+    process.on("uncaughtException", (error) => {
+        appendDesktopCrashLog("uncaughtException", { message: error.message, stack: error.stack || "" });
+    });
+    process.on("unhandledRejection", (reason) => {
+        const error = reason instanceof Error ? { message: reason.message, stack: reason.stack || "" } : { reason: String(reason) };
+        appendDesktopCrashLog("unhandledRejection", error);
+    });
+    app.on("render-process-gone", (_event, webContents, details) => {
+        appendDesktopCrashLog("render-process-gone", { url: webContents.getURL(), details });
+    });
+    app.on("child-process-gone", (_event, details) => {
+        appendDesktopCrashLog("child-process-gone", details);
+    });
+}
 function pushLog(line) {
-    logs.push(line);
+    const message = line.message.length > 12000
+        ? `${line.message.slice(0, 5000)}\n...[界面日志已精简，完整日志保存在 U 盘 data 目录]...\n${line.message.slice(-5000)}`
+        : line.message;
+    logs.push({ ...line, message });
     if (logs.length > 500)
         logs.shift();
-    mainWindow?.webContents.send("agent:log", line);
+    mainWindow?.webContents.send("agent:log", { ...line, message });
 }
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -64,6 +94,7 @@ function registerIpc() {
     ipcMain.handle("hermes:write-config", async (_, config) => hermes.writeConfig(config));
     ipcMain.handle("hermes:test-connector", async (_, id) => hermes.testConnector(id));
     ipcMain.handle("hermes:test-sandbox", async (_, id) => hermes.testSandbox(id));
+    ipcMain.handle("hermes:sync-skills", async () => hermes.syncAndVerifySkills({ silent: false }));
     ipcMain.handle("hermes:add-schedule", async (_, input) => hermes.addSchedule(input));
     ipcMain.handle("hermes:remove-schedule", async (_, id) => hermes.removeSchedule(id));
     ipcMain.handle("hermes:export-config", async () => hermes.exportConfig());
@@ -88,6 +119,7 @@ function registerIpc() {
         return openclaw.chat(request.message);
     });
 }
+installCrashDiagnostics();
 app.whenReady().then(() => {
     paths = new PortablePaths();
     paths.ensureBaseDirs();

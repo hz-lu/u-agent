@@ -4,7 +4,7 @@ export type RuntimeState = "missing" | "idle" | "starting" | "running" | "stoppi
 
 export interface AgentLogLine {
   agent: AgentId;
-  level: "system" | "stdout" | "stderr" | "error";
+  level: "system" | "stdout" | "stderr" | "error" | "warn";
   message: string;
   at: string;
 }
@@ -77,6 +77,8 @@ export interface ChatResponse {
   ok: boolean;
   reply?: string;
   error?: string;
+  runId?: string;
+  runDir?: string;
 }
 
 export interface ActionResult {

@@ -71,6 +71,17 @@ const sandboxRequiredFields: Record<SandboxConfig["id"], string[]> = {
   modal: ["tokenId"]
 };
 
+function appendLimited(current: string, text: string, limit: number): string {
+  const next = current + text;
+  return next.length > limit ? next.slice(-limit) : next;
+}
+
+function truncateForUi(text: string, limit = 24000): string {
+  if (text.length <= limit) return text;
+  const half = Math.floor(limit / 2);
+  return `${text.slice(0, half)}\n\n[中间内容已折叠，完整内容已保存到 U 盘 data/.hermes/runs 目录。]\n\n${text.slice(-half)}`;
+}
+
 export class HermesRuntime implements AgentRuntime {
   private readonly dashboard = new ProcessSupervisor("hermes");
   private readonly gateway = new ProcessSupervisor("hermes");
@@ -428,12 +439,40 @@ export class HermesRuntime implements AgentRuntime {
     if (!(await checkTcpPort(8642, "127.0.0.1", 2000))) {
       return { ok: false, error: "Hermes Agent API is not ready on 127.0.0.1:8642." };
     }
+    const runId = `hermes-chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const runDir = path.join(this.dataRoot, "runs", runId);
+    const responsePath = path.join(runDir, "response.json");
+    const requestPath = path.join(runDir, "request.json");
+    fs.mkdirSync(runDir, { recursive: true });
     const payload = JSON.stringify({
       model: "hermes-agent",
-      messages: [...messages, { role: "user", content: message }],
+      messages: [...messages.slice(-20), { role: "user", content: message }],
       stream: false
     });
+    await fs.promises.writeFile(requestPath, JSON.stringify({ startedAt: new Date().toISOString(), message, messageCount: messages.length }, null, 2), "utf8");
     return new Promise((resolve) => {
+      let settled = false;
+      let rawTail = "";
+      let spool = Promise.resolve();
+      const finish = async (result: ChatResponse) => {
+        if (settled) return;
+        settled = true;
+        try {
+          await spool;
+        } catch {
+        }
+        resolve(result);
+      };
+      const appendResponse = (chunk: string) => {
+        rawTail = appendLimited(rawTail, chunk, 1024 * 1024);
+        spool = spool.then(() => fs.promises.appendFile(responsePath, chunk, "utf8")).catch((error) => {
+          this.logSink({ agent: "hermes", level: "stderr", message: `Hermes response spool failed: ${error.message}`, at: new Date().toISOString() });
+        });
+      };
+      const finishError = (rawText: string) => {
+        const classified = this.classifyChatError(rawText, runId, runDir);
+        finish({ ...classified, error: `${classified.error}\n\n技术日志：${runDir}` });
+      };
       const req = http.request({
         hostname: "127.0.0.1",
         port: 8642,
@@ -446,23 +485,58 @@ export class HermesRuntime implements AgentRuntime {
         },
         timeout: 120000
       }, (res) => {
-        let raw = "";
         res.setEncoding("utf8");
-        res.on("data", (chunk) => raw += chunk);
-        res.on("end", () => {
+        res.on("data", (chunk) => appendResponse(String(chunk)));
+        res.on("end", async () => {
+          await spool;
           try {
-            const json = JSON.parse(raw);
-            const reply = json.choices?.[0]?.message?.content || json.reply || raw;
-            resolve({ ok: (res.statusCode || 0) < 400, reply, error: (res.statusCode || 0) >= 400 ? raw : undefined });
+            const json = JSON.parse(rawTail);
+            const reply = json.choices?.[0]?.message?.content || json.reply || rawTail;
+            const ok = (res.statusCode || 0) < 400;
+            finish(ok
+              ? { ok: true, reply: truncateForUi(reply), runId, runDir }
+              : (() => {
+                const classified = this.classifyChatError(rawTail, runId, runDir);
+                return { ...classified, error: `${classified.error}\n\n技术日志：${runDir}` };
+              })());
           } catch {
-            resolve({ ok: false, error: raw || `HTTP ${res.statusCode}` });
+            const errorText = rawTail || `HTTP ${res.statusCode}`;
+            finishError(errorText);
           }
         });
       });
-      req.on("error", (error) => resolve({ ok: false, error: error.message }));
+      req.on("timeout", () => {
+        req.destroy(new Error("Hermes chat request timed out after 120 seconds."));
+      });
+      req.on("error", (error) => {
+        finishError(error.message);
+      });
       req.write(payload);
       req.end();
     });
+  }
+
+  private classifyChatError(rawText: string, runId: string, runDir: string): ChatResponse {
+    const raw = String(rawText || "");
+    const lower = raw.toLowerCase();
+    const has = (items: string[]) => items.some((item) => lower.includes(item.toLowerCase()) || raw.includes(item));
+    const withLog = (error: string): ChatResponse => ({ ok: false, error, runId, runDir });
+    if (has(["insufficient_quota", "quota", "billing", "balance", "payment required", "resource_exhausted", "402", "额度", "余额", "欠费", "充值"])) {
+      return withLog("当前模型 API 额度不足或账户余额已用完，Hermes 无法继续调用模型。请充值 token/API 套餐，或在模型配置中切换到其他可用模型后重试。");
+    }
+    if (has(["invalid_api_key", "unauthorized", "forbidden", "permission denied", "401", "403", "api key", "鉴权", "认证", "权限", "密钥无效"])) {
+      return withLog("当前模型 API Key 无效、已过期，或没有访问该模型的权限。请在模型配置中重新填写 API Key，并先测试连接。");
+    }
+    if (has(["rate limit", "too many requests", "429", "限流", "频率", "请求过多"])) {
+      return withLog("模型服务当前限流，Hermes 暂时没有拿到可用回复。请稍后重试，或切换到更高限额的模型/API 套餐。");
+    }
+    if (has(["econnreset", "enotfound", "etimedout", "fetch failed", "network", "socket hang up", "timeout", "网络", "超时", "代理"])) {
+      return withLog("Hermes 连接模型服务失败，可能是网络、代理或服务端暂时不可用。请检查网络和 Base URL 后重试。");
+    }
+    if (has(["model not found", "invalid model", "not found", "404", "模型不存在", "模型名称"])) {
+      return withLog("当前配置的模型名称或 Base URL 不正确，Hermes 无法调用该模型。请检查模型配置并测试连接。");
+    }
+    return withLog(`Hermes 本次没有完成请求。可能是模型额度、API Key、网络、Base URL 或模型服务异常。\n\n最近错误：${raw.slice(-1200)}`);
   }
 
   syncAndVerifySkills(options: { silent?: boolean } = {}): HermesSkillReport {
