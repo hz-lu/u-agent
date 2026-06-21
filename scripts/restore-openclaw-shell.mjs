@@ -1068,6 +1068,29 @@ function patchHermesRuntimeEnv(filePath) {
 function patchMainProcessStability(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
 
+  if (!source.includes("codex-portable-electron-cache")) {
+    source = source.replace(
+      "const electronDataDir = path$1.join(localBase, \"electron-cache\");\nelectron.app.setPath(\"userData\", electronDataDir);",
+      [
+        "const electronDataDir = path$1.join(getAppRoot(), DIR_DATA, DIR_OPENCLAW, \"electron-cache\");",
+        "/* codex-portable-electron-cache */",
+        "try {",
+        "  fs$1.mkdirSync(electronDataDir, { recursive: true });",
+        "  electron.app.setPath(\"userData\", electronDataDir);",
+        "  electron.app.setPath(\"sessionData\", path$1.join(electronDataDir, \"Session Data\"));",
+        "  electron.app.setPath(\"cache\", path$1.join(electronDataDir, \"Cache\"));",
+        "  electron.app.setPath(\"logs\", path$1.join(getAppRoot(), DIR_DATA, DIR_OPENCLAW, \"logs\"));",
+        "} catch {",
+        "  electron.app.setPath(\"userData\", electronDataDir);",
+        "}"
+      ].join("\n")
+    );
+  }
+  source = source.replace(
+    "const RUNTIME_DIR = path$1.join(localBase, \"runtime\");",
+    "const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);"
+  );
+
   if (!source.includes("codex-desktop-crash-diagnostics")) {
     const dataRootAnchor = [
       "function getDataRoot() {",
@@ -1112,6 +1135,23 @@ function patchMainProcessStability(filePath) {
     source = source.replace(
       "electron.app.whenReady().then(async () => {",
       "installDesktopCrashDiagnostics();\nelectron.app.whenReady().then(async () => {"
+    );
+  }
+
+  if (!source.includes("renderer:log")) {
+    source = source.replace(
+      "  electron.ipcMain.handle(\"show-error-dialog\", async (_, { title, message }) => {",
+      [
+        "  electron.ipcMain.handle(\"renderer:log\", async (_, payload = {}) => {",
+        "    try {",
+        "      appendDesktopCrashLog(\"renderer-\" + (payload.kind || \"log\"), { message: payload.message || \"\", stack: payload.stack || \"\", source: payload.source || \"\", lineno: payload.lineno || 0, colno: payload.colno || 0, at: new Date().toISOString() });",
+        "      return { ok: true };",
+        "    } catch (e) {",
+        "      return { ok: false, error: e?.message || String(e) };",
+        "    }",
+        "  });",
+        "  electron.ipcMain.handle(\"show-error-dialog\", async (_, { title, message }) => {"
+      ].join("\n")
     );
   }
 
@@ -1400,13 +1440,14 @@ function patchHermesLogAndWechatDiagnostics(filePath) {
 
 function patchHermesPreload(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics") && source.includes("ipcOnWeChatQrText") && source.includes("onGatewayRestarted")) return;
+  if (source.includes("ipcGetHermesLogs") && source.includes("ipcGetWeChatDiagnostics") && source.includes("ipcOnWeChatQrText") && source.includes("onGatewayRestarted") && source.includes("ipcLogRendererError")) return;
   const anchor = "  ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke(\"toggle-skill\", { skillName, enabled }),";
   const replacement = [
     anchor,
     "  ipcSyncHermesSkills: () => electron.ipcRenderer.invoke(\"sync-hermes-skills\"),",
     "  ipcGetHermesLogs: (options) => electron.ipcRenderer.invoke(\"hermes:getLogs\", options),",
-    "  ipcGetWeChatDiagnostics: () => electron.ipcRenderer.invoke(\"wechat:diagnostics\"),"
+    "  ipcGetWeChatDiagnostics: () => electron.ipcRenderer.invoke(\"wechat:diagnostics\"),",
+    "  ipcLogRendererError: (payload) => electron.ipcRenderer.invoke(\"renderer:log\", payload),"
   ].join("\n");
   if (!source.includes(anchor)) {
     throw new Error("Could not find preload skill IPC insertion point.");
@@ -1987,6 +2028,41 @@ function patchWeChatDiagnosticsUi(filePath) {
   source = source.replace(
     "        const status = await window.uclaw.ipcGetWeChatStatus();\n        handleWechatStatus(status);",
     "        const status = await window.uclaw.ipcGetWeChatStatus();\n        handleWechatStatus(status);"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchAiChatRendererStability(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("codex-renderer-error-logger")) {
+    const appAnchor = "const app = createApp(_sfc_main);";
+    const logger = [
+      "function logRendererIssue(kind, payload = {}) {",
+      "  /* codex-renderer-error-logger */",
+      "  try {",
+      "    window.uclaw?.ipcLogRendererError?.({ kind, message: payload?.message || \"\", stack: payload?.stack || \"\", source: payload?.source || \"\", lineno: payload?.lineno || 0, colno: payload?.colno || 0 });",
+      "  } catch {",
+      "  }",
+      "}",
+      "window.addEventListener(\"error\", (event) => {",
+      "  logRendererIssue(\"window-error\", { message: event?.message || String(event?.error || \"\"), stack: event?.error?.stack || \"\", source: event?.filename || \"\", lineno: event?.lineno || 0, colno: event?.colno || 0 });",
+      "});",
+      "window.addEventListener(\"unhandledrejection\", (event) => {",
+      "  const reason = event?.reason;",
+      "  logRendererIssue(\"unhandledrejection\", { message: reason?.message || String(reason || \"\"), stack: reason?.stack || \"\" });",
+      "});",
+      appAnchor
+    ].join("\n");
+    if (!source.includes(appAnchor)) throw new Error("Could not find renderer app creation anchor.");
+    source = source.replace(appAnchor, logger);
+  }
+  source = source.replace(
+    "      if (!_storeInitDone) {\n        _storeInitDone = true;\n        store.init();\n      }",
+    "      try { window.uclaw?.ipcLogRendererError?.({ kind: \"ai-chat-mounted\", message: \"mounted\" }); } catch {}\n      if (!_storeInitDone) {\n        _storeInitDone = true;\n        try { store.init(); } catch (e) { reportAiChatRendererIssue(\"store-init\", e); }\n      }"
+  );
+  source = source.replace(
+    "        store.connectToGateway();",
+    "        try { store.connectToGateway(); } catch (e) { reportAiChatRendererIssue(\"connect-gateway\", e); }"
   );
   fs.writeFileSync(filePath, source, "utf8");
 }
@@ -2828,10 +2904,23 @@ function patchHermesAiChat(filePath) {
     "      localStorage.setItem(\"uclaw_agent_mode\", mode);",
     "      nextTick(() => scrollToBottom(0));",
     "    }",
+    "    function reportAiChatRendererIssue(kind, error, extra = {}) {",
+    "      try {",
+    "        window.uclaw?.ipcLogRendererError?.({ kind: \"ai-chat-\" + kind, message: error?.message || String(error || \"\"), stack: error?.stack || \"\", ...extra });",
+    "      } catch {",
+    "      }",
+    "    }",
+    "    function compactHermesSavedMessages(items, limit = 40) {",
+    "      if (!Array.isArray(items)) return [];",
+    "      return items.slice(-limit).map((item) => {",
+    "        const content = typeof item?.content === \"string\" ? item.content : String(item?.content || \"\");",
+    "        const safeContent = content.length > 12000 ? content.slice(0, 5000) + \"\\n\\n[中间内容已折叠，完整输出请查看 Hermes 运行日志。]\\n\\n\" + content.slice(-5000) : content;",
+    "        return { id: String(item?.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`), role: item?.role === \"user\" ? \"user\" : \"assistant\", content: safeContent, attachments: Array.isArray(item?.attachments) ? item.attachments.slice(0, 5) : [], model: typeof item?.model === \"string\" ? item.model.slice(0, 80) : undefined, timestamp: Number(item?.timestamp || Date.now()), status: [\"done\", \"error\", \"streaming\"].includes(item?.status) ? item.status : \"done\", runId: typeof item?.runId === \"string\" ? item.runId : undefined, runDir: typeof item?.runDir === \"string\" ? item.runDir : undefined };",
+    "      });",
+    "    }",
     "    function saveHermesSession() {",
     "      try {",
-    "        const compactMessages = (items) => (Array.isArray(items) ? items.slice(-80).map((item) => ({ ...item, content: typeof item.content === \"string\" && item.content.length > 3e4 ? item.content.slice(0, 12e3) + \"\\n\\n[中间内容已折叠，完整输出请查看 Hermes 运行日志。]\\n\\n\" + item.content.slice(-12e3) : item.content })) : []);",
-    "        const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value };",
+    "        const state = { savedAt: Date.now(), hermesMessages: compactHermesSavedMessages(hermesMessages.value), collabMessages: compactHermesSavedMessages(collabMessages.value), input: String(hermesInputText.value || \"\").slice(0, 8000), mode: agentMode.value, runState: String(hermesRunState.value || \"\").slice(0, 300), collabRunState: String(collabRunState.value || \"\").slice(0, 300), hermesSending: hermesSending.value, collabSending: collabSending.value };",
     "        window.__uclawHermesChatState = state;",
     "        clearTimeout(window.__uclawHermesChatSaveTimer);",
     "        localStorage.setItem(\"uclaw_hermes_chat_state\", JSON.stringify(state));",
@@ -2839,16 +2928,17 @@ function patchHermesAiChat(filePath) {
     "          try { localStorage.setItem(\"uclaw_hermes_chat_state\", JSON.stringify(window.__uclawHermesChatState || state)); } catch {}",
     "        }, 180);",
     "        window.dispatchEvent(new CustomEvent(\"uclaw-hermes-chat-state\"));",
-    "      } catch {",
+    "      } catch (e) {",
+    "        reportAiChatRendererIssue(\"save-session\", e);",
     "      }",
     "    }",
     "    function loadHermesSession() {",
     "      try {",
     "        const liveState = window.__uclawHermesChatState;",
     "        if (liveState) {",
-    "          if (Array.isArray(liveState.hermesMessages)) hermesMessages.value = liveState.hermesMessages;",
-    "          else if (Array.isArray(liveState.messages)) hermesMessages.value = liveState.messages;",
-    "          if (Array.isArray(liveState.collabMessages)) collabMessages.value = liveState.collabMessages;",
+    "          if (Array.isArray(liveState.hermesMessages)) hermesMessages.value = compactHermesSavedMessages(liveState.hermesMessages);",
+    "          else if (Array.isArray(liveState.messages)) hermesMessages.value = compactHermesSavedMessages(liveState.messages);",
+    "          if (Array.isArray(liveState.collabMessages)) collabMessages.value = compactHermesSavedMessages(liveState.collabMessages);",
     "          if (typeof liveState.input === \"string\") hermesInputText.value = liveState.input;",
     "          if (typeof liveState.runState === \"string\") hermesRunState.value = liveState.runState;",
     "          if (typeof liveState.collabRunState === \"string\") collabRunState.value = liveState.collabRunState;",
@@ -2862,9 +2952,9 @@ function patchHermesAiChat(filePath) {
     "          const liveSavedAt = Number(liveState?.savedAt || 0);",
     "          const diskSavedAt = Number(state?.savedAt || 0);",
     "          if (liveState && liveSavedAt && diskSavedAt && diskSavedAt < liveSavedAt) return;",
-    "          if (Array.isArray(state.hermesMessages)) hermesMessages.value = state.hermesMessages;",
-    "          else if (Array.isArray(state.messages)) hermesMessages.value = state.messages;",
-    "          if (Array.isArray(state.collabMessages)) collabMessages.value = state.collabMessages;",
+    "          if (Array.isArray(state.hermesMessages)) hermesMessages.value = compactHermesSavedMessages(state.hermesMessages);",
+    "          else if (Array.isArray(state.messages)) hermesMessages.value = compactHermesSavedMessages(state.messages);",
+    "          if (Array.isArray(state.collabMessages)) collabMessages.value = compactHermesSavedMessages(state.collabMessages);",
     "          if (typeof state.input === \"string\") hermesInputText.value = state.input;",
     "          if (typeof state.runState === \"string\") hermesRunState.value = state.runState;",
     "          if (typeof state.collabRunState === \"string\") collabRunState.value = state.collabRunState;",
@@ -2873,7 +2963,14 @@ function patchHermesAiChat(filePath) {
     "        }",
     "        const mode = localStorage.getItem(\"uclaw_agent_mode\");",
     "        if ([\"openclaw\", \"hermes\", \"collab\"].includes(mode)) agentMode.value = mode;",
-    "      } catch {",
+    "      } catch (e) {",
+    "        reportAiChatRendererIssue(\"load-session\", e);",
+    "        try { localStorage.removeItem(\"uclaw_hermes_chat_state\"); } catch {}",
+    "        window.__uclawHermesChatState = null;",
+    "        hermesMessages.value = [];",
+    "        collabMessages.value = [];",
+    "        hermesSending.value = false;",
+    "        collabSending.value = false;",
     "      }",
     "    }",
     "    function handleHermesStateEvent() {",
@@ -4411,6 +4508,7 @@ patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
 patchHermesBackgroundChatRenderer(rendererTarget);
+patchAiChatRendererStability(rendererTarget);
 patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
