@@ -1423,6 +1423,271 @@ function patchHermesPreload(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesBackgroundChatIpc(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("codex-hermes-background-chat-task")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  const anchor = [
+    "  electron.ipcMain.handle(\"hermes:chat\", async (_, options) => {",
+    "    return await getHermesManager().chat(options || {});",
+    "  });"
+  ].join("\n");
+  const replacement = [
+    anchor,
+    "  const hermesChatTasks = new Map();",
+    "  function compactHermesChatTaskResult(result) {",
+    "    /* codex-hermes-background-chat-task */",
+    "    const payload = result && typeof result === \"object\" ? { ...result } : { ok: false, error: String(result || \"Hermes returned an empty result\") };",
+    "    const maxText = 60000;",
+    "    for (const key of [\"reply\", \"content\", \"message\", \"text\", \"error\", \"raw\"]) {",
+    "      if (typeof payload[key] === \"string\" && payload[key].length > maxText) {",
+    "        const fullPath = payload.stdoutPath || payload.stderrPath || payload.runDir || \"data/.hermes/runs\";",
+    "        payload[key] = payload[key].slice(0, 30000) + \"\\n\\n[UI display was shortened. Full output is saved under: \" + fullPath + \"]\\n\\n\" + payload[key].slice(-30000);",
+    "      }",
+    "    }",
+    "    return payload;",
+    "  }",
+    "  electron.ipcMain.handle(\"hermes:chatTaskStart\", async (_, options = {}) => {",
+    "    const requestedTaskId = typeof options?.clientTaskId === \"string\" && options.clientTaskId.trim() ? options.clientTaskId.trim() : \"\";",
+    "    const taskId = requestedTaskId || \"hermes-task-\" + Date.now() + \"-\" + Math.random().toString(36).slice(2, 8);",
+    "    const startedAt = new Date().toISOString();",
+    "    hermesChatTasks.set(taskId, { startedAt, sessionId: options?.sessionId || \"\" });",
+    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat-task] started \" + taskId + \" session=\" + (options?.sessionId || \"default\") });",
+    "    Promise.resolve()",
+    "      .then(() => getHermesManager().chat(options || {}))",
+    "      .then((result) => {",
+    "        const compact = compactHermesChatTaskResult(result);",
+    "        safeSend(\"hermes-chat-result\", { taskId, ok: compact?.ok !== false, result: compact, startedAt, finishedAt: new Date().toISOString() });",
+    "      })",
+    "      .catch((err) => {",
+    "        const error = err instanceof Error ? err.message : String(err);",
+    "        safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[hermes-chat-task] failed \" + taskId + \": \" + error });",
+    "        safeSend(\"hermes-chat-result\", { taskId, ok: false, result: { ok: false, error }, startedAt, finishedAt: new Date().toISOString() });",
+    "      })",
+    "      .finally(() => {",
+    "        hermesChatTasks.delete(taskId);",
+    "      });",
+    "    return { ok: true, taskId, startedAt };",
+    "  });"
+  ].join("\n");
+  if (!source.includes(anchor)) {
+    throw new Error("Could not find Hermes chat IPC handler for background task patch.");
+  }
+  source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesBackgroundChatPreload(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("ipcHermesChatStart") && source.includes("ipcOnHermesChatResult")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  const anchor = "  ipcHermesChat: (options) => electron.ipcRenderer.invoke(\"hermes:chat\", options),";
+  const replacement = [
+    anchor,
+    "  ipcHermesChatStart: (options) => electron.ipcRenderer.invoke(\"hermes:chatTaskStart\", options),",
+    "  ipcOnHermesChatResult: (callback) => {",
+    "    const listener = (_, data) => callback(data);",
+    "    electron.ipcRenderer.on(\"hermes-chat-result\", listener);",
+    "    return () => electron.ipcRenderer.removeListener(\"hermes-chat-result\", listener);",
+    "  },"
+  ].join("\n");
+  if (!source.includes(anchor)) {
+    throw new Error("Could not find preload Hermes chat API anchor.");
+  }
+  source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function replaceBlockByMarkers(source, startMarker, endMarker, replacement, label) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error(`Could not find ${label} start marker.`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) throw new Error(`Could not find ${label} end marker.`);
+  return source.slice(0, start) + replacement + source.slice(end);
+}
+
+function patchHermesBackgroundChatRenderer(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("codex-hermes-background-chat-renderer")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  source = source.replace(
+    "    const activeSending = computed(() => agentMode.value === \"openclaw\" ? store.sending : agentMode.value === \"collab\" ? collabSending.value : hermesSending.value);\n    const activeReady = computed(() => agentMode.value === \"openclaw\" ? store.isReady : agentMode.value === \"collab\" ? !collabSending.value && store.isReady : !hermesSending.value);",
+    "    const activeSending = computed(() => agentMode.value === \"openclaw\" ? store.sending : false);\n    const activeReady = computed(() => agentMode.value === \"openclaw\" ? store.isReady : agentMode.value === \"collab\" ? store.isReady : true);"
+  );
+  const helpersAndHermes = [
+    "    function updateHermesMessage(messageId, patch) {",
+    "      hermesMessages.value = hermesMessages.value.map((m) => m.id === messageId ? { ...m, ...patch } : m);",
+    "      saveHermesSession();",
+    "    }",
+    "    function updateCollabMessage(messageId, patch) {",
+    "      collabMessages.value = collabMessages.value.map((m) => m.id === messageId ? { ...m, ...patch } : m);",
+    "      saveHermesSession();",
+    "    }",
+    "    function getPendingHermesTasks() {",
+    "      /* codex-hermes-background-chat-renderer */",
+    "      window.__uclawHermesPendingTasks = window.__uclawHermesPendingTasks || {};",
+    "      return window.__uclawHermesPendingTasks;",
+    "    }",
+    "    function refreshHermesBusyFlags() {",
+    "      const tasks = Object.values(getPendingHermesTasks());",
+    "      hermesSending.value = tasks.some((task) => task.mode === \"hermes\");",
+    "      collabSending.value = tasks.some((task) => task.mode === \"collab\") || collabSending.value && false;",
+    "    }",
+    "    function handleHermesChatResult(payload) {",
+    "      const taskId = payload?.taskId || \"\";",
+    "      const tasks = getPendingHermesTasks();",
+    "      const task = tasks[taskId];",
+    "      if (!task) return;",
+    "      delete tasks[taskId];",
+    "      const result = payload?.result || {};",
+    "      const ok = payload?.ok !== false && result?.ok !== false;",
+    "      const content = ok ? getHermesReply(result) : result?.error || \"Hermes did not finish this request. Please test the current model in Model Config and retry.\";",
+    "      const patch = { content, status: ok ? \"done\" : \"error\", timestamp: Date.now(), runId: result?.runId, runDir: result?.runDir };",
+    "      if (task.mode === \"collab\") {",
+    "        updateCollabMessage(task.messageId, patch);",
+    "        collabRunState.value = ok ? \"协同流程已完成。\" : \"协同流程失败，请查看本条错误和 Hermes 日志。\";",
+    "      } else {",
+    "        updateHermesMessage(task.messageId, patch);",
+    "        hermesRunState.value = ok ? \"Hermes 已完成回复。\" : \"Hermes 暂时无法完成请求，请查看本条错误和 Hermes 日志。\";",
+    "      }",
+    "      refreshHermesBusyFlags();",
+    "      saveHermesSession();",
+    "      nextTick(() => scrollToBottom(0));",
+    "    }",
+    "    async function startHermesChatTask(options, taskMeta) {",
+    "      const start = window.uclaw?.ipcHermesChatStart;",
+    "      if (!start) {",
+    "        const result = await window.uclaw.ipcHermesChat(options);",
+    "        handleHermesChatResult({ taskId: taskMeta.localTaskId, ok: result?.ok !== false, result });",
+    "        return { ok: true, taskId: taskMeta.localTaskId, fallback: true };",
+    "      }",
+    "      const started = await start(options);",
+    "      if (!started?.ok || !started.taskId) throw new Error(started?.error || \"Hermes background task did not start\");",
+    "      const tasks = getPendingHermesTasks();",
+    "      tasks[started.taskId] = taskMeta;",
+    "      if (taskMeta.localTaskId && taskMeta.localTaskId !== started.taskId) delete tasks[taskMeta.localTaskId];",
+    "      return started;",
+    "    }",
+    "    async function sendHermesMessage(text2, attachments = []) {",
+    "      const content = (text2 || \"\").trim();",
+    "      if (!content) return;",
+    "      const now = Date.now();",
+    "      const assistantId = `hermes-assistant-pending-${now}-${Math.random().toString(36).slice(2, 7)}`;",
+    "      const localTaskId = `local-hermes-task-${now}-${Math.random().toString(36).slice(2, 7)}`;",
+    "      const userMessage = { id: `hermes-user-${now}`, role: \"user\", content, attachments, timestamp: now, status: \"done\" };",
+    "      const pendingMessage = { id: assistantId, role: \"assistant\", content: \"Hermes 正在后台生成回复。你可以继续切换到 OpenClaw 或协同窗口，不会中断本轮任务。\", model: \"Hermes Agent\", timestamp: now + 1, status: \"streaming\" };",
+    "      hermesMessages.value = [...hermesMessages.value, userMessage, pendingMessage];",
+    "      hermesSending.value = true;",
+    "      hermesRunState.value = \"Hermes 正在后台执行，本窗口和其它会话都可以继续使用。\";",
+    "      getPendingHermesTasks()[localTaskId] = { mode: \"hermes\", messageId: assistantId, localTaskId };",
+    "      saveHermesSession();",
+    "      scrollToBottom();",
+    "      try {",
+    "        const selectedModel = getSelectedHermesModel();",
+    "        await startHermesChatTask({",
+    "          clientTaskId: localTaskId,",
+    "          message: content,",
+    "          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content && m.status !== \"streaming\"),",
+    "          sessionId: \"hermes-ai-chat\",",
+    "          ...selectedModel",
+    "        }, { mode: \"hermes\", messageId: assistantId, localTaskId });",
+    "      } catch (e) {",
+    "        delete getPendingHermesTasks()[localTaskId];",
+    "        updateHermesMessage(assistantId, { content: \"Hermes 任务启动失败：\" + (e?.message || e), status: \"error\", timestamp: Date.now() });",
+    "        refreshHermesBusyFlags();",
+    "        hermesRunState.value = \"Hermes 任务启动失败。\";",
+    "      }",
+    "    }"
+  ].join("\n");
+  source = replaceBlockByMarkers(
+    source,
+    "    async function sendHermesMessage(text2, attachments = []) {",
+    "    async function sendCollaborativeMessage(text2, attachments = []) {",
+    helpersAndHermes + "\n",
+    "Hermes chat sender"
+  );
+  const collabReplacement = [
+    "    async function sendCollaborativeMessageV2(text2, attachments = []) {",
+    "      const content = (text2 || \"\").trim();",
+    "      if (!content) return;",
+    "      if (collabSending.value) {",
+    "        showToast(\"协同任务正在后台执行，可切换到 OpenClaw 或 Hermes 继续对话。\", false);",
+    "        return;",
+    "      }",
+    "      if (!store.isReady) {",
+    "        appendCollabAssistant(\"协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。\", \"协同编排\", \"error\");",
+    "        return;",
+    "      }",
+    "      const now = Date.now();",
+    "      collabMessages.value = [...collabMessages.value, { id: `collab-user-${now}`, role: \"user\", content, attachments, timestamp: now, status: \"done\" }];",
+    "      collabSending.value = true;",
+    "      collabRunState.value = \"协同执行中：OpenClaw 生成内部草稿，Hermes 随后在后台整理最终答复。\";",
+    "      saveHermesSession();",
+    "      scrollToBottom();",
+    "      const beforeLength = store.currentMessages.length;",
+    "      try {",
+    "        appendCollabAssistant(\"阶段 1/2：OpenClaw 正在生成内部草稿。\", \"协同编排\", \"done\");",
+    "        await store.sendMessage(content, attachments);",
+    "        const draft = await waitForOpenClawDraft(beforeLength);",
+    "        const draftText = draft?.content || \"OpenClaw 未返回可用草稿。\";",
+    "        collabMessages.value = collabMessages.value.filter((m) => !(m.model === \"协同编排\" && String(m.content || \"\").startsWith(\"阶段 1/2\")));",
+    "        const assistantId = `collab-assistant-pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;",
+    "        const localTaskId = `local-collab-task-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;",
+    "        collabMessages.value = [...collabMessages.value, { id: assistantId, role: \"assistant\", content: \"阶段 2/2：Hermes 正在后台复核内部草稿并整理最终答复。你可以切换到 OpenClaw 或 Hermes 继续对话。\", model: \"协同结果\", timestamp: Date.now(), status: \"streaming\", internalDraft: draftText }];",
+    "        const hermesPrompt = [",
+    "          \"你是 OpenClaw + Hermes 协同助手的最终整理者。\",",
+    "          \"用户只需要看到一个统一答案，不要分别介绍 OpenClaw 和 Hermes，除非用户明确要求比较两者。\",",
+    "          \"OpenClaw 草稿仅作为内部参考；如果草稿把身份、角色或问题理解错了，请直接纠正，不要重复草稿错误。\",",
+    "          \"如果用户问'介绍一下你'或'你是谁'，请介绍本客户端中的协同助手能力：OpenClaw 负责本地 Gateway、工具和渠道，Hermes 负责记忆、技能、复核与子代理能力。\",",
+    "          \"输出最终答案即可，不要写复核报告、不要列草稿质量表，除非用户要求审校。\",",
+    "          \"\",",
+    "          \"用户问题：\",",
+    "          content,",
+    "          \"\",",
+    "          \"OpenClaw 内部草稿：\",",
+    "          draftText",
+    "        ].join(\"\\n\");",
+    "        getPendingHermesTasks()[localTaskId] = { mode: \"collab\", messageId: assistantId, localTaskId };",
+    "        await startHermesChatTask({",
+    "          clientTaskId: localTaskId,",
+    "          message: hermesPrompt,",
+    "          messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content && m.status !== \"streaming\"),",
+    "          sessionId: \"openclaw-hermes-collab\",",
+    "          ...getSelectedHermesModel()",
+    "        }, { mode: \"collab\", messageId: assistantId, localTaskId });",
+    "      } catch (e) {",
+    "        appendCollabAssistant(\"协同流程失败：\" + (e?.message || e), \"协同编排\", \"error\");",
+    "        collabRunState.value = \"协同流程失败。\";",
+    "        collabSending.value = false;",
+    "        saveHermesSession();",
+    "        scrollToBottom();",
+    "      }",
+    "    }"
+  ].join("\n");
+  source = replaceBlockByMarkers(
+    source,
+    "    async function sendCollaborativeMessageV2(text2, attachments = []) {",
+    "    async function handleHermesChatConfig() {",
+    collabReplacement + "\n",
+    "collaborative chat sender"
+  );
+  source = source.replace(
+    "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      nextTick(() => scrollToBottom());",
+    "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      window.__uclawHermesResultOff = window.uclaw?.ipcOnHermesChatResult?.(handleHermesChatResult) || null;\n      nextTick(() => scrollToBottom());"
+  );
+  source = source.replace(
+    "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n    });",
+    "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      if (typeof window.__uclawHermesResultOff === \"function\") window.__uclawHermesResultOff();\n      window.__uclawHermesResultOff = null;\n    });"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchGatewayRestartStatus(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
   if (source.includes("codex-gateway-restart-status-recovery")) {
@@ -3934,10 +4199,12 @@ patchHermesRuntimeEnv(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
+patchHermesBackgroundChatIpc(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
 const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
 patchHermesPreload(preloadTarget);
+patchHermesBackgroundChatPreload(preloadTarget);
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
@@ -3947,6 +4214,7 @@ patchGatewayRestartRecoveryUi(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
+patchHermesBackgroundChatRenderer(rendererTarget);
 patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
