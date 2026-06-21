@@ -952,6 +952,42 @@ function patchHermesRuntimeEnv(filePath) {
     "        const marker = streamName + \" 已写入 \" + Math.round(bytes / 1024) + \"KB 到 \" + filePath + \"；桌面仅保留尾部用于显示，任务会继续执行。\";",
     "        safeSend(\"hermes-log\", { type: \"system\", msg: \"[chat-output-spool] \" + marker });",
     "      }",
+    "      function classifyHermesError(rawText, context = {}) {",
+    "        const raw = String(rawText || \"\").trim();",
+    "        const lower = raw.toLowerCase();",
+    "        const has = (items) => items.some((item) => lower.includes(String(item).toLowerCase()) || raw.includes(String(item)));",
+    "        const logLine = context.runDir ? \"\\n\\n\\u6280\\u672f\\u65e5\\u5fd7\\uff1a\" + context.runDir : \"\";",
+    "        const build = (errorKind, title, reasons, actions) => ({",
+    "          ok: false,",
+    "          errorKind,",
+    "          error: title + (reasons && reasons.length ? \"\\n\\n\\u53ef\\u80fd\\u539f\\u56e0\\uff1a\\n\" + reasons.map((item, index) => index + 1 + \". \" + item).join(\"\\n\") : \"\") + (actions && actions.length ? \"\\n\\n\\u5efa\\u8bae\\u5904\\u7406\\uff1a\\n\" + actions.map((item, index) => index + 1 + \". \" + item).join(\"\\n\") : \"\") + logLine,",
+    "          suggestions: actions || [],",
+    "          technicalError: raw.slice(-4000),",
+    "          runId: context.runId,",
+    "          runDir: context.runDir,",
+    "          stdoutPath: context.stdoutPath,",
+    "          stderrPath: context.stderrPath",
+    "        });",
+    "        if (has([\"insufficient_quota\", \"quota\", \"billing\", \"balance\", \"insufficient balance\", \"credit\", \"payment required\", \"resource_exhausted\", \"402\", \"\\u989d\\u5ea6\", \"\\u4f59\\u989d\", \"\\u6b20\\u8d39\", \"\\u5145\\u503c\"])) {",
+    "          return build(\"quota_exhausted\", \"\\u5f53\\u524d\\u6a21\\u578b API \\u989d\\u5ea6\\u4e0d\\u8db3\\u6216\\u8d26\\u6237\\u4f59\\u989d\\u5df2\\u7528\\u5b8c\\uff0cHermes \\u65e0\\u6cd5\\u7ee7\\u7eed\\u8c03\\u7528\\u6a21\\u578b\\u3002\", [], [\"\\u5145\\u503c token/API \\u5957\\u9910\\u540e\\u91cd\\u8bd5\\u3002\", \"\\u6216\\u5728\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u4e2d\\u5207\\u6362\\u5230\\u5176\\u4ed6\\u53ef\\u7528\\u6a21\\u578b\\uff0c\\u5e76\\u5148\\u70b9\\u51fb\\u6d4b\\u8bd5\\u8fde\\u63a5\\u3002\"]);",
+    "        }",
+    "        if (has([\"invalid_api_key\", \"invalid api key\", \"unauthorized\", \"forbidden\", \"permission denied\", \"401\", \"403\", \"api key\", \"\\u9274\\u6743\", \"\\u8ba4\\u8bc1\", \"\\u6743\\u9650\", \"\\u5bc6\\u94a5\\u65e0\\u6548\"])) {",
+    "          return build(\"auth\", \"\\u5f53\\u524d\\u6a21\\u578b API Key \\u65e0\\u6548\\u3001\\u5df2\\u8fc7\\u671f\\uff0c\\u6216\\u6ca1\\u6709\\u8bbf\\u95ee\\u8be5\\u6a21\\u578b\\u7684\\u6743\\u9650\\u3002\", [], [\"\\u8bf7\\u5728\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u4e2d\\u91cd\\u65b0\\u586b\\u5199 API Key\\u3002\", \"\\u4fdd\\u5b58\\u540e\\u5148\\u6d4b\\u8bd5\\u8fde\\u63a5\\uff0c\\u518d\\u56de\\u5230 Hermes \\u5bf9\\u8bdd\\u91cd\\u8bd5\\u3002\"]);",
+    "        }",
+    "        if (has([\"rate limit\", \"too many requests\", \"429\", \"\\u9650\\u6d41\", \"\\u9891\\u7387\", \"\\u8bf7\\u6c42\\u8fc7\\u591a\"])) {",
+    "          return build(\"rate_limit\", \"\\u6a21\\u578b\\u670d\\u52a1\\u5f53\\u524d\\u9650\\u6d41\\uff0cHermes \\u6682\\u65f6\\u6ca1\\u6709\\u62ff\\u5230\\u53ef\\u7528\\u56de\\u590d\\u3002\", [], [\"\\u7a0d\\u540e\\u91cd\\u8bd5\\u3002\", \"\\u5982\\u679c\\u9891\\u7e41\\u51fa\\u73b0\\uff0c\\u8bf7\\u5207\\u6362\\u5230\\u66f4\\u9ad8\\u9650\\u989d\\u7684\\u6a21\\u578b\\u6216\\u5957\\u9910\\u3002\"]);",
+    "        }",
+    "        if (has([\"econnreset\", \"enotfound\", \"etimedout\", \"connecttimeout\", \"fetch failed\", \"network\", \"socket hang up\", \"timeout\", \"\\u7f51\\u7edc\", \"\\u8d85\\u65f6\", \"\\u4ee3\\u7406\"])) {",
+    "          return build(\"network\", \"Hermes \\u8fde\\u63a5\\u6a21\\u578b\\u670d\\u52a1\\u5931\\u8d25\\uff0c\\u53ef\\u80fd\\u662f\\u7f51\\u7edc\\u3001\\u4ee3\\u7406\\u6216\\u670d\\u52a1\\u7aef\\u6682\\u65f6\\u4e0d\\u53ef\\u7528\\u3002\", [], [\"\\u68c0\\u67e5\\u7f51\\u7edc\\u548c\\u4ee3\\u7406\\u8bbe\\u7f6e\\u540e\\u91cd\\u8bd5\\u3002\", \"\\u5230\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u9875\\u6d4b\\u8bd5 Base URL \\u662f\\u5426\\u53ef\\u8fde\\u63a5\\u3002\"]);",
+    "        }",
+    "        if (has([\"model not found\", \"invalid model\", \"not found\", \"404\", \"\\u6a21\\u578b\\u4e0d\\u5b58\\u5728\", \"\\u6a21\\u578b\\u540d\\u79f0\"])) {",
+    "          return build(\"model_not_found\", \"\\u5f53\\u524d\\u914d\\u7f6e\\u7684\\u6a21\\u578b\\u540d\\u79f0\\u6216 Base URL \\u4e0d\\u6b63\\u786e\\uff0cHermes \\u65e0\\u6cd5\\u8c03\\u7528\\u8be5\\u6a21\\u578b\\u3002\", [], [\"\\u8bf7\\u5728\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u4e2d\\u68c0\\u67e5\\u6a21\\u578b\\u540d\\u79f0\\u3001\\u4f9b\\u5e94\\u5546\\u548c Base URL\\u3002\", \"\\u4fdd\\u5b58\\u540e\\u70b9\\u51fb\\u6d4b\\u8bd5\\u8fde\\u63a5\\u3002\"]);",
+    "        }",
+    "        if (has([\"no final response was produced\", \"no final response\"])) {",
+    "          return build(\"no_final_response\", \"Hermes \\u6ca1\\u6709\\u4ece\\u6a21\\u578b\\u670d\\u52a1\\u62ff\\u5230\\u53ef\\u7528\\u56de\\u590d\\u3002\", [\"API \\u989d\\u5ea6\\u4e0d\\u8db3\\u6216\\u8d26\\u6237\\u4f59\\u989d\\u5df2\\u7528\\u5b8c\\u3002\", \"API Key \\u65e0\\u6548\\u3001\\u8fc7\\u671f\\uff0c\\u6216\\u6ca1\\u6709\\u8be5\\u6a21\\u578b\\u6743\\u9650\\u3002\", \"\\u6a21\\u578b\\u670d\\u52a1\\u9650\\u6d41\\u6216\\u7f51\\u7edc\\u8d85\\u65f6\\u3002\", \"\\u6a21\\u578b\\u540d\\u79f0\\u6216 Base URL \\u914d\\u7f6e\\u4e0d\\u6b63\\u786e\\u3002\"], [\"\\u8bf7\\u5148\\u5230\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u9875\\u6d4b\\u8bd5\\u5f53\\u524d\\u6a21\\u578b\\u8fde\\u63a5\\u3002\", \"\\u5982\\u679c\\u989d\\u5ea6\\u4e0d\\u8db3\\uff0c\\u8bf7\\u5145\\u503c\\u6216\\u5207\\u6362\\u5230\\u5176\\u4ed6\\u53ef\\u7528\\u6a21\\u578b\\u540e\\u91cd\\u8bd5\\u3002\"]);",
+    "        }",
+    "        return build(\"unknown\", \"Hermes \\u672c\\u6b21\\u6ca1\\u6709\\u5b8c\\u6210\\u8bf7\\u6c42\\uff0c\\u4f46\\u5e95\\u5c42\\u9519\\u8bef\\u6ca1\\u6709\\u7ed9\\u51fa\\u660e\\u786e\\u539f\\u56e0\\u3002\", [\"\\u6a21\\u578b API \\u989d\\u5ea6\\u6216\\u4f59\\u989d\\u95ee\\u9898\\u3002\", \"API Key\\u3001\\u6a21\\u578b\\u540d\\u79f0\\u6216 Base URL \\u914d\\u7f6e\\u95ee\\u9898\\u3002\", \"\\u7f51\\u7edc\\u3001\\u4ee3\\u7406\\u6216\\u6a21\\u578b\\u670d\\u52a1\\u6682\\u65f6\\u5f02\\u5e38\\u3002\"], [\"\\u8bf7\\u5230\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u9875\\u70b9\\u51fb\\u6d4b\\u8bd5\\u8fde\\u63a5\\u3002\", \"\\u68c0\\u67e5\\u65e5\\u5fd7\\u8def\\u5f84\\u4e2d\\u7684\\u8be6\\u7ec6\\u4fe1\\u606f\\uff0c\\u6216\\u66f4\\u6362\\u6a21\\u578b\\u540e\\u91cd\\u8bd5\\u3002\"]);",
+    "      }",
     "      const timer = setTimeout(() => {",
     "        try {",
     "          child.kill(\"SIGKILL\");",
@@ -1000,6 +1036,28 @@ function patchHermesRuntimeEnv(filePath) {
     "  }"
   ].join("\n");
   source = source.slice(0, chatStart) + chatReplacement + source.slice(chatEnd);
+  source = source.replace(
+    /        const errTail = stderr\.trim\(\)\.slice\(-1200\);\n        const timeoutMessage = .*?\n        safeSend\("hermes-log", \{ type: "stderr", msg: "\[chat-timeout\] " \+ timeoutMessage \}\);\n        finish\(\{ ok: false, error: timeoutMessage \}\);/s,
+    [
+      "        const errTail = stderr.trim().slice(-1200);",
+      "        const timeoutResult = classifyHermesError(\"timeout \" + errTail, { runId, runDir, stdoutPath, stderrPath });",
+      "        const timeoutMessage = timeoutResult.error;",
+      "        safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[chat-timeout] \" + timeoutMessage });",
+      "        finish(timeoutResult);"
+    ].join("\n")
+  );
+  source = source.replace(
+    "        finish({ ok: false, error: err.message });",
+    "        finish(classifyHermesError(err.message, { runId, runDir, stdoutPath, stderrPath }));"
+  );
+  source = source.replace(
+    /          finish\(\{ ok: false, error: \(errText\.slice\(-4000\) \|\| reply\.slice\(-4000\) \|\| "Hermes chat exited with code " \+ code\) \+ .*? runId, runDir, stdoutPath, stderrPath \}\);/,
+    "          finish(classifyHermesError(errText.slice(-4000) || reply.slice(-4000) || \"Hermes chat exited with code \" + code, { runId, runDir, stdoutPath, stderrPath }));"
+  );
+  source = source.replace(
+    "        const replyForUi = reply.length > maxStdoutBytes ?",
+    "        if (!reply) {\n          finish(classifyHermesError(\"no final response was produced\", { runId, runDir, stdoutPath, stderrPath }));\n          return;\n        }\n        const replyForUi = reply.length > maxStdoutBytes ?"
+  );
   source = source.replaceAll("\n    this.syncOpenClawSkillsToHermes({ silent: false });", "");
   source = source.replaceAll("\n    this.repairShims();", "");
 
@@ -2288,22 +2346,22 @@ function patchHermesAiChat(filePath) {
     "        hermesMessages.value = [...hermesMessages.value, {",
     "          id: `hermes-assistant-${Date.now()}`,",
     "          role: \"assistant\",",
-    "          content: ok ? getHermesReply(result) : `Hermes 调用失败: ${result?.error || \"unknown error\"}`,",
+    "          content: ok ? getHermesReply(result) : (result?.error || \"Hermes 暂时无法完成请求，请到模型配置页测试当前模型连接后重试。\"),",
     "          model: agentMode.value === \"collab\" ? \"OpenClaw / Hermes 协同\" : \"Hermes Agent\",",
     "          timestamp: Date.now(),",
     "          status: ok ? \"done\" : \"error\"",
     "        }];",
-    "        hermesRunState.value = ok ? \"Hermes 已完成回复。\" : \"Hermes 调用失败。\";",
+    "        hermesRunState.value = ok ? \"Hermes 已完成回复。\" : \"Hermes 暂时无法完成请求。\";",
     "      } catch (e) {",
     "        hermesMessages.value = [...hermesMessages.value, {",
     "          id: `hermes-error-${Date.now()}`,",
     "          role: \"assistant\",",
-    "          content: \"Hermes 调用失败: \" + (e?.message || e),",
+    "          content: \"Hermes 暂时无法完成请求，请到模型配置页测试当前模型连接后重试。\\n\\n技术信息：\" + (e?.message || e),",
     "          model: \"Hermes Agent\",",
     "          timestamp: Date.now(),",
     "          status: \"error\"",
     "        }];",
-    "        hermesRunState.value = \"Hermes 调用失败。\";",
+    "        hermesRunState.value = \"Hermes 暂时无法完成请求。\";",
     "      } finally {",
     "        hermesSending.value = false;",
     "        saveHermesSession();",
@@ -2355,7 +2413,7 @@ function patchHermesAiChat(filePath) {
     "          sessionId: \"openclaw-hermes-collab\"",
     "        });",
     "        const ok = result?.ok !== false;",
-    "        appendHermesAssistant(ok ? getHermesReply(result) : `Hermes 协同复核失败: ${result?.error || \"unknown error\"}`, \"Hermes 协同复核\", ok ? \"done\" : \"error\");",
+    "        appendHermesAssistant(ok ? getHermesReply(result) : (result?.error || \"Hermes 暂时无法完成协同复核，请到模型配置页测试当前模型连接后重试。\"), \"Hermes 协同复核\", ok ? \"done\" : \"error\");",
     "        hermesRunState.value = ok ? \"协同流程已完成。\" : \"协同流程失败。\";",
     "      } catch (e) {",
     "        appendHermesAssistant(\"协同流程失败: \" + (e?.message || e), \"协同编排\", \"error\");",
@@ -2414,7 +2472,7 @@ function patchHermesAiChat(filePath) {
     "        });",
     "        const ok = result?.ok !== false;",
     "        collabMessages.value = collabMessages.value.filter((m) => !(m.model === \"协同编排\" && String(m.content || \"\").startsWith(\"阶段 2/2\")));",
-    "        appendCollabAssistant(ok ? getHermesReply(result) : `Hermes 协同整理失败: ${result?.error || \"unknown error\"}`, \"协同结果\", ok ? \"done\" : \"error\");",
+    "        appendCollabAssistant(ok ? getHermesReply(result) : (result?.error || \"Hermes 暂时无法完成协同整理，请到模型配置页测试当前模型连接后重试。\"), \"协同结果\", ok ? \"done\" : \"error\");",
     "        collabRunState.value = ok ? \"协同流程已完成。\" : \"协同流程失败。\";",
     "      } catch (e) {",
     "        appendCollabAssistant(\"协同流程失败: \" + (e?.message || e), \"协同编排\", \"error\");",
