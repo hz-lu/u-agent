@@ -2259,6 +2259,17 @@ function patchHermesAiChat(filePath) {
     "      loadHermesSession();",
     "      nextTick(() => scrollToBottom(0));",
     "    }",
+    "    function getSelectedHermesModel() {",
+    "      const selectedId = sessionCurrentModelId.value || \"\";",
+    "      const found = modelsStore.selectedModels.find((item) => item.value === selectedId || item.model === selectedId || item.label === selectedId) || modelsStore.selectedModels[0] || {};",
+    "      const provider = found.provider || (String(found.value || \"\").split(\"-\")[0]) || \"\";",
+    "      return {",
+    "        provider,",
+    "        modelName: found.model || found.name || found.label || selectedId,",
+    "        apiKey: found.key || found.apiKey || \"\",",
+    "        baseUrl: found.base || found.baseUrl || \"\"",
+    "      };",
+    "    }",
     "    function getHermesReply(result) {",
     "      if (!result) return \"\";",
     "      return result.reply || result.content || result.message || result.text || result.raw || \"Hermes 已返回空响应。\";",
@@ -2340,7 +2351,8 @@ function patchHermesAiChat(filePath) {
     "        const result = await window.uclaw.ipcHermesChat({",
     "          message: content,",
     "          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),",
-    "          sessionId: \"hermes-ai-chat\"",
+    "          sessionId: \"hermes-ai-chat\",",
+    "          ...getSelectedHermesModel()",
     "        });",
     "        const ok = result?.ok !== false;",
     "        hermesMessages.value = [...hermesMessages.value, {",
@@ -2410,7 +2422,8 @@ function patchHermesAiChat(filePath) {
     "        const result = await window.uclaw.ipcHermesChat({",
     "          message: hermesPrompt,",
     "          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),",
-    "          sessionId: \"openclaw-hermes-collab\"",
+    "          sessionId: \"openclaw-hermes-collab\",",
+    "          ...getSelectedHermesModel()",
     "        });",
     "        const ok = result?.ok !== false;",
     "        appendHermesAssistant(ok ? getHermesReply(result) : (result?.error || \"Hermes 暂时无法完成协同复核，请到模型配置页测试当前模型连接后重试。\"), \"Hermes 协同复核\", ok ? \"done\" : \"error\");",
@@ -2468,7 +2481,8 @@ function patchHermesAiChat(filePath) {
     "        const result = await window.uclaw.ipcHermesChat({",
     "          message: hermesPrompt,",
     "          messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),",
-    "          sessionId: \"openclaw-hermes-collab\"",
+    "          sessionId: \"openclaw-hermes-collab\",",
+    "          ...getSelectedHermesModel()",
     "        });",
     "        const ok = result?.ok !== false;",
     "        collabMessages.value = collabMessages.value.filter((m) => !(m.model === \"协同编排\" && String(m.content || \"\").startsWith(\"阶段 2/2\")));",
@@ -2696,15 +2710,16 @@ function patchHermesAiChat(filePath) {
     "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"]),"
   ].join("\n");
   const selectorReplacement = [
-    "                agentMode.value === \"openclaw\" ? (openBlock(), createBlock(ModelSelector, {",
+    "                createVNode(ModelSelector, {",
     "                  key: 0,",
     "                  models: sessionModels.value,",
     "                  currentModel: sessionCurrentModelId.value,",
-    "                  isReady: unref(store).isReady,",
+    "                  isReady: agentMode.value === \"collab\" ? unref(store).isReady : true,",
     "                  loadingModels: loadingModels.value,",
     "                  onSelect: handleModelSelect,",
     "                  onRefresh: handleRefreshModels",
-    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"])) : (openBlock(), createElementBlock(\"div\", { key: 1, class: \"hermes-chat-status\" }, toDisplayString(agentMode.value === \"collab\" ? store.isReady ? collabRunState.value || \"协同：OpenClaw 内部草案 -> Hermes 统一答复\" : \"协同需要先启动 Gateway\" : hermesRunState.value || \"Hermes 独立会话；未启动时发送会自动启动后台服务\"), 1)),",
+    "                }, null, 8, [\"models\", \"currentModel\", \"isReady\", \"loadingModels\"]),",
+    "                agentMode.value !== \"openclaw\" ? (openBlock(), createElementBlock(\"div\", { key: 1, class: \"hermes-chat-status\" }, toDisplayString(agentMode.value === \"collab\" ? store.isReady ? collabRunState.value || \"协同已就绪\" : \"协同需先启动 Gateway\" : hermesRunState.value || \"Hermes 会话就绪\"), 1)) : createCommentVNode(\"\", true),",
     "                agentMode.value !== \"openclaw\" ? (openBlock(), createElementBlock(\"button\", {",
     "                  key: 2,",
     "                  class: \"icon-btn hermes-open-btn\",",
@@ -2726,6 +2741,65 @@ function patchHermesAiChat(filePath) {
   source = source.replace(
     "              unref(store).currentMessages.length === 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_13, [..._cache[20] || (_cache[20] = [",
     "              activeMessages.value.length === 0 ? (openBlock(), createElementBlock(\"div\", _hoisted_13, [..._cache[20] || (_cache[20] = ["
+  );
+  source = source.replace(
+    /                createBaseVNode\("button", \{\n                  class: "icon-btn web-btn",\n                  onClick: handleOpenWebUI,\n                  title: "[^"]*"\n                \}, \[\.\.\._cache\[18\] \|\| \(_cache\[18\] = \[\n                  createBaseVNode\("span", \{ class: "iconfont icon-clawwaibutiaozhuanlianjie" \}, null, -1\),\n                  createBaseVNode\("span", null, "[^"]*", -1\)\n                \]\)\]\),/,
+    [
+      "                agentMode.value === \"openclaw\" ? (openBlock(), createElementBlock(\"button\", {",
+      "                  key: \"web-openclaw\",",
+      "                  class: \"icon-btn web-btn\",",
+      "                  onClick: handleOpenWebUI,",
+      "                  title: \"在独立窗口打开网页端\"",
+      "                }, [",
+      "                  createBaseVNode(\"span\", { class: \"iconfont icon-clawwaibutiaozhuanlianjie\" }),",
+      "                  createBaseVNode(\"span\", null, \"网页端\")",
+      "                ])) : createCommentVNode(\"\", true),"
+    ].join("\n")
+  );
+  source = source.replace(
+    "    const lightboxSrc = /* @__PURE__ */ ref(null);",
+    "    const lightboxSrc = /* @__PURE__ */ ref(null);\n    const copied = /* @__PURE__ */ ref(false);"
+  );
+  source = source.replace(
+    "    function copyContent() {\n      navigator.clipboard.writeText(props.message.content).catch(() => {\n      });\n    }",
+    [
+      "    function copyContent() {",
+      "      const text = props.message.content || props.message._streamContent || \"\";",
+      "      if (!text) return;",
+      "      navigator.clipboard.writeText(text).then(() => {",
+      "        copied.value = true;",
+      "        window.setTimeout(() => { copied.value = false; }, 1200);",
+      "      }).catch(() => {",
+      "      });",
+      "    }"
+    ].join("\n")
+  );
+  source = source.replace(
+    "            __props.message.content ? (openBlock(), createElementBlock(\"div\", _hoisted_13$3, toDisplayString(__props.message.content), 1)) : createCommentVNode(\"\", true),",
+    [
+      "            __props.message.content ? (openBlock(), createElementBlock(\"div\", _hoisted_13$3, toDisplayString(__props.message.content), 1)) : createCommentVNode(\"\", true),",
+      "            __props.message.content ? (openBlock(), createElementBlock(\"button\", {",
+      "              key: \"user-copy\",",
+      "              class: normalizeClass([\"message-copy-btn user-copy-btn\", { copied: copied.value }]),",
+      "              onClick: copyContent,",
+      "              title: \"复制本条消息\"",
+      "            }, toDisplayString(copied.value ? \"已复制\" : \"复制\"), 3)) : createCommentVNode(\"\", true),"
+    ].join("\n")
+  );
+  source = source.replace(
+    /              (?:__props\.message\.status === "done" && )?__props\.message\.content \? \(openBlock\(\), createElementBlock\("button", \{\n                key: 0,\n                class: "action-btn",\n                onClick: copyContent,\n                title: "[^"]*"\n              \}, \[\.\.\._cache\[7\] \|\| \(_cache\[7\] = \[/,
+    [
+      "              __props.message.content ? (openBlock(), createElementBlock(\"button\", {",
+      "                key: 0,",
+      "                class: normalizeClass([\"action-btn\", { copied: copied.value }]),",
+      "                onClick: copyContent,",
+      "                title: copied.value ? \"已复制\" : \"复制\"",
+      "              }, [..._cache[7] || (_cache[7] = ["
+    ].join("\n")
+  );
+  source = source.replace(
+    "__props.message.status === \"done\" && __props.message.content ? (openBlock(), createElementBlock(\"button\", {",
+    "__props.message.content ? (openBlock(), createElementBlock(\"button\", {"
   );
   source = source.replace(
     "            }, [\n              activeMessages.value.length === 0 ?",
@@ -3130,6 +3204,85 @@ function patchHermesAiChatStyles(filePath) {
 
 .hermes-open-btn {
   color: #4edea3 !important;
+}
+
+.message-bubble[data-v-fd7d93a3],
+.user-content-wrap[data-v-fd7d93a3],
+.ai-body[data-v-fd7d93a3] {
+  overflow: visible;
+}
+
+.user-content-wrap[data-v-fd7d93a3],
+.ai-body[data-v-fd7d93a3] {
+  position: relative;
+}
+
+.user-text[data-v-fd7d93a3],
+.ann-markdown[data-v-fd7d93a3],
+.ai-content-plain[data-v-fd7d93a3],
+.error-text[data-v-fd7d93a3],
+.think-content[data-v-fd7d93a3] {
+  user-select: text;
+  cursor: text;
+}
+
+.user-text[data-v-fd7d93a3]::selection,
+.ann-markdown[data-v-fd7d93a3]::selection,
+.ann-markdown[data-v-fd7d93a3] *::selection,
+.ai-content-plain[data-v-fd7d93a3]::selection,
+.error-text[data-v-fd7d93a3]::selection,
+.think-content[data-v-fd7d93a3]::selection {
+  background: rgba(37, 99, 235, 0.34);
+  color: inherit;
+}
+
+.message-copy-btn {
+  margin-top: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #475569;
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.message-bubble:hover .message-copy-btn,
+.message-copy-btn:focus-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.message-copy-btn:hover {
+  background: #ffffff;
+  color: #2563eb;
+}
+
+.message-copy-btn.copied,
+.msg-meta[data-v-fd7d93a3] .action-btn.copied {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.14);
+  color: #15803d;
+  opacity: 1;
+}
+
+.user-copy-btn {
+  align-self: flex-end;
+}
+
+.msg-meta[data-v-fd7d93a3] .action-btn {
+  min-width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
+
+.msg-meta[data-v-fd7d93a3] .action-btn:hover {
+  color: #2563eb;
 }
 
 @media (max-width: 900px) {
