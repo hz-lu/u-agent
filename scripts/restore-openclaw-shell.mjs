@@ -1982,6 +1982,176 @@ function patchGatewayRestartRecoveryUi(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchGatewayStatusQueryMain(filePath) {
+  const marker = "codex-gateway-status-query";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+
+  source = source.replace(
+    "          safeSend(\"gateway-ready\", true);\n",
+    "          safeSend(\"gateway-ready\", true);\n          sendGatewayStatus(true);\n"
+  );
+  const statusAnchor = "  electron.ipcMain.handle(\"get-default-port\", () => GATEWAY_DEFAULT_PORT);";
+  const statusHandler = [
+    "  electron.ipcMain.handle(\"get-gateway-status\", () => {",
+    "    /* codex-gateway-status-query */",
+    "    const running = !!gateway.isGatewayReady();",
+    "    return { ok: true, running, gatewayReady: running, port: GATEWAY_DEFAULT_PORT };",
+    "  });",
+    statusAnchor
+  ].join("\n");
+  if (!source.includes(statusAnchor)) {
+    throw new Error("Could not find get-default-port IPC anchor for Gateway status query.");
+  }
+  source = source.replace(statusAnchor, statusHandler);
+
+  source = source.replace(
+    "      await gateway.startGateway();\n      return { ok: true };",
+    "      const result = await gateway.startGateway();\n      if (result?.success === false) {\n        sendGatewayStatus(false, result.error || \"Gateway start failed\");\n        return { ok: false, error: result.error || \"Gateway start failed\", errorDetail: result.errorDetail || \"\", errorAction: result.errorAction || \"\", running: false, gatewayReady: false, port: GATEWAY_DEFAULT_PORT };\n      }\n      const running = !!gateway.isGatewayReady() || result?.success === true;\n      if (running) sendGatewayStatus(true);\n      return { ok: true, running, gatewayReady: running, port: GATEWAY_DEFAULT_PORT };"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchGatewayStatusQueryPreload(filePath) {
+  const marker = "ipcGetGatewayStatus";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+  source = source.replace(
+    "  ipcRestartGateway: () => electron.ipcRenderer.invoke(\"restart-gateway\"),",
+    "  ipcRestartGateway: () => electron.ipcRenderer.invoke(\"restart-gateway\"),\n  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke(\"get-gateway-status\"),"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchGatewayStatusQueryRenderer(filePath) {
+  const marker = "codex-gateway-status-query-ui";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+  const setupAnchor = [
+    "  function setupReadyListener() {",
+    "    if (readyHandler) return;"
+  ].join("\n");
+  const syncHelper = [
+    "  async function syncGatewayStatus() {",
+    "    /* codex-gateway-status-query-ui */",
+    "    try {",
+    "      const status = await window.uclaw?.ipcGetGatewayStatus?.();",
+    "      if (!status || status.ok === false) return;",
+    "      store.setRunning(!!status.running);",
+    "      store.setGatewayReady(!!status.gatewayReady || !!status.running);",
+    "      if (status.port) store.setPort(status.port);",
+    "    } catch (e) {",
+    "      console.warn(\"[gateway] status sync failed\", e);",
+    "    }",
+    "  }",
+    setupAnchor
+  ].join("\n");
+  if (!source.includes(setupAnchor)) {
+    throw new Error("Could not find Gateway ready listener anchor.");
+  }
+  source = source.replace(setupAnchor, syncHelper);
+  source = source.replace(
+    "  setupRestartedListener();\n  async function startGatewayHook() {",
+    "  setupRestartedListener();\n  syncGatewayStatus();\n  async function startGatewayHook() {"
+  );
+  source = source.replace(
+    "      if (!result.ok) {\n        throw new Error(result.error);\n      }",
+    "      if (!result.ok) {\n        throw new Error(result.error);\n      }\n      store.setRunning(!!result.running || true);\n      store.setGatewayReady(!!result.gatewayReady || !!result.running || true);\n      if (result.port) store.setPort(result.port);\n      syncGatewayStatus();"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchModelConfigHydration(filePath) {
+  const marker = "codex-model-config-hydration";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+  const fetchAnchor = [
+    "async function fetchAllModels() {",
+    "  try {",
+    "    const store = useModelsStore();",
+    "    store.setAllModels([]);",
+    "    const stored = localStorage.getItem(\"uclaw_selected_models\");",
+    "    const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);",
+    "    const selectedModels = stored ? JSON.parse(stored).filter((m) => m.source !== removedSource) : [];",
+    "    store.setSelectedModels(selectedModels);",
+    "  } catch (e) {",
+    "    console.error(\"[models] fetchAllModels error:\", e);",
+    "  }",
+    "}"
+  ].join("\n");
+  const fetchReplacement = [
+    "async function fetchAllModels() {",
+    "  try {",
+    "    const store = useModelsStore();",
+    "    store.setAllModels([]);",
+    "    const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);",
+    "    const hydrateFromConfig = async () => {",
+    "      /* codex-model-config-hydration */",
+    "      const config = await window.uclaw?.ipcReadConfig?.();",
+    "      const providers = config?.models?.providers || {};",
+    "      const primary = config?.agents?.defaults?.model?.primary || \"\";",
+    "      const rows = [];",
+    "      for (const [provider, providerConfig] of Object.entries(providers)) {",
+    "        const models = Array.isArray(providerConfig?.models) ? providerConfig.models : [];",
+    "        for (const model of models) {",
+    "          const modelId = String(model?.id || model?.name || \"\").trim();",
+    "          if (!modelId) continue;",
+    "          const source = provider === \"custom\" ? \"custom\" : \"recommend\";",
+    "          const value = source === \"custom\" ? `custom-${modelId}` : `${provider}-${modelId}`;",
+    "          rows.push({",
+    "            label: source === \"custom\" ? modelId : `${provider} / ${modelId}`,",
+    "            value,",
+    "            source,",
+    "            base: providerConfig?.baseUrl || providerConfig?.base || \"\",",
+    "            key: providerConfig?.apiKey || \"\",",
+    "            model: modelId,",
+    "            provider,",
+    "            api: providerConfig?.api || \"openai-completions\",",
+    "            isCurrent: primary === `${provider}/${modelId}`",
+    "          });",
+    "        }",
+    "      }",
+    "      if (rows.length && !rows.some((item) => item.isCurrent)) rows[0].isCurrent = true;",
+    "      return rows;",
+    "    };",
+    "    let selectedModels = [];",
+    "    const stored = localStorage.getItem(\"uclaw_selected_models\");",
+    "    const configModels = await hydrateFromConfig();",
+    "    if (configModels.length) {",
+    "      selectedModels = configModels;",
+    "    } else if (stored) {",
+    "      try { selectedModels = JSON.parse(stored).filter((m) => m.source !== removedSource); } catch { selectedModels = []; }",
+    "    }",
+    "    store.setSelectedModels(selectedModels);",
+    "  } catch (e) {",
+    "    console.error(\"[models] fetchAllModels error:\", e);",
+    "  }",
+    "}"
+  ].join("\n");
+  if (!source.includes(fetchAnchor)) {
+    throw new Error("Could not find fetchAllModels block for model hydration.");
+  }
+  source = source.replace(fetchAnchor, fetchReplacement);
+
+  const watchAnchor = [
+    "    watch(() => modelsStore.selectedModels, (models) => {",
+    "      console.log(\"model鍙樺寲===>\", models);",
+    "      window.uclaw?.ipcWriteOpenClawConfig({ models: JSON.parse(JSON.stringify(models)) }, \"model\");",
+    "    }, { immediate: true, deep: true });"
+  ].join("\n");
+  const watchReplacement = [
+    "    watch(() => modelsStore.selectedModels, (models) => {",
+    "      console.log(\"model鍙樺寲===>\", models);",
+    "      if (!Array.isArray(models) || models.length === 0) return;",
+    "      window.uclaw?.ipcWriteOpenClawConfig({ models: JSON.parse(JSON.stringify(models)) }, \"model\");",
+    "    }, { immediate: true, deep: true });"
+  ].join("\n");
+  if (source.includes(watchAnchor)) {
+    source = source.replace(watchAnchor, watchReplacement);
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchWeChatDiagnosticsUi(filePath) {
   const marker = "codex-wechat-diagnostics-ui";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -4508,6 +4678,7 @@ copyDir(path.join(backupRoot, "assets"), path.join(targetApp, "assets"));
 const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
+patchGatewayStatusQueryMain(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesChatProgressMain(mainProcessTarget);
@@ -4518,6 +4689,7 @@ patchHermesTrayMenu(mainProcessTarget);
 const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
 patchHermesPreload(preloadTarget);
+patchGatewayStatusQueryPreload(preloadTarget);
 patchHermesBackgroundChatPreload(preloadTarget);
 patchHermesListenerCleanupPreload(preloadTarget);
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
@@ -4526,6 +4698,8 @@ patchHermesEnvCheck(rendererTarget);
 patchHermesMemoryEnvCheck(rendererTarget);
 patchHermesSkillGrowthEnvCheck(rendererTarget);
 patchGatewayRestartRecoveryUi(rendererTarget);
+patchGatewayStatusQueryRenderer(rendererTarget);
+patchModelConfigHydration(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
