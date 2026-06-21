@@ -1090,6 +1090,28 @@ function patchMainProcessStability(filePath) {
     "const RUNTIME_DIR = path$1.join(localBase, \"runtime\");",
     "const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);"
   );
+  if (!source.includes("codex-portable-runtime-ready-skip")) {
+    source = source.replace(
+      "async function extractRuntime() {\n  const runtimeSrc = path$1.join(getAppRoot(), DIR_RUNTIME);",
+      [
+        "async function extractRuntime() {",
+        "  const runtimeSrc = path$1.join(getAppRoot(), DIR_RUNTIME);",
+        "  const runtimeMarker = path$1.join(RUNTIME_DIR, \".extracted\");",
+        "  const runtimeHasCli = fs$1.existsSync(path$1.join(RUNTIME_DIR, \"openclaw.cmd\"));",
+        "  const runtimeHasNode = fs$1.existsSync(path$1.join(RUNTIME_DIR, \"node.exe\"));",
+        "  if (runtimeHasCli && runtimeHasNode) {",
+        "    /* codex-portable-runtime-ready-skip */",
+        "    try { fs$1.writeFileSync(runtimeMarker, Date.now().toString(), \"utf8\"); } catch {}",
+        "    console.log(\"[runtime] Portable runtime already present, skipping extraction\");",
+        "    return;",
+        "  }",
+        "  if (path$1.resolve(RUNTIME_DIR) === path$1.resolve(runtimeSrc)) {",
+        "    console.log(\"[runtime] Runtime source and target are identical; skipping self-extraction\");",
+        "    return;",
+        "  }"
+      ].join("\n")
+    );
+  }
 
   if (!source.includes("codex-desktop-crash-diagnostics")) {
     const dataRootAnchor = [
