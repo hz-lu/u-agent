@@ -1479,9 +1479,99 @@ function patchHermesBackgroundChatIpc(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesChatProgressMain(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("codex-hermes-chat-progress-main")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  const messageAnchor = "    const message = typeof options.message === \"string\" ? options.message.trim() : \"\";";
+  const messageReplacement = [
+    messageAnchor,
+    "    const progressTaskId = typeof options.clientTaskId === \"string\" && options.clientTaskId.trim() ? options.clientTaskId.trim() : \"\";",
+    "    function emitChatProgress(phase, text, extra = {}) {",
+    "      /* codex-hermes-chat-progress-main */",
+    "      if (!progressTaskId || !text) return;",
+    "      safeSend(\"hermes-chat-progress\", { taskId: progressTaskId, phase, text, at: Date.now(), ...extra });",
+    "    }",
+    "    emitChatProgress(\"queued\", \"Hermes 已收到任务，正在准备运行环境。\");"
+  ].join("\n");
+  if (!source.includes(messageAnchor)) throw new Error("Could not find Hermes chat message anchor.");
+  source = source.replace(messageAnchor, messageReplacement);
+
+  source = source.replace(
+    "    try {\n      if (!this.proc && !(await this.checkTcpPort(17520))) {",
+    "    try {\n      emitChatProgress(\"service\", \"正在检查 Hermes 后台服务状态。\");\n      if (!this.proc && !(await this.checkTcpPort(17520))) {"
+  );
+  source = source.replace(
+    "        await this.start({ open: false });",
+    "        emitChatProgress(\"service\", \"Hermes 后台服务未运行，正在自动启动。\");\n        await this.start({ open: false });"
+  );
+  source = source.replace(
+    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });",
+    "    emitChatProgress(\"spawn\", \"正在启动 Hermes CLI，并加载模型、记忆和技能。\", { provider, modelName });\n    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });"
+  );
+  source = source.replace(
+    "      let settled = false;",
+    [
+      "      let settled = false;",
+      "      const progressStartedAt = Date.now();",
+      "      let progressStage = \"正在连接模型并等待 Hermes 返回执行事件。\";",
+      "      let lastProgressEmitAt = 0;",
+      "      function emitRunProgress(phase, text, extra = {}, force = false) {",
+      "        if (!progressTaskId || !text) return;",
+      "        const now = Date.now();",
+      "        if (!force && now - lastProgressEmitAt < 1500) return;",
+      "        lastProgressEmitAt = now;",
+      "        safeSend(\"hermes-chat-progress\", { taskId: progressTaskId, phase, text, at: now, elapsedMs: now - progressStartedAt, ...extra });",
+      "      }",
+      "      function setRunProgress(phase, text, extra = {}, force = true) {",
+      "        progressStage = text;",
+      "        emitRunProgress(phase, text, extra, force);",
+      "      }",
+      "      function cleanProgressText(text) {",
+      "        return String(text || \"\").replace(/\\x1b\\[[0-9;?]*[ -/]*[@-~]/g, \"\").replace(/\\r/g, \"\\n\").split(/\\n+/).map((line) => line.trim()).filter(Boolean).slice(-4).join(\" / \").slice(0, 500);",
+      "      }",
+      "      function summarizeHermesProgress(text) {",
+      "        const clean = cleanProgressText(text);",
+      "        if (!clean) return \"\";",
+      "        const lower = clean.toLowerCase();",
+      "        if (lower.includes(\"no final response was produced\") || lower.includes(\"no final response\")) return \"Hermes 没有拿到模型最终回复，正在汇总可读错误原因。\";",
+      "        if (lower.includes(\"plugin discovery complete\")) return \"插件与工具加载完成，Hermes 正在组织下一步。\";",
+      "        if (lower.includes(\"registered\") && lower.includes(\"provider\")) return \"正在加载 Hermes 插件、工具和能力提供方。\";",
+      "        if (lower.includes(\"tool\") && (lower.includes(\"completed\") || lower.includes(\"executing\") || lower.includes(\"running\"))) return clean;",
+      "        if (lower.includes(\"retry\") || lower.includes(\"rate\") || lower.includes(\"timeout\") || lower.includes(\"stream\")) return clean;",
+      "        if (lower.includes(\"error\") || lower.includes(\"warning\")) return clean;",
+      "        return clean;",
+      "      }",
+      "      const progressTimer = setInterval(() => {",
+      "        emitRunProgress(\"heartbeat\", progressStage, {}, true);",
+      "      }, 4000);",
+      "      progressTimer.unref?.();"
+    ].join("\n")
+  );
+  source = source.replace(
+    "        clearTimeout(timer);",
+    "        clearTimeout(timer);\n        clearInterval(progressTimer);"
+  );
+  source = source.replace(
+    "      fs$1.writeFileSync(path$1.join(runDir, \"request.json\"), JSON.stringify({ startedAt: new Date().toISOString(), message, provider, modelName }, null, 2) + \"\\n\", \"utf8\");",
+    "      fs$1.writeFileSync(path$1.join(runDir, \"request.json\"), JSON.stringify({ startedAt: new Date().toISOString(), message, provider, modelName }, null, 2) + \"\\n\", \"utf8\");\n      setRunProgress(\"run\", \"运行目录已创建，正在加载 Hermes 技能和上下文。\", { runId, runDir }, true);"
+  );
+  source = source.replace(
+    "        stdout = appendLimited(stdout, chunk.toString(\"utf8\"), maxStdoutBytes);",
+    "        const text = chunk.toString(\"utf8\");\n        stdout = appendLimited(stdout, text, maxStdoutBytes);\n        if (text.trim()) setRunProgress(\"output\", \"Hermes 正在生成最终回复，已收到 \" + Math.max(1, Math.round(stdoutBytes / 1024)) + \"KB 输出。\", { stdoutBytes }, false);"
+  );
+  source = source.replace(
+    "        stderr = appendLimited(stderr, text, maxStderrBytes);",
+    "        stderr = appendLimited(stderr, text, maxStderrBytes);\n        const progressText = summarizeHermesProgress(text);\n        if (progressText) setRunProgress(\"activity\", progressText, { stderrBytes }, false);"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesBackgroundChatPreload(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("ipcHermesChatStart") && source.includes("ipcOnHermesChatResult")) {
+  if (source.includes("ipcHermesChatStart") && source.includes("ipcOnHermesChatResult") && source.includes("ipcOnHermesChatProgress")) {
     fs.writeFileSync(filePath, source, "utf8");
     return;
   }
@@ -1493,12 +1583,38 @@ function patchHermesBackgroundChatPreload(filePath) {
     "    const listener = (_, data) => callback(data);",
     "    electron.ipcRenderer.on(\"hermes-chat-result\", listener);",
     "    return () => electron.ipcRenderer.removeListener(\"hermes-chat-result\", listener);",
+    "  },",
+    "  ipcOnHermesChatProgress: (callback) => {",
+    "    const listener = (_, data) => callback(data);",
+    "    electron.ipcRenderer.on(\"hermes-chat-progress\", listener);",
+    "    return () => electron.ipcRenderer.removeListener(\"hermes-chat-progress\", listener);",
     "  },"
   ].join("\n");
   if (!source.includes(anchor)) {
     throw new Error("Could not find preload Hermes chat API anchor.");
   }
   source = source.replace(anchor, replacement);
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchHermesListenerCleanupPreload(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes("codex-hermes-listener-cleanup")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
+  source = source.replace(
+    "  ipcOnHermesEmbeddedOpen: (callback) => electron.ipcRenderer.on(\"hermes-open-embedded\", (_, payload) => callback(payload)),",
+    "  ipcOnHermesEmbeddedOpen: (callback) => { const listener = (_, payload) => callback(payload); electron.ipcRenderer.on(\"hermes-open-embedded\", listener); return () => electron.ipcRenderer.removeListener(\"hermes-open-embedded\", listener); },"
+  );
+  source = source.replace(
+    "  ipcOnHermesStatus: (callback) => electron.ipcRenderer.on(\"hermes-status\", (_, status) => callback(status)),",
+    "  ipcOnHermesStatus: (callback) => { const listener = (_, status) => callback(status); electron.ipcRenderer.on(\"hermes-status\", listener); return () => electron.ipcRenderer.removeListener(\"hermes-status\", listener); },"
+  );
+  source = source.replace(
+    "  ipcOnHermesLog: (callback) => electron.ipcRenderer.on(\"hermes-log\", (_, log) => callback(log)),",
+    "  ipcOnHermesLog: (callback) => { /* codex-hermes-listener-cleanup */ const listener = (_, log) => callback(log); electron.ipcRenderer.on(\"hermes-log\", listener); return () => electron.ipcRenderer.removeListener(\"hermes-log\", listener); },"
+  );
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -1520,6 +1636,10 @@ function patchHermesBackgroundChatRenderer(filePath) {
     "    const activeSending = computed(() => agentMode.value === \"openclaw\" ? store.sending : agentMode.value === \"collab\" ? collabSending.value : hermesSending.value);\n    const activeReady = computed(() => agentMode.value === \"openclaw\" ? store.isReady : agentMode.value === \"collab\" ? !collabSending.value && store.isReady : !hermesSending.value);",
     "    const activeSending = computed(() => agentMode.value === \"openclaw\" ? store.sending : false);\n    const activeReady = computed(() => agentMode.value === \"openclaw\" ? store.isReady : agentMode.value === \"collab\" ? store.isReady : true);"
   );
+  source = source.replace(
+    "    const isWaitingForAi = computed(() => {\n      if (agentMode.value === \"hermes\") return hermesSending.value;\n      if (agentMode.value === \"collab\") return collabSending.value;\n      if (!store.sending) return false;",
+    "    const isWaitingForAi = computed(() => {\n      if (agentMode.value !== \"openclaw\") return false;\n      if (!store.sending) return false;"
+  );
   const helpersAndHermes = [
     "    function updateHermesMessage(messageId, patch) {",
     "      hermesMessages.value = hermesMessages.value.map((m) => m.id === messageId ? { ...m, ...patch } : m);",
@@ -1533,6 +1653,58 @@ function patchHermesBackgroundChatRenderer(filePath) {
     "      /* codex-hermes-background-chat-renderer */",
     "      window.__uclawHermesPendingTasks = window.__uclawHermesPendingTasks || {};",
     "      return window.__uclawHermesPendingTasks;",
+    "    }",
+    "    function normalizeHermesProgressText(text) {",
+    "      return String(text || \"\").replace(/\\s+/g, \" \").replace(/（已运行 \\d+ 秒）/g, \"\").replace(/\\(\\d+s\\)/g, \"\").trim();",
+    "    }",
+    "    function getHermesProgressStageLabel(phase) {",
+    "      const labels = { queued: \"接收任务\", service: \"检查服务\", spawn: \"启动 Hermes\", run: \"加载上下文\", activity: \"执行过程\", output: \"生成回复\", heartbeat: \"当前状态\" };",
+    "      return labels[phase] || \"执行过程\";",
+    "    }",
+    "    function buildHermesProgressLines(stageMap, latestPhase) {",
+    "      const order = [\"queued\", \"service\", \"spawn\", \"run\", \"activity\", \"output\", \"heartbeat\"];",
+    "      const lines = [];",
+    "      for (const phase of order) {",
+    "        const item = stageMap?.[phase];",
+    "        if (!item?.text) continue;",
+    "        const label = getHermesProgressStageLabel(phase);",
+    "        const suffix = phase === latestPhase && item.seconds ? `（${item.seconds}s）` : \"\";",
+    "        lines.push(`${label}：${item.text}${suffix}`);",
+    "      }",
+    "      return lines.slice(-6);",
+    "    }",
+    "    function buildHermesProgressContent(task, payload) {",
+    "      const tasks = getPendingHermesTasks();",
+    "      const key = task.localTaskId || payload?.taskId || task.messageId;",
+    "      const state = tasks[key] || task;",
+    "      const phase = payload?.phase || \"activity\";",
+    "      const seconds = payload?.elapsedMs ? Math.max(1, Math.round(payload.elapsedMs / 1e3)) : null;",
+    "      const text = normalizeHermesProgressText(payload?.text || \"Hermes 正在执行任务。\");",
+    "      state.progressStages = state.progressStages || {};",
+    "      state.progressStages[phase] = { text, seconds, at: payload?.at || Date.now() };",
+    "      state.latestPhase = phase;",
+    "      const progressLines = buildHermesProgressLines(state.progressStages, phase);",
+    "      tasks[key] = state;",
+    "      const header = task.mode === \"collab\" ? \"协同模式：Hermes 正在复核和整理最终答复。\" : \"Hermes 正在执行任务，过程会持续更新。\";",
+    "      return header + \"\\n\\n\" + progressLines.map((line) => `- ${line}`).join(\"\\n\");",
+    "    }",
+    "    function handleHermesChatProgress(payload) {",
+    "      const taskId = payload?.taskId || \"\";",
+    "      const task = getPendingHermesTasks()[taskId];",
+    "      if (!task) return;",
+    "      const content = buildHermesProgressContent(task, payload);",
+    "      const patch = { content, status: \"streaming\", timestamp: Date.now(), runDir: payload?.runDir || task.runDir, runId: payload?.runId || task.runId };",
+    "      if (task.mode === \"collab\") collabMessages.value = collabMessages.value.map((m) => m.id === task.messageId ? { ...m, ...patch } : m);",
+    "      else hermesMessages.value = hermesMessages.value.map((m) => m.id === task.messageId ? { ...m, ...patch } : m);",
+    "      const now = Date.now();",
+    "      if (!window.__uclawHermesProgressSaveAt || now - window.__uclawHermesProgressSaveAt > 6e3) {",
+    "        window.__uclawHermesProgressSaveAt = now;",
+    "        saveHermesSession();",
+    "      }",
+    "      if (!window.__uclawHermesProgressScrollAt || now - window.__uclawHermesProgressScrollAt > 1800) {",
+    "        window.__uclawHermesProgressScrollAt = now;",
+    "        nextTick(() => scrollToBottom(0));",
+    "      }",
     "    }",
     "    function refreshHermesBusyFlags() {",
     "      const tasks = Object.values(getPendingHermesTasks());",
@@ -1679,11 +1851,11 @@ function patchHermesBackgroundChatRenderer(filePath) {
   );
   source = source.replace(
     "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      nextTick(() => scrollToBottom());",
-    "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      window.__uclawHermesResultOff = window.uclaw?.ipcOnHermesChatResult?.(handleHermesChatResult) || null;\n      nextTick(() => scrollToBottom());"
+    "      window.addEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      window.__uclawHermesResultOff = window.uclaw?.ipcOnHermesChatResult?.(handleHermesChatResult) || null;\n      window.__uclawHermesProgressOff = window.uclaw?.ipcOnHermesChatProgress?.(handleHermesChatProgress) || null;\n      nextTick(() => scrollToBottom());"
   );
   source = source.replace(
     "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n    });",
-    "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      if (typeof window.__uclawHermesResultOff === \"function\") window.__uclawHermesResultOff();\n      window.__uclawHermesResultOff = null;\n    });"
+    "      window.removeEventListener(\"uclaw-hermes-chat-state\", handleHermesStateEvent);\n      if (typeof window.__uclawHermesResultOff === \"function\") window.__uclawHermesResultOff();\n      if (typeof window.__uclawHermesProgressOff === \"function\") window.__uclawHermesProgressOff();\n      window.__uclawHermesResultOff = null;\n      window.__uclawHermesProgressOff = null;\n    });"
   );
   fs.writeFileSync(filePath, source, "utf8");
 }
@@ -1837,6 +2009,9 @@ function patchHermesHomeDashboard(filePath) {
     "    const hermesPanelUrl = /* @__PURE__ */ ref(\"\");",
     "    const hermesPanelKind = /* @__PURE__ */ ref(\"\");",
     "    const hermesActionBusy = /* @__PURE__ */ ref(\"\");",
+    "    const hermesLogUnsubscribers = [];",
+    "    let lastHermesLogAt = 0;",
+    "    let droppedHermesLogCount = 0;",
     "    const hermesRunning = computed(() => hermesStatus.value?.status === \"running\");",
     "    const hermesStatusText = computed(() => {",
     "      if (hermesStatus.value?.status === \"running\") return \"运行中\";",
@@ -1866,11 +2041,25 @@ function patchHermesHomeDashboard(filePath) {
     "      }",
     "    }",
     "    function appendHermesLog(log) {",
+    "      if (activeLogSource.value !== \"hermes\") {",
+    "        droppedHermesLogCount += 1;",
+    "        return;",
+    "      }",
+    "      const now = Date.now();",
+    "      if (now - lastHermesLogAt < 250) {",
+    "        droppedHermesLogCount += 1;",
+    "        return;",
+    "      }",
+    "      lastHermesLogAt = now;",
+    "      if (droppedHermesLogCount) {",
+    "        hermesLogs.value.push({ id: now + Math.random(), typeLabel: \"[system]\", typeColor: \"#60a5fa\", message: \"已合并 \" + droppedHermesLogCount + \" 条后台 Hermes 日志，完整日志在 data/.hermes/logs。\", timestamp: null });",
+    "        droppedHermesLogCount = 0;",
+    "      }",
     "      const typeLabel = { stdout: \"[stdout]\", stderr: \"[stderr]\", system: \"[system]\", error: \"[error]\", exit: \"[exit]\" }[log.type] || \"[log]\";",
     "      const typeColor = { stdout: \"#4ade80\", stderr: \"#f87171\", system: \"#60a5fa\", error: \"#f87171\", exit: \"#a78bfa\" }[log.type] || \"#ffffff\";",
     "      const msg = String(log.msg || \"\");",
     "      hermesLogs.value.push({ id: Date.now() + Math.random(), typeLabel, typeColor, message: cleanLogMessage(msg), timestamp: extractTimestamp(msg) });",
-    "      if (hermesLogs.value.length > 500) hermesLogs.value.shift();",
+    "      if (hermesLogs.value.length > 160) hermesLogs.value.shift();",
     "      nextTick(() => {",
     "        const container = document.getElementById(\"terminal-logs\");",
     "        if (container && activeLogSource.value === \"hermes\") container.scrollTop = container.scrollHeight;",
@@ -1878,7 +2067,7 @@ function patchHermesHomeDashboard(filePath) {
     "    }",
     "    async function loadHermesLogs() {",
     "      try {",
-    "        const rows = window.uclaw.ipcGetHermesLogs ? await window.uclaw.ipcGetHermesLogs({ limit: 300 }) : [];",
+    "        const rows = window.uclaw.ipcGetHermesLogs ? await window.uclaw.ipcGetHermesLogs({ limit: 120 }) : [];",
     "        hermesLogs.value = [];",
     "        for (const row of rows || []) appendHermesLog(row);",
     "      } catch (e) {",
@@ -1978,7 +2167,7 @@ function patchHermesHomeDashboard(filePath) {
     "      runAllChecks();",
     "      startLiveLogs();"
   ].join("\n");
-  source = source.replace(mountedAnchor, "      runAllChecks();\n      refreshHermesStatus();\n      loadHermesLogs();\n      startLiveLogs();");
+  source = source.replace(mountedAnchor, "      runAllChecks();\n      refreshHermesStatus();\n      startLiveLogs();");
 
   const liveLogsAnchor = [
     "        nextTick(() => {",
@@ -1994,14 +2183,19 @@ function patchHermesHomeDashboard(filePath) {
     "          if (container && activeLogSource.value === \"openclaw\") container.scrollTop = container.scrollHeight;",
     "        });",
     "      });",
-    "      if (window.uclaw.ipcOnHermesLog) window.uclaw.ipcOnHermesLog((log) => appendHermesLog(log));",
-    "      if (window.uclaw.ipcOnHermesStatus) window.uclaw.ipcOnHermesStatus((status) => hermesStatus.value = status);",
+    "      if (window.uclaw.ipcOnHermesLog) { const offLog = window.uclaw.ipcOnHermesLog((log) => appendHermesLog(log)); if (typeof offLog === \"function\") hermesLogUnsubscribers.push(offLog); }",
+    "      if (window.uclaw.ipcOnHermesStatus) { const offStatus = window.uclaw.ipcOnHermesStatus((status) => hermesStatus.value = status); if (typeof offStatus === \"function\") hermesLogUnsubscribers.push(offStatus); }",
     "    }"
   ].join("\n");
   if (!source.includes(liveLogsAnchor)) {
     throw new Error("Could not find Home live log closing block.");
   }
   source = source.replace(liveLogsAnchor, liveLogsReplacement);
+
+  source = source.replace(
+    "    onUnmounted(() => {\n    });",
+    "    onUnmounted(() => {\n      while (hermesLogUnsubscribers.length) {\n        try { hermesLogUnsubscribers.pop()?.(); } catch {}\n      }\n    });"
+  );
 
   source = source.replace(
     "        showToast(\"日志已复制\");\n      }\n    }\n    function clearTerminal() {\n      gatewayStore.clearLogs();\n    }",
@@ -4197,6 +4391,7 @@ copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
+patchHermesChatProgressMain(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
 patchHermesBackgroundChatIpc(mainProcessTarget);
@@ -4205,6 +4400,7 @@ const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
 patchHermesPreload(preloadTarget);
 patchHermesBackgroundChatPreload(preloadTarget);
+patchHermesListenerCleanupPreload(preloadTarget);
 const rendererTarget = path.join(targetApp, "dist", "assets", "assets", "main-DIeui7ZO.js");
 copyFile(path.join(backupRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"), rendererTarget);
 patchHermesEnvCheck(rendererTarget);
