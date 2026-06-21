@@ -1065,6 +1065,151 @@ function patchHermesRuntimeEnv(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchMainProcessStability(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+
+  if (!source.includes("codex-desktop-crash-diagnostics")) {
+    const dataRootAnchor = [
+      "function getDataRoot() {",
+      "  if (_dataRoot) return _dataRoot;",
+      "  _dataRoot = path$1.join(getAppRoot(), DIR_DATA);",
+      "  return _dataRoot;",
+      "}"
+    ].join("\n");
+    const diagnostics = [
+      dataRootAnchor,
+      "function appendDesktopCrashLog(kind, payload) {",
+      "  /* codex-desktop-crash-diagnostics */",
+      "  try {",
+      "    const logDir = path$1.join(getDataRoot(), \".openclaw\", \"logs\");",
+      "    fs$1.mkdirSync(logDir, { recursive: true });",
+      "    const text = typeof payload === \"string\" ? payload : JSON.stringify(payload, null, 2);",
+      "    fs$1.appendFileSync(path$1.join(logDir, \"desktop-crash.log\"), \"[\" + new Date().toISOString() + \"] \" + kind + \"\\n\" + text + \"\\n\\n\", \"utf8\");",
+      "  } catch {",
+      "  }",
+      "}",
+      "function installDesktopCrashDiagnostics() {",
+      "  if (globalThis.__uclawDesktopCrashDiagnosticsInstalled) return;",
+      "  globalThis.__uclawDesktopCrashDiagnosticsInstalled = true;",
+      "  process.on(\"uncaughtException\", (err) => {",
+      "    appendDesktopCrashLog(\"uncaughtException\", { message: err?.message || String(err), stack: err?.stack || \"\" });",
+      "  });",
+      "  process.on(\"unhandledRejection\", (reason) => {",
+      "    appendDesktopCrashLog(\"unhandledRejection\", { reason: reason?.message || String(reason), stack: reason?.stack || \"\" });",
+      "  });",
+      "  electron.app.on(\"render-process-gone\", (_event, webContents, details) => {",
+      "    appendDesktopCrashLog(\"render-process-gone\", { url: webContents?.getURL?.() || \"\", details });",
+      "  });",
+      "  electron.app.on(\"child-process-gone\", (_event, details) => {",
+      "    appendDesktopCrashLog(\"child-process-gone\", details || {});",
+      "  });",
+      "}"
+    ].join("\n");
+    if (!source.includes(dataRootAnchor)) {
+      throw new Error("Could not find getDataRoot block for crash diagnostics.");
+    }
+    source = source.replace(dataRootAnchor, diagnostics);
+    source = source.replace(
+      "electron.app.whenReady().then(async () => {",
+      "installDesktopCrashDiagnostics();\nelectron.app.whenReady().then(async () => {"
+    );
+  }
+
+  if (!source.includes("codex-hermes-chat-async-spool")) {
+    source = source.replace(
+      "      let lastStderrLogAt = 0;\n      let settled = false;",
+      [
+        "      let lastStderrLogAt = 0;",
+        "      let lastStdoutSpillAt = 0;",
+        "      let lastStderrSpillAt = 0;",
+        "      let spoolChain = Promise.resolve();",
+        "      let settled = false;",
+        "      function appendFileQueued(filePath, chunk) {",
+        "        /* codex-hermes-chat-async-spool */",
+        "        const payload = Buffer.from(chunk);",
+        "        spoolChain = spoolChain.then(() => fs$1.promises.appendFile(filePath, payload)).catch((err) => {",
+        "          safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[chat-spool] write failed: \" + (err?.message || err) });",
+        "        });",
+        "      }",
+        "      async function flushSpoolWrites() {",
+        "        try {",
+        "          await spoolChain;",
+        "        } catch {",
+        "        }",
+        "      }"
+      ].join("\n")
+    );
+    source = source.replace(
+      "      function noteOutputSpill(streamName, bytes, filePath) {\n        const marker = streamName + \" 已写入 \" + Math.round(bytes / 1024) + \"KB 到 \" + filePath + \"；桌面仅保留尾部用于显示，任务会继续执行。\";\n        safeSend(\"hermes-log\", { type: \"system\", msg: \"[chat-output-spool] \" + marker });\n      }",
+      [
+        "      function noteOutputSpill(streamName, bytes, filePath) {",
+        "        const now = Date.now();",
+        "        if (streamName === \"stdout\") {",
+        "          if (now - lastStdoutSpillAt < 3000 && bytes > 0) return;",
+        "          lastStdoutSpillAt = now;",
+        "        } else {",
+        "          if (now - lastStderrSpillAt < 3000 && bytes > 0) return;",
+        "          lastStderrSpillAt = now;",
+        "        }",
+        "        const marker = streamName + \" 已写入 \" + Math.round(bytes / 1024) + \"KB 到 \" + filePath + \"；桌面仅保留尾部用于显示，任务会继续执行。\";",
+        "        safeSend(\"hermes-log\", { type: \"system\", msg: \"[chat-output-spool] \" + marker });",
+        "      }"
+      ].join("\n")
+    );
+    source = source.replace(
+      "        try { fs$1.appendFileSync(stdoutPath, chunk); } catch {}",
+      "        appendFileQueued(stdoutPath, chunk);"
+    );
+    source = source.replace(
+      "        try { fs$1.appendFileSync(stderrPath, chunk); } catch {}",
+      "        appendFileQueued(stderrPath, chunk);"
+    );
+    source = source.replace(
+      "      child.on(\"exit\", (code) => {\n        if (settled) return;",
+      "      child.on(\"exit\", async (code) => {\n        await flushSpoolWrites();\n        if (settled) return;"
+    );
+  }
+
+  if (!source.includes("codex-safe-send-log-trim")) {
+    const safeSendAnchor = [
+      "function safeSend(channel, data) {",
+      "  try {",
+      "    const win = getMainWindow();",
+      "    if (win && !win.isDestroyed()) {",
+      "      win.webContents.send(channel, data);",
+      "    }",
+      "  } catch {",
+      "  }",
+      "}"
+    ].join("\n");
+    const safeSendReplacement = [
+      "function safeSend(channel, data) {",
+      "  try {",
+      "    let payload = data;",
+      "    if (channel === \"hermes-log\" && data && typeof data.msg === \"string\") {",
+      "      /* codex-safe-send-log-trim */",
+      "      const msg = data.msg;",
+      "      if (msg.length > 12000) {",
+      "        payload = { ...data, msg: msg.slice(0, 5000) + \"\\n...[界面日志已精简，完整输出已保存在 U 盘 data/.hermes/runs 或 logs 目录]...\\n\" + msg.slice(-5000) };",
+      "      }",
+      "    }",
+      "    const win = getMainWindow();",
+      "    if (win && !win.isDestroyed()) {",
+      "      win.webContents.send(channel, payload);",
+      "    }",
+      "  } catch {",
+      "  }",
+      "}"
+    ].join("\n");
+    if (!source.includes(safeSendAnchor)) {
+      throw new Error("Could not find safeSend block for log trimming.");
+    }
+    source = source.replace(safeSendAnchor, safeSendReplacement);
+  }
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesSkillBridge(filePath) {
   const marker = "sync-hermes-skills";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -2222,9 +2367,13 @@ function patchHermesAiChat(filePath) {
     "    }",
     "    function saveHermesSession() {",
     "      try {",
-    "        const state = { hermesMessages: hermesMessages.value, collabMessages: collabMessages.value, input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value };",
-    "        localStorage.setItem(\"uclaw_hermes_chat_state\", JSON.stringify(state));",
+    "        const compactMessages = (items) => (Array.isArray(items) ? items.slice(-80).map((item) => ({ ...item, content: typeof item.content === \"string\" && item.content.length > 3e4 ? item.content.slice(0, 12e3) + \"\\n\\n[中间内容已折叠，完整输出请查看 Hermes 运行日志。]\\n\\n\" + item.content.slice(-12e3) : item.content })) : []);",
+    "        const state = { hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value };",
     "        window.__uclawHermesChatState = state;",
+    "        clearTimeout(window.__uclawHermesChatSaveTimer);",
+    "        window.__uclawHermesChatSaveTimer = setTimeout(() => {",
+    "          try { localStorage.setItem(\"uclaw_hermes_chat_state\", JSON.stringify(window.__uclawHermesChatState || state)); } catch {}",
+    "        }, 180);",
     "        window.dispatchEvent(new CustomEvent(\"uclaw-hermes-chat-state\"));",
     "      } catch {",
     "      }",
@@ -2520,6 +2669,13 @@ function patchHermesAiChat(filePath) {
     throw new Error("Could not find AiChat open-web handler.");
   }
   source = source.replace(openWebAnchor, openWebReplacement);
+
+  const debugWatchBlock = [
+    "    watch(() => store.currentMessages, (msgs) => {",
+    "      console.log(\"[currentMessages] 变化:\", JSON.parse(JSON.stringify(msgs)));",
+    "    }, { deep: true });"
+  ].join("\n");
+  source = source.replace(debugWatchBlock, "    // OpenClaw 流式消息不做深度调试拷贝，避免 Hermes 长任务并发时拖慢渲染进程。");
 
   const mountedAnchor = [
     "    onMounted(() => {",
@@ -3763,6 +3919,7 @@ const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
+patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
