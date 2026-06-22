@@ -31,8 +31,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Audit OpenClaw shell features
+        run: npm run audit:openclaw-shell
+
       - name: Check release scripts
         run: |
+          node --check scripts/build-openclaw-shell-app.mjs
+          node --check scripts/audit-openclaw-shell-features.mjs
           node --check scripts/build-windows-release.mjs
           node --check scripts/verify-openclaw-runtime.mjs
 

@@ -1,4 +1,6 @@
 node_modules/
+data/
+ui-screenshots/
 dist-local/
 .vite/
 *.log
@@ -11,6 +13,7 @@ Thumbs.db
 
 # Large generated/backup snapshots are intentionally kept out of Git.
 vendor-snapshots/
+src/win-unpacked/
 
 # Local editor state.
 .idea/

@@ -1686,7 +1686,7 @@ function getHermesManager() {
   return hermesManager;
 }
 
-const IS_DEV = process.env.NODE_ENV === "development";
+const IS_DEV = !electron.app.isPackaged;
 const env = {
   rendererPort: 8080,
   appName: "OpenClaw",
@@ -1765,12 +1765,6 @@ function closeSplash() {
   }
 }
 function loadActivationPage() {
-  if (process.env.OPENCLAW_DEV_SKIP_LICENSE === "1") {
-    const indexPath = path$1.join(__dirname, "..", "assets", "main", "index.html");
-    console.log("[loadActivationPage] DEV license skip: loading", indexPath);
-    mainWindow$1?.loadFile(indexPath);
-    return;
-  }
   if (!mainWindow$1) {
     console.warn("[loadActivationPage] mainWindow is null");
     return;
@@ -1892,7 +1886,7 @@ function createWindow(gateway) {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path$1.join(__dirname, "..", "preload", "index.cjs"),
+      preload: path$1.join(__dirname, "..", "preload", "index.js"),
       devTools: IS_DEV
     },
     show: false,
@@ -2019,7 +2013,6 @@ const FILE_CONFIG = "openclaw.json";
 const FILE_LICENSE = ".license";
 const FILE_OPENCLAW_MJS = "openclaw.mjs";
 function getLocalBase() {
-  if (process.platform !== "win32") return path$1.resolve(__dirname, "..", "..", "data", ".openclaw");
   const appData = process.env.LOCALAPPDATA || process.env.APPDATA;
   if (appData) {
     const candidate = path$1.join(appData, APP_NAME);

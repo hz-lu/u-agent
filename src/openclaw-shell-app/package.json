@@ -1,0 +1,9 @@
+{
+  "name": "openclawpro",
+  "version": "1.8.6",
+  "description": "Openclaw - AI 助手桌面版，插上 U 盘就能用",
+  "main": "dist/main/index.js",
+  "author": "wjb",
+  "license": "MIT",
+  "dependencies": {}
+}

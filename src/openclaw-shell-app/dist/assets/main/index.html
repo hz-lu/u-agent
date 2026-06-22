@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title></title>
+  <script>
+    (function() {
+      var stored = localStorage.getItem('theme-mode');
+      var theme;
+      if (stored === 'light' || stored === 'dark') {
+        theme = stored;
+      } else {
+        var hour = new Date().getHours();
+        theme = (hour >= 8 && hour < 18) ? 'light' : 'dark';
+      }
+      document.documentElement.className = theme;
+    })();
+  </script>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            "on-tertiary": "#68000a", "on-primary-fixed-variant": "#004395",
+            "on-primary-container": "#00285d", "surface-container": "#171f33",
+            "on-surface": "#dae2fd", "tertiary-fixed": "#ffdad7",
+            "on-tertiary-container": "#5c0008", "background": "#0b1326",
+            "outline-variant": "#424754", "surface-container-lowest": "#060e20",
+            "on-secondary": "#003824", "on-error": "#690005",
+            "on-surface-variant": "#c2c6d6", "inverse-surface": "#dae2fd",
+            "on-tertiary-fixed-variant": "#930013", "secondary-container": "#00a572",
+            "on-tertiary-fixed": "#410004", "tertiary-fixed-dim": "#ffb3ad",
+            "surface-dim": "#0b1326", "surface-variant": "#2d3449",
+            "on-primary-fixed": "#001a42", "secondary-fixed-dim": "#4edea3",
+            "secondary": "#4edea3", "primary-fixed": "#d8e2ff",
+            "on-secondary-fixed": "#002113", "on-primary": "#002e6a",
+            "tertiary": "#ffb3ad", "surface-container-low": "#131b2e",
+            "surface-tint": "#adc6ff", "outline": "#8c909f",
+            "inverse-primary": "#005ac2", "error": "#ffb4ab",
+            "secondary-fixed": "#6f1240", "surface-container-high": "#222a3d",
+            "on-error-container": "#ffdad6", "surface": "#0b1326",
+            "error-container": "#93000a", "surface-container-highest": "#2d3449",
+            "on-background": "#dae2fd", "inverse-on-surface": "#283044",
+            "primary": "#adc6ff", "on-secondary-fixed-variant": "#005236",
+            "tertiary-container": "#ff5451", "surface-bright": "#31394d"
+          },
+          borderRadius: { DEFAULT: "4px", lg: "8px", xl: "12px", full: "9999px" },
+          fontFamily: { headline: ["-apple-system","BlinkMacSystemFont","Segoe UI","Microsoft YaHei","PingFang SC","sans-serif"], body: ["-apple-system","BlinkMacSystemFont","Segoe UI","Microsoft YaHei","PingFang SC","sans-serif"], label: ["-apple-system","BlinkMacSystemFont","Segoe UI","Microsoft YaHei","PingFang SC","sans-serif"] }
+        }
+      }
+    }
+  </script>
+  <script type="module" crossorigin src="../assets/main-DIeui7ZO.js"></script>
+  <link rel="stylesheet" crossorigin href="../main-CAx6YYDG.css">
+</head>
+<body class="bg-background text-on-surface">
+  <div id="app"></div>
+</body>
+</html>
