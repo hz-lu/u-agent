@@ -26,7 +26,11 @@ import type {
   SandboxConfig
 } from "../shared/types";
 
+type ChatMode = AgentId | "collab";
+type ChatMessage = { role: "user" | "assistant"; content: string; speaker?: string };
+
 const activeAgent = ref<AgentId>("hermes");
+const activeChatMode = ref<ChatMode>("hermes");
 const statuses = reactive<Record<AgentId, AgentStatus | null>>({ openclaw: null, hermes: null });
 const openClawConfig = ref<ModelConfig | null>(null);
 const hermesConfig = ref<HermesConfig | null>(null);
@@ -34,8 +38,9 @@ const logs = ref<AgentLogLine[]>([]);
 const embeddedUrl = ref("");
 const embeddedTitle = ref("");
 const chatInput = ref("");
-const chatMessages = ref<Array<{ role: "user" | "assistant"; content: string }>>([]);
+const chatSessions = reactive<Record<ChatMode, ChatMessage[]>>({ openclaw: [], hermes: [], collab: [] });
 const busy = ref(false);
+const chatBusy = ref(false);
 const statusMessage = ref("");
 const statusOk = ref(true);
 const importPath = ref("");
@@ -43,6 +48,7 @@ const lastTestResult = ref<ActionResult | null>(null);
 const scheduleDraft = reactive({ title: "", naturalLanguage: "", cron: "" });
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
+const chatMessages = computed(() => chatSessions[activeChatMode.value]);
 const connectorFields: Record<ConnectorConfig["id"], string[]> = {
   telegram: ["botToken"],
   discord: ["botToken"],
@@ -52,6 +58,12 @@ const connectorFields: Record<ConnectorConfig["id"], string[]> = {
   email: ["imapUrl", "smtpUrl", "username"],
   cli: []
 };
+
+function chatModeLabel(mode: ChatMode): string {
+  if (mode === "openclaw") return "OpenClaw";
+  if (mode === "hermes") return "Hermes";
+  return "协同";
+}
 const sandboxFields: Record<SandboxConfig["id"], string[]> = {
   local: [],
   docker: ["socket"],
@@ -180,12 +192,50 @@ async function importConfig() {
 
 async function sendChat() {
   const text = chatInput.value.trim();
-  if (!text) return;
+  if (!text || chatBusy.value) return;
   chatInput.value = "";
-  chatMessages.value.push({ role: "user", content: text });
-  const history = chatMessages.value.map((item) => ({ role: item.role, content: item.content }));
-  const result = await window.agentHub.sendChat({ agent: activeAgent.value, message: text, messages: history }) as ChatResponse;
-  chatMessages.value.push({ role: "assistant", content: result.ok ? (result.reply || "") : `调用失败: ${result.error || "unknown error"}` });
+  const mode = activeChatMode.value;
+  const session = chatSessions[mode];
+  session.push({ role: "user", content: text });
+  chatBusy.value = true;
+  try {
+    if (mode === "collab") {
+      await sendCollaborativeChat(text);
+      return;
+    }
+    const history = session.map((item) => ({ role: item.role, content: item.content }));
+    const result = await window.agentHub.sendChat({ agent: mode, message: text, messages: history }) as ChatResponse;
+    session.push({
+      role: "assistant",
+      speaker: chatModeLabel(mode),
+      content: result.ok ? (result.reply || "") : `调用失败: ${result.error || "unknown error"}`
+    });
+  } finally {
+    chatBusy.value = false;
+  }
+}
+
+async function sendCollaborativeChat(text: string) {
+  const session = chatSessions.collab;
+  const openClawResult = await window.agentHub.sendChat({ agent: "openclaw", message: text, messages: [] }) as ChatResponse;
+  const openClawReply = openClawResult.ok ? (openClawResult.reply || "") : `调用失败: ${openClawResult.error || "unknown error"}`;
+  session.push({ role: "assistant", speaker: "OpenClaw 草案", content: openClawReply });
+
+  const hermesPrompt = [
+    "请作为 Hermes 对 OpenClaw 的草案进行复核、补充和整理。",
+    `用户请求：${text}`,
+    `OpenClaw 草案：${openClawReply}`
+  ].join("\n\n");
+  const hermesResult = await window.agentHub.sendChat({
+    agent: "hermes",
+    message: hermesPrompt,
+    messages: [{ role: "system", content: "你负责复核 OpenClaw 的草案，指出风险、补充遗漏，并给出最终建议。" }]
+  }) as ChatResponse;
+  session.push({
+    role: "assistant",
+    speaker: "Hermes 复核",
+    content: hermesResult.ok ? (hermesResult.reply || "") : `调用失败: ${hermesResult.error || "unknown error"}`
+  });
 }
 
 onMounted(async () => {
@@ -397,17 +447,24 @@ onMounted(async () => {
 
       <section class="split">
         <div class="panel chat-panel">
-          <div class="panel-title">会话</div>
+          <div class="panel-title chat-title">
+            <span>会话</span>
+            <div class="mode-tabs" role="tablist" aria-label="会话模式">
+              <button :class="{ active: activeChatMode === 'openclaw' }" @click="activeChatMode = 'openclaw'">OpenClaw</button>
+              <button :class="{ active: activeChatMode === 'hermes' }" @click="activeChatMode = 'hermes'">Hermes</button>
+              <button :class="{ active: activeChatMode === 'collab' }" @click="activeChatMode = 'collab'">协同</button>
+            </div>
+          </div>
           <div class="messages">
             <div v-for="(message, index) in chatMessages" :key="index" class="message" :class="message.role">
-              <strong>{{ message.role === "user" ? "你" : activeAgent }}</strong>
+              <strong>{{ message.role === "user" ? "你" : (message.speaker || chatModeLabel(activeChatMode)) }}</strong>
               <p>{{ message.content }}</p>
             </div>
-            <div v-if="!chatMessages.length" class="empty">选择一个引擎，启动后即可在这里测试会话。</div>
+            <div v-if="!chatMessages.length" class="empty">选择一个会话模式，启动对应 Agent 后即可测试。</div>
           </div>
           <div class="chat-input">
             <textarea v-model="chatInput" placeholder="输入消息，Enter 发送" @keydown.enter.prevent="sendChat"></textarea>
-            <button class="primary" @click="sendChat"><Send :size="17" />发送</button>
+            <button class="primary" :disabled="chatBusy" @click="sendChat"><Send :size="17" />{{ chatBusy ? "发送中" : "发送" }}</button>
           </div>
         </div>
 
