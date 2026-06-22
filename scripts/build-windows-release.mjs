@@ -25,6 +25,7 @@ const requiredPaths = [
   "runtime/openclaw.zip",
   "runtime/openclaw.cmd",
   "runtime/node.exe",
+  "runtime/node_modules/openclaw/dist",
   "runtime/HermesPortable/venv/Scripts/hermes.exe",
   "runtime/HermesPortable/venv/Scripts/python.exe",
   "runtime/HermesPortable/node/node.exe",
@@ -70,6 +71,41 @@ function fail(message) {
 
 function exists(relPath) {
   return fs.existsSync(path.join(usbRoot, relPath));
+}
+
+function listFiles(root) {
+  if (!fs.existsSync(root)) return [];
+  const files = [];
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile()) files.push(full);
+    }
+  }
+  return files;
+}
+
+function validateOpenClawRuntime() {
+  const distRoot = path.join(usbRoot, "runtime", "node_modules", "openclaw", "dist");
+  const entryCandidates = [path.join(distRoot, "entry.mjs"), path.join(distRoot, "entry.js")];
+  const entry = entryCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!entry) fail(`Required OpenClaw build output is missing: ${entryCandidates.join(" or ")}`);
+
+  const files = listFiles(distRoot).filter((file) => /\.(?:html|js|mjs|css)$/i.test(file));
+  const referencePattern = /["'`](?!https?:|data:|node:|#)(\.{1,2}\/[^"'`]+?\.(?:js|mjs|css|json|wasm))["'`]/g;
+  const missing = [];
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf8");
+    for (const match of source.matchAll(referencePattern)) {
+      const reference = match[1];
+      const target = path.resolve(path.dirname(file), reference.split(/[?#]/, 1)[0]);
+      if (!fs.existsSync(target)) missing.push({ from: file, reference });
+    }
+  }
+  if (missing.length) fail(`OpenClaw runtime dist is incomplete:\n${JSON.stringify(missing.slice(0, 30), null, 2)}`);
 }
 
 function mkdirp(dir) {
@@ -356,4 +392,5 @@ for (const rel of requiredPaths) {
   if (!exists(rel)) fail(`Required portable file is missing: ${path.join(usbRoot, rel)}`);
 }
 
+validateOpenClawRuntime();
 buildZip();

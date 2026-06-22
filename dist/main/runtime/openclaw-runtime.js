@@ -2,7 +2,6 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { checkTcpPort } from "../services/net.js";
 import { ProcessSupervisor } from "../services/process-supervisor.js";
 export class OpenClawRuntime {
@@ -22,11 +21,10 @@ export class OpenClawRuntime {
     }
     async getStatus() {
         this.rewritePortableConfigPaths();
+        const integrity = this.inspectRuntime();
         const ready = await checkTcpPort(18789);
-        const command = this.findOpenClawCommand();
-        const node = this.findNode();
-        const zip = path.join(this.runtimeRoot, "openclaw.zip");
-        const state = command || fs.existsSync(zip) ? (ready ? "running" : this.supervisor.state) : "missing";
+        const critical = integrity.issues.some((issue) => issue.level === "error");
+        const state = ready ? "running" : critical ? "error" : integrity.command ? this.supervisor.state : "missing";
         return {
             id: "openclaw",
             state,
@@ -43,25 +41,51 @@ export class OpenClawRuntime {
                 `portableRoot=${this.paths.appRoot}`,
                 `runtimeRoot=${this.runtimeRoot}`,
                 `dataRoot=${this.dataRoot}`,
-                `openclaw=${command || "missing"}`,
-                `node=${node || "missing"}`,
-                `zip=${fs.existsSync(zip) ? "present" : "missing"}`
+                `openclaw=${integrity.command || "missing"}`,
+                `node=${integrity.node || "missing"}`,
+                `zip=${integrity.zipPresent ? "present" : "missing"}`,
+                `openclaw.dist=${integrity.distDir || "missing"}`,
+                `openclaw.entry=${integrity.entry || "missing"}`,
+                ...integrity.issues.map((issue) => `${issue.level}:${issue.code}=${issue.message}${issue.path ? ` (${issue.path})` : ""}`)
             ],
             capabilities: {
-                commandPresent: !!command,
-                nodePresent: !!node,
-                zipPresent: fs.existsSync(zip),
+                commandPresent: !!integrity.command,
+                nodePresent: !!integrity.node,
+                zipPresent: integrity.zipPresent,
+                expandedPackagePresent: integrity.packagePresent,
+                distPresent: !!integrity.distDir,
+                entryPresent: !!integrity.entry,
+                assetReferencesValid: integrity.missingReferences.length === 0,
+                runtimeComplete: integrity.ok,
                 dataReady: fs.existsSync(this.dataRoot),
                 gatewayReady: ready
             }
         };
     }
     async start() {
-        this.ensureRuntime();
+        this.ensureRuntimeDirs();
         this.rewritePortableConfigPaths();
-        const command = this.findOpenClawCommand();
+        const integrity = this.inspectRuntime();
+        const command = integrity.command;
         if (!command) {
-            this.logSink({ agent: "openclaw", level: "error", message: "OpenClaw runtime command is missing.", at: new Date().toISOString() });
+            this.logSink({
+                agent: "openclaw",
+                level: "error",
+                message: "OpenClaw runtime is not expanded. Release packages must include runtime/openclaw.cmd, runtime/node.exe, and runtime/node_modules/openclaw/dist. Startup will not unpack openclaw.zip on the UI path.",
+                at: new Date().toISOString()
+            });
+            return this.getStatus();
+        }
+        const errors = integrity.issues.filter((issue) => issue.level === "error");
+        if (errors.length) {
+            for (const issue of errors) {
+                this.logSink({
+                    agent: "openclaw",
+                    level: "error",
+                    message: `${issue.message}${issue.path ? ` (${issue.path})` : ""}`,
+                    at: new Date().toISOString()
+                });
+            }
             return this.getStatus();
         }
         this.supervisor.start({
@@ -108,17 +132,9 @@ export class OpenClawRuntime {
             ...(provider.headers || {})
         });
     }
-    ensureRuntime() {
+    ensureRuntimeDirs() {
         fs.mkdirSync(this.runtimeRoot, { recursive: true });
         fs.mkdirSync(this.dataRoot, { recursive: true });
-        const command = this.findOpenClawCommand();
-        const zip = path.join(this.runtimeRoot, "openclaw.zip");
-        if (command || !fs.existsSync(zip))
-            return;
-        const result = spawnSync("tar.exe", ["-xf", zip, "-C", this.runtimeRoot], { encoding: "utf8", windowsHide: true });
-        if (result.status !== 0) {
-            this.logSink({ agent: "openclaw", level: "error", message: result.stderr || "Failed to extract openclaw.zip", at: new Date().toISOString() });
-        }
     }
     rewritePortableConfigPaths() {
         const configFile = path.join(this.dataRoot, "openclaw.json");
@@ -235,5 +251,123 @@ export class OpenClawRuntime {
     findNode() {
         const candidate = path.join(this.runtimeRoot, process.platform === "win32" ? "node.exe" : "node");
         return fs.existsSync(candidate) ? candidate : null;
+    }
+    inspectRuntime() {
+        const command = this.findOpenClawCommand();
+        const node = this.findNode();
+        const zip = path.join(this.runtimeRoot, "openclaw.zip");
+        const packageRoot = path.join(this.runtimeRoot, "node_modules", "openclaw");
+        const distDir = path.join(packageRoot, "dist");
+        const entryCandidates = [
+            path.join(distDir, "entry.mjs"),
+            path.join(distDir, "entry.js")
+        ];
+        const entry = entryCandidates.find((candidate) => fs.existsSync(candidate)) || null;
+        const issues = [];
+        if (!command) {
+            issues.push({
+                level: "error",
+                code: "missing-command",
+                message: `OpenClaw command is missing; expected ${process.platform === "win32" ? "runtime/openclaw.cmd" : "runtime/openclaw"}.`,
+                path: path.join(this.runtimeRoot, process.platform === "win32" ? "openclaw.cmd" : "openclaw")
+            });
+        }
+        if (!node) {
+            issues.push({
+                level: "error",
+                code: "missing-node",
+                message: `OpenClaw bundled Node runtime is missing; expected ${process.platform === "win32" ? "runtime/node.exe" : "runtime/node"}.`,
+                path: path.join(this.runtimeRoot, process.platform === "win32" ? "node.exe" : "node")
+            });
+        }
+        if (!fs.existsSync(packageRoot)) {
+            issues.push({
+                level: "error",
+                code: "missing-openclaw-package",
+                message: "OpenClaw npm package is missing from runtime/node_modules/openclaw. The release must include the expanded runtime, not rely on startup extraction.",
+                path: packageRoot
+            });
+        }
+        else if (!fs.existsSync(distDir)) {
+            issues.push({
+                level: "error",
+                code: "missing-openclaw-dist",
+                message: "OpenClaw build output is missing from runtime/node_modules/openclaw/dist.",
+                path: distDir
+            });
+        }
+        else if (!entry) {
+            issues.push({
+                level: "error",
+                code: "missing-openclaw-entry",
+                message: "OpenClaw build output is incomplete: missing dist/entry.(m)js.",
+                path: distDir
+            });
+        }
+        const missingReferences = fs.existsSync(distDir) ? this.findMissingDistReferences(distDir) : [];
+        for (const missing of missingReferences.slice(0, 20)) {
+            issues.push({
+                level: "error",
+                code: "missing-dist-reference",
+                message: `OpenClaw dist references a missing asset: ${missing.reference}`,
+                path: missing.from
+            });
+        }
+        if (missingReferences.length > 20) {
+            issues.push({
+                level: "error",
+                code: "missing-dist-reference-overflow",
+                message: `OpenClaw dist has ${missingReferences.length - 20} additional missing asset references.`
+            });
+        }
+        if (!command && fs.existsSync(zip)) {
+            issues.push({
+                level: "warn",
+                code: "zip-only-runtime",
+                message: "runtime/openclaw.zip exists, but startup no longer extracts large runtime archives. Build the release with an expanded runtime directory.",
+                path: zip
+            });
+        }
+        return {
+            ok: !issues.some((issue) => issue.level === "error"),
+            command,
+            node,
+            zipPresent: fs.existsSync(zip),
+            packagePresent: fs.existsSync(packageRoot),
+            distDir: fs.existsSync(distDir) ? distDir : null,
+            entry,
+            missingReferences,
+            issues
+        };
+    }
+    findMissingDistReferences(distDir) {
+        const files = this.listFiles(distDir).filter((file) => /\.(?:html|js|mjs|css)$/i.test(file));
+        const missing = [];
+        const referencePattern = /["'`](?!https?:|data:|node:|#)(\.{1,2}\/[^"'`]+?\.(?:js|mjs|css|json|wasm))["'`]/g;
+        for (const file of files) {
+            const source = fs.readFileSync(file, "utf8");
+            for (const match of source.matchAll(referencePattern)) {
+                const reference = match[1];
+                const target = path.resolve(path.dirname(file), reference.split(/[?#]/, 1)[0]);
+                if (!fs.existsSync(target))
+                    missing.push({ from: file, reference });
+            }
+        }
+        return missing;
+    }
+    listFiles(root) {
+        const files = [];
+        const stack = [root];
+        while (stack.length) {
+            const dir = stack.pop();
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory())
+                    stack.push(full);
+                else if (entry.isFile())
+                    files.push(full);
+            }
+        }
+        return files;
     }
 }
