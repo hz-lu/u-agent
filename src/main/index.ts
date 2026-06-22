@@ -2,7 +2,7 @@ import { app, BrowserWindow, OpenDialogOptions, dialog, ipcMain, shell } from "e
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentId, AgentLogLine, ChatMessage, ChatMode, ChatRequest, ChatSessions, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
+import { ActionResult, AgentId, AgentLogLine, ChatMessage, ChatMode, ChatRequest, ChatSessions, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
 import { PortablePaths } from "./portable-paths.js";
 import { HermesRuntime } from "./runtime/hermes/hermes-runtime.js";
 import { OpenClawRuntime } from "./runtime/openclaw-runtime.js";
@@ -193,6 +193,43 @@ function cleanUnusedChatMessageFiles(sessions: ChatSessions): void {
   }
 }
 
+function exportChatSession(mode: ChatMode): ActionResult {
+  if (!chatModes.includes(mode)) return { ok: false, message: "未知会话模式。" };
+  const messages = readChatSessions()[mode] || [];
+  if (!messages.length) return { ok: false, message: "当前会话为空，无需导出。" };
+  const exportDir = path.join(paths.dataRoot, ".agent-hub", "exports");
+  fs.mkdirSync(exportDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filePath = path.join(exportDir, `${stamp}-${mode}-chat.md`);
+  fs.writeFileSync(filePath, formatChatSessionMarkdown(mode, messages), "utf8");
+  return { ok: true, message: "当前会话已导出。", path: filePath };
+}
+
+function formatChatSessionMarkdown(mode: ChatMode, messages: ChatMessage[]): string {
+  const title = `${chatModeLabel(mode)} 会话导出`;
+  const lines = [
+    `# ${title}`,
+    "",
+    `- 模式: ${chatModeLabel(mode)}`,
+    `- 导出时间: ${new Date().toISOString()}`,
+    `- 消息数: ${messages.length}`,
+    ""
+  ];
+  for (const message of messages) {
+    const speaker = message.role === "user" ? "用户" : (message.speaker || chatModeLabel(mode));
+    lines.push("## " + speaker);
+    if (message.createdAt) lines.push("", `> ${message.createdAt}`);
+    lines.push("", message.content.trimEnd(), "");
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
+}
+
+function chatModeLabel(mode: ChatMode): string {
+  if (mode === "openclaw") return "OpenClaw";
+  if (mode === "hermes") return "Hermes";
+  return "协同";
+}
+
 function safeChatMessageId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || `message-${Date.now()}`;
 }
@@ -208,6 +245,7 @@ function registerIpc(): void {
   ipcMain.handle("agent:logs", async () => logs);
   ipcMain.handle("chat:read-sessions", async () => readChatSessions());
   ipcMain.handle("chat:write-sessions", async (_, sessions) => writeChatSessions(sessions));
+  ipcMain.handle("chat:export-session", async (_, mode: ChatMode) => exportChatSession(mode));
   ipcMain.handle("openclaw:read-model-config", async () => openclaw.readModelConfig());
   ipcMain.handle("openclaw:write-model-config", async (_, config) => openclaw.writeModelConfig(config));
   ipcMain.handle("openclaw:gateway-status", async () => openclaw.getStatus());

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import { AgentId, AgentLogLine, ChatRequest, ChatSessions, ConnectorConfig, HermesConfig, ModelConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
+import { AgentId, AgentLogLine, ChatMode, ChatRequest, ChatSessions, ConnectorConfig, HermesConfig, ModelConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
 
 const api = {
   listStatus: () => ipcRenderer.invoke("agent:list-status"),
@@ -9,6 +9,7 @@ const api = {
   readLogs: () => ipcRenderer.invoke("agent:logs"),
   readChatSessions: () => ipcRenderer.invoke("chat:read-sessions"),
   writeChatSessions: (sessions: ChatSessions) => ipcRenderer.invoke("chat:write-sessions", sessions),
+  exportChatSession: (mode: ChatMode) => ipcRenderer.invoke("chat:export-session", mode),
   readOpenClawModelConfig: () => ipcRenderer.invoke("openclaw:read-model-config"),
   writeOpenClawModelConfig: (config: ModelConfig) => ipcRenderer.invoke("openclaw:write-model-config", config),
   readOpenClawGatewayStatus: () => ipcRenderer.invoke("openclaw:gateway-status"),

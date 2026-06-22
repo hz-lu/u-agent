@@ -152,6 +152,13 @@ function clearCurrentChat() {
   void saveChatSessions();
 }
 
+async function exportCurrentChat() {
+  await saveChatSessions();
+  const result = await window.agentHub.exportChatSession(activeChatMode.value) as ActionResult;
+  statusOk.value = result.ok;
+  statusMessage.value = result.path ? `${result.message} ${result.path}` : result.message;
+}
+
 async function saveConfig() {
   if (!hermesConfig.value) return;
   hermesConfig.value = await window.agentHub.writeHermesConfig(hermesConfig.value);
@@ -524,7 +531,10 @@ onMounted(async () => {
               <button :class="{ active: activeChatMode === 'hermes' }" @click="activeChatMode = 'hermes'">Hermes</button>
               <button :class="{ active: activeChatMode === 'collab' }" @click="activeChatMode = 'collab'">协同</button>
             </div>
-            <button class="secondary compact" :disabled="chatBusy || !chatMessages.length" @click="clearCurrentChat">清空</button>
+            <div class="chat-actions">
+              <button class="secondary compact" :disabled="chatBusy || !chatMessages.length" @click="exportCurrentChat"><Download :size="15" />导出</button>
+              <button class="secondary compact" :disabled="chatBusy || !chatMessages.length" @click="clearCurrentChat">清空</button>
+            </div>
           </div>
           <div class="messages">
             <div v-for="(message, index) in chatMessages" :key="index" class="message" :class="message.role">

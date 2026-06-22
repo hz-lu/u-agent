@@ -418,6 +418,12 @@ textarea {
   justify-content: space-between;
 }
 
+.chat-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .mode-tabs {
   display: inline-grid;
   grid-template-columns: repeat(3, minmax(76px, 1fr));
