@@ -8,6 +8,24 @@ function exists(relPath) {
   return fs.existsSync(path.join(usbRoot, relPath));
 }
 
+function hasUsablePath(relPath) {
+  const fullPath = path.join(usbRoot, relPath);
+  if (!fs.existsSync(fullPath)) return false;
+  const stat = fs.statSync(fullPath);
+  if (stat.isFile()) return path.basename(fullPath) !== ".gitkeep";
+  if (!stat.isDirectory()) return true;
+  const stack = [fullPath];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(child);
+      else if (entry.isFile() && entry.name !== ".gitkeep") return true;
+    }
+  }
+  return false;
+}
+
 function readJsonSafe(relPath) {
   try {
     const file = path.join(usbRoot, relPath);
@@ -85,7 +103,7 @@ function auditRuntimeManifest(manifest) {
     const launchers = Array.isArray(spec?.launchers) ? spec.launchers : [];
     platforms[platform] = {
       required: requiredPaths.length,
-      missingRequired: requiredPaths.filter((relPath) => !exists(relPath)),
+      missingRequired: requiredPaths.filter((relPath) => !hasUsablePath(relPath)),
       launcherReady: launchers.length > 0 && launchers.some((relPath) => exists(relPath)),
       launchers
     };
@@ -96,7 +114,7 @@ function auditRuntimeManifest(manifest) {
     schemaVersion: manifest.schemaVersion || null,
     platforms,
     sharedMissing: sharedRequiredPaths.filter((relPath) => !exists(relPath)),
-    dataTemplateMissing: dataTemplatePaths.filter((relPath) => !exists(relPath)),
+    dataTemplateMissing: dataTemplatePaths.filter((relPath) => !hasUsablePath(relPath)),
     forbiddenPresent: forbiddenRuntimePaths.filter((relPath) => exists(relPath))
   };
 }

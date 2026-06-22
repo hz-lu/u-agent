@@ -30,6 +30,24 @@ function exists(relPath) {
   return fs.existsSync(path.join(usbRoot, relPath));
 }
 
+function hasUsablePath(relPath) {
+  const fullPath = path.join(usbRoot, relPath);
+  if (!fs.existsSync(fullPath)) return false;
+  const stat = fs.statSync(fullPath);
+  if (stat.isFile()) return path.basename(fullPath) !== ".gitkeep";
+  if (!stat.isDirectory()) return true;
+  const stack = [fullPath];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(child);
+      else if (entry.isFile() && entry.name !== ".gitkeep") return true;
+    }
+  }
+  return false;
+}
+
 function readJsonRequired(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -42,11 +60,9 @@ const runtimeManifest = readJsonRequired(runtimeManifestPath);
 const windowsRuntimeSpec = runtimeManifest?.platforms?.["windows-x64"];
 if (!windowsRuntimeSpec) fail("runtime manifest is missing platforms.windows-x64");
 
-const requiredPaths = Array.from(new Set([
-  runtimeManifestRel,
-  ...(Array.isArray(runtimeManifest.sharedRequiredPaths) ? runtimeManifest.sharedRequiredPaths : []),
-  ...(Array.isArray(windowsRuntimeSpec.requiredPaths) ? windowsRuntimeSpec.requiredPaths : [])
-]));
+const sharedRequiredPaths = Array.isArray(runtimeManifest.sharedRequiredPaths) ? runtimeManifest.sharedRequiredPaths : [];
+const windowsRequiredPaths = Array.isArray(windowsRuntimeSpec.requiredPaths) ? windowsRuntimeSpec.requiredPaths : [];
+const requiredPaths = Array.from(new Set([runtimeManifestRel, ...sharedRequiredPaths, ...windowsRequiredPaths]));
 const forbiddenRuntimePaths = Array.isArray(runtimeManifest.forbiddenRuntimePaths) ? runtimeManifest.forbiddenRuntimePaths : [];
 
 const sourceEntries = [
@@ -299,7 +315,11 @@ function validateWindowsReleaseInputs() {
   if (forbiddenPresent.length) {
     findings.push(`Forbidden runtime user-data paths must be moved under data/ before release:\n${forbiddenPresent.join("\n")}`);
   }
-  const missingRequired = requiredPaths.filter((relPath) => !exists(relPath));
+  const missingRequired = [
+    ...(!hasUsablePath(runtimeManifestRel) ? [runtimeManifestRel] : []),
+    ...sharedRequiredPaths.filter((relPath) => !exists(relPath)),
+    ...windowsRequiredPaths.filter((relPath) => !hasUsablePath(relPath))
+  ];
   if (missingRequired.length) {
     findings.push(`Required portable files are missing:\n${missingRequired.map((relPath) => `- ${path.join(usbRoot, relPath)}`).join("\n")}`);
   }

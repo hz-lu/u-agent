@@ -65,6 +65,8 @@ X:\
 
 运行时资产契约维护在 `runtime/PORTABLE-RUNTIME-MANIFEST.json`。该文件只记录必须存在的 launcher、OpenClaw、Node、Hermes、Python 等路径，不提交大体积 runtime 二进制；生成 release 前应先让 `npm run audit:portable` 中对应平台的 manifest 缺失项清零。
 
+仓库会提交必要目录的 `.gitkeep` 骨架，例如 `win-unpacked/`、`runtime/`、`data/`、`skills/`、`extensions/`。克隆后不需要手动猜目录，只需要把 Windows 程序壳和 runtime 二进制补到 manifest 指定路径。真实用户数据、日志、缓存、`win-unpacked` 二进制、runtime 二进制仍会被 `.gitignore` 排除，不应提交。
+
 ## 零痕迹数据策略
 
 运行状态会尽量重定向到 U 盘：

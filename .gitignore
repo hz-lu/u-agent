@@ -1,5 +1,4 @@
 node_modules/
-data/
 ui-screenshots/
 dist-local/
 .vite/
@@ -14,9 +13,25 @@ Thumbs.db
 # Large generated/backup snapshots are intentionally kept out of Git.
 vendor-snapshots/
 src/win-unpacked/
-runtime/**
-!runtime/
-!runtime/PORTABLE-RUNTIME-MANIFEST.json
+/win-unpacked/**
+!/win-unpacked/
+!/win-unpacked/**/
+!/win-unpacked/**/.gitkeep
+/runtime/**
+!/runtime/
+!/runtime/**/
+!/runtime/PORTABLE-RUNTIME-MANIFEST.json
+!/runtime/**/.gitkeep
+/data/**
+!/data/
+!/data/**/
+!/data/**/.gitkeep
+/skills/*
+!/skills/.gitkeep
+/extensions/*
+!/extensions/.gitkeep
+/release/
+/backups/
 
 # Local editor state.
 .idea/
