@@ -24,6 +24,16 @@ function countChildren(relPath) {
   return fs.readdirSync(dir).length;
 }
 
+function anyExists(relPaths) {
+  return relPaths.some((relPath) => exists(relPath));
+}
+
+function releaseFileMatches(pattern) {
+  const releaseDir = path.join(usbRoot, "release");
+  if (!fs.existsSync(releaseDir)) return false;
+  return fs.readdirSync(releaseDir).some((name) => pattern.test(name));
+}
+
 const openClawConfig = readJsonSafe("data/.openclaw/openclaw.json");
 const extraDirs = openClawConfig?.skills?.load?.extraDirs || [];
 const rootDrive = path.parse(usbRoot).root.replace(/\\$/, "").toLowerCase();
@@ -69,6 +79,13 @@ const checks = {
   hermesLinuxArm64Runtime: exists("runtime/linux-arm64/HermesPortable/venv/bin/hermes") || exists("runtime/HermesPortable-linux-arm64/venv/bin/hermes"),
   macLauncher: exists("OpenClawPro.command") || exists("macos/OpenClawPro.app"),
   linuxLauncher: exists("OpenClawPro.sh") || exists("linux/OpenClawPro"),
+  universalManifest: anyExists([
+    "RELEASE-MANIFEST.json",
+    "UNIVERSAL-MANIFEST.json",
+    "release/RELEASE-MANIFEST.json",
+    "release/UNIVERSAL-MANIFEST.json"
+  ]) || releaseFileMatches(/(?:Universal|AllPlatforms).*\.manifest\.json$/i),
+  universalZipPackage: releaseFileMatches(/(?:Universal|AllPlatforms).*\.zip$/i),
   dataDir: exists("data"),
   openClawData: exists("data/.openclaw/openclaw.json"),
   hermesData: exists("data/.hermes"),
@@ -86,7 +103,7 @@ const report = {
     zeroInstallWindowsMostlyReady: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.hermesWindowsPython && checks.hermesWindowsNode,
     strictZeroTraceReady: checks.dataDir && !checks.legacyHermesDataInRuntime,
     threePlatformNativeReady: checks.hermesWindowsRuntime && checks.hermesMacArm64Runtime && checks.hermesMacX64Runtime && checks.hermesLinuxX64Runtime && checks.hermesLinuxArm64Runtime && checks.macLauncher && checks.linuxLauncher,
-    universalZipReady: false,
+    universalZipReady: checks.universalManifest && checks.universalZipPackage,
   },
   checks,
   counts: {
@@ -102,7 +119,8 @@ const report = {
 if (!checks.openClawCommandOnUsb) report.gaps.push("runtime/openclaw.cmd is missing; current app may extract/use host cache before OpenClaw CLI is fully USB-local.");
 if (checks.legacyHermesDataInRuntime) report.gaps.push("runtime/HermesPortable still contains data/_home; strict zero-trace packaging should remove or migrate these into data/.hermes.");
 if (!report.summary.threePlatformNativeReady) report.gaps.push("macOS arm64/x64 and Linux x64/arm64 runtimes/launchers are not bundled.");
-if (!report.summary.universalZipReady) report.gaps.push("No generated universal zip manifest/package was found.");
+if (!checks.universalManifest) report.gaps.push("No generated universal zip manifest was found.");
+if (!checks.universalZipPackage) report.gaps.push("No generated universal zip package was found.");
 if (!checks.noForeignAbsolutePaths) report.gaps.push("Config contains absolute paths outside the current portable root.");
 
 console.log(JSON.stringify(report, null, 2));
