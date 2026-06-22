@@ -5,17 +5,20 @@ import { fileURLToPath } from "node:url";
 import { PortablePaths } from "./portable-paths.js";
 import { HermesRuntime } from "./runtime/hermes/hermes-runtime.js";
 import { OpenClawRuntime } from "./runtime/openclaw-runtime.js";
-import { JsonStore } from "./services/json-store.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV === "development";
 let mainWindow = null;
 let paths;
 let hermes;
 let openclaw;
-let chatStore;
+let chatSessionsFile;
+let chatMessagesDir;
 const logs = [];
 const chatModes = ["openclaw", "hermes", "collab"];
 const defaultChatSessions = { openclaw: [], hermes: [], collab: [] };
+const chatMessageLimit = 80;
+const inlineChatContentLimit = 24000;
+const chatPreviewLimit = 2000;
 function appendDesktopCrashLog(kind, payload) {
     try {
         const root = paths?.dataRoot || path.join(process.cwd(), "data");
@@ -85,20 +88,95 @@ function createWindow() {
 function runtimeFor(agent) {
     return agent === "hermes" ? hermes : openclaw;
 }
-function normalizeChatSessions(input) {
+function readChatSessions() {
+    try {
+        if (!fs.existsSync(chatSessionsFile))
+            return defaultChatSessions;
+        const parsed = JSON.parse(fs.readFileSync(chatSessionsFile, "utf8"));
+        return normalizeChatSessions(parsed, { hydrateFiles: true });
+    }
+    catch {
+        return defaultChatSessions;
+    }
+}
+function writeChatSessions(input) {
+    const sessions = normalizeChatSessions(input, { persistFiles: true });
+    fs.mkdirSync(path.dirname(chatSessionsFile), { recursive: true });
+    fs.writeFileSync(chatSessionsFile, `${JSON.stringify(sessions, null, 2)}\n`, "utf8");
+    cleanUnusedChatMessageFiles(sessions);
+    return readChatSessions();
+}
+function normalizeChatSessions(input, options = {}) {
     const result = { openclaw: [], hermes: [], collab: [] };
     for (const mode of chatModes) {
         const messages = Array.isArray(input?.[mode]) ? input[mode] || [] : [];
         result[mode] = messages
             .filter((message) => message?.role === "user" || message?.role === "assistant")
-            .map((message) => ({
-            role: message.role,
-            content: String(message.content || "").slice(0, 24000),
-            ...(message.speaker ? { speaker: String(message.speaker).slice(0, 80) } : {})
-        }))
-            .slice(-80);
+            .slice(-chatMessageLimit)
+            .map((message, index) => normalizeChatMessage(mode, message, index, options));
     }
     return result;
+}
+function normalizeChatMessage(mode, message, index, options) {
+    const id = safeChatMessageId(message.id || `${mode}-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`);
+    const hydratedContent = options.hydrateFiles && message.contentFile
+        ? readChatMessageFile(message.contentFile, message.content)
+        : message.content;
+    const content = String(hydratedContent || "");
+    const base = {
+        id,
+        role: message.role,
+        content,
+        createdAt: message.createdAt || new Date().toISOString(),
+        ...(message.speaker ? { speaker: String(message.speaker).slice(0, 80) } : {})
+    };
+    if (!options.persistFiles || content.length <= inlineChatContentLimit) {
+        return {
+            ...base,
+            contentChars: content.length
+        };
+    }
+    const contentFile = path.join("chat-messages", `${id}.md`);
+    fs.mkdirSync(chatMessagesDir, { recursive: true });
+    fs.writeFileSync(path.join(paths.dataRoot, ".agent-hub", contentFile), content, "utf8");
+    return {
+        ...base,
+        content: `${content.slice(0, chatPreviewLimit)}\n\n[全文已保存到 U 盘 data/.agent-hub/${contentFile}]`,
+        preview: content.slice(0, chatPreviewLimit),
+        contentFile,
+        contentChars: content.length
+    };
+}
+function readChatMessageFile(contentFile, fallback) {
+    const hubRoot = path.resolve(path.join(paths.dataRoot, ".agent-hub"));
+    const fullPath = path.resolve(hubRoot, contentFile);
+    if (fullPath !== hubRoot && !fullPath.startsWith(`${hubRoot}${path.sep}`))
+        return fallback;
+    try {
+        return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf8") : fallback;
+    }
+    catch {
+        return fallback;
+    }
+}
+function cleanUnusedChatMessageFiles(sessions) {
+    if (!fs.existsSync(chatMessagesDir))
+        return;
+    const used = new Set();
+    for (const mode of chatModes) {
+        for (const message of sessions[mode]) {
+            if (message.contentFile)
+                used.add(path.basename(message.contentFile));
+        }
+    }
+    for (const entry of fs.readdirSync(chatMessagesDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(".md") && !used.has(entry.name)) {
+            fs.rmSync(path.join(chatMessagesDir, entry.name), { force: true });
+        }
+    }
+}
+function safeChatMessageId(value) {
+    return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || `message-${Date.now()}`;
 }
 function registerIpc() {
     ipcMain.handle("agent:list-status", async () => ({
@@ -109,8 +187,8 @@ function registerIpc() {
     ipcMain.handle("agent:stop", async (_, agent) => runtimeFor(agent).stop());
     ipcMain.handle("agent:restart", async (_, agent) => runtimeFor(agent).restart());
     ipcMain.handle("agent:logs", async () => logs);
-    ipcMain.handle("chat:read-sessions", async () => normalizeChatSessions(chatStore.read()));
-    ipcMain.handle("chat:write-sessions", async (_, sessions) => chatStore.write(normalizeChatSessions(sessions)));
+    ipcMain.handle("chat:read-sessions", async () => readChatSessions());
+    ipcMain.handle("chat:write-sessions", async (_, sessions) => writeChatSessions(sessions));
     ipcMain.handle("openclaw:read-model-config", async () => openclaw.readModelConfig());
     ipcMain.handle("openclaw:write-model-config", async (_, config) => openclaw.writeModelConfig(config));
     ipcMain.handle("openclaw:gateway-status", async () => openclaw.getStatus());
@@ -147,7 +225,8 @@ installCrashDiagnostics();
 app.whenReady().then(() => {
     paths = new PortablePaths();
     paths.ensureBaseDirs();
-    chatStore = new JsonStore(path.join(paths.dataRoot, ".agent-hub", "chat-sessions.json"), defaultChatSessions);
+    chatSessionsFile = path.join(paths.dataRoot, ".agent-hub", "chat-sessions.json");
+    chatMessagesDir = path.join(paths.dataRoot, ".agent-hub", "chat-messages");
     hermes = new HermesRuntime(paths, () => mainWindow);
     openclaw = new OpenClawRuntime(paths);
     hermes.onLog(pushLog);

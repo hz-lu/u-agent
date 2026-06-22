@@ -65,6 +65,17 @@ function chatModeLabel(mode: ChatMode): string {
   if (mode === "hermes") return "Hermes";
   return "协同";
 }
+
+function createChatMessage(role: ChatMessage["role"], content: string, speaker?: string): ChatMessage {
+  const id = globalThis.crypto?.randomUUID?.() || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    id,
+    role,
+    content,
+    createdAt: new Date().toISOString(),
+    ...(speaker ? { speaker } : {})
+  };
+}
 const sandboxFields: Record<SandboxConfig["id"], string[]> = {
   local: [],
   docker: ["socket"],
@@ -225,7 +236,7 @@ async function sendChat() {
   chatInput.value = "";
   const mode = activeChatMode.value;
   const session = chatSessions[mode];
-  session.push({ role: "user", content: text });
+  session.push(createChatMessage("user", text));
   void saveChatSessions();
   chatBusy.value = true;
   try {
@@ -235,11 +246,11 @@ async function sendChat() {
     }
     const history = session.map((item) => ({ role: item.role, content: item.content }));
     const result = await window.agentHub.sendChat({ agent: mode, message: text, messages: history }) as ChatResponse;
-    session.push({
-      role: "assistant",
-      speaker: chatModeLabel(mode),
-      content: result.ok ? (result.reply || "") : `调用失败: ${result.error || "unknown error"}`
-    });
+    session.push(createChatMessage(
+      "assistant",
+      result.ok ? (result.reply || "") : `调用失败: ${result.error || "unknown error"}`,
+      chatModeLabel(mode)
+    ));
     void saveChatSessions();
   } finally {
     chatBusy.value = false;
@@ -250,7 +261,7 @@ async function sendCollaborativeChat(text: string) {
   const session = chatSessions.collab;
   const openClawResult = await window.agentHub.sendChat({ agent: "openclaw", message: text, messages: [] }) as ChatResponse;
   const openClawReply = openClawResult.ok ? (openClawResult.reply || "") : `调用失败: ${openClawResult.error || "unknown error"}`;
-  session.push({ role: "assistant", speaker: "OpenClaw 草案", content: openClawReply });
+  session.push(createChatMessage("assistant", openClawReply, "OpenClaw 草案"));
   void saveChatSessions();
 
   const hermesPrompt = [
@@ -263,11 +274,11 @@ async function sendCollaborativeChat(text: string) {
     message: hermesPrompt,
     messages: [{ role: "system", content: "你负责复核 OpenClaw 的草案，指出风险、补充遗漏，并给出最终建议。" }]
   }) as ChatResponse;
-  session.push({
-    role: "assistant",
-    speaker: "Hermes 复核",
-    content: hermesResult.ok ? (hermesResult.reply || "") : `调用失败: ${hermesResult.error || "unknown error"}`
-  });
+  session.push(createChatMessage(
+    "assistant",
+    hermesResult.ok ? (hermesResult.reply || "") : `调用失败: ${hermesResult.error || "unknown error"}`,
+    "Hermes 复核"
+  ));
   void saveChatSessions();
 }
 

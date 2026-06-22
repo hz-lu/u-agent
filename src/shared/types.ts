@@ -3,9 +3,14 @@ export type AgentId = "openclaw" | "hermes";
 export type ChatMode = AgentId | "collab";
 
 export interface ChatMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
   speaker?: string;
+  createdAt?: string;
+  contentFile?: string;
+  preview?: string;
+  contentChars?: number;
 }
 
 export type ChatSessions = Record<ChatMode, ChatMessage[]>;
