@@ -22,11 +22,13 @@ import type {
   ChatResponse,
   ConnectorConfig,
   HermesConfig,
+  ModelConfig,
   SandboxConfig
 } from "../shared/types";
 
 const activeAgent = ref<AgentId>("hermes");
 const statuses = reactive<Record<AgentId, AgentStatus | null>>({ openclaw: null, hermes: null });
+const openClawConfig = ref<ModelConfig | null>(null);
 const hermesConfig = ref<HermesConfig | null>(null);
 const logs = ref<AgentLogLine[]>([]);
 const embeddedUrl = ref("");
@@ -68,11 +70,23 @@ async function loadConfig() {
   hermesConfig.value = await window.agentHub.readHermesConfig();
 }
 
+async function loadOpenClawConfig() {
+  openClawConfig.value = await window.agentHub.readOpenClawModelConfig();
+}
+
 async function saveConfig() {
   if (!hermesConfig.value) return;
   hermesConfig.value = await window.agentHub.writeHermesConfig(hermesConfig.value);
   statusOk.value = true;
   statusMessage.value = "配置已保存到 U 盘 data/.hermes。";
+  await refresh();
+}
+
+async function saveOpenClawConfig() {
+  if (!openClawConfig.value) return;
+  openClawConfig.value = await window.agentHub.writeOpenClawModelConfig(openClawConfig.value);
+  statusOk.value = true;
+  statusMessage.value = "OpenClaw 模型配置已保存到 U 盘 data/.openclaw。";
   await refresh();
 }
 
@@ -175,7 +189,7 @@ async function sendChat() {
 }
 
 onMounted(async () => {
-  await Promise.all([refresh(), loadConfig()]);
+  await Promise.all([refresh(), loadConfig(), loadOpenClawConfig()]);
   logs.value = await window.agentHub.readLogs();
   window.agentHub.onLog((line) => {
     logs.value.push(line);
@@ -240,6 +254,36 @@ onMounted(async () => {
         <div class="status-card">
           <span>就绪</span>
           <strong>{{ activeStatus?.ready ? "ready" : "not ready" }}</strong>
+        </div>
+      </section>
+
+      <section v-if="activeAgent === 'openclaw'" class="config-board">
+        <div class="panel">
+          <div class="panel-title"><KeyRound :size="18" />模型与服务</div>
+          <div v-if="openClawConfig" class="form-grid">
+            <label>Provider<input v-model="openClawConfig.provider" /></label>
+            <label>Model<input v-model="openClawConfig.model" /></label>
+            <label>Base URL<input v-model="openClawConfig.baseUrl" /></label>
+            <label>API Key<input v-model="openClawConfig.apiKey" type="password" /></label>
+          </div>
+          <div class="button-row">
+            <button class="primary compact" @click="saveOpenClawConfig"><CheckCircle2 :size="16" />保存</button>
+            <button class="secondary compact" @click="loadOpenClawConfig"><RefreshCw :size="16" />重载</button>
+          </div>
+          <div v-if="statusMessage" class="notice" :class="{ bad: !statusOk }">
+            <strong>{{ statusOk ? "完成" : "需要处理" }}</strong>
+            <span>{{ statusMessage }}</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title"><TerminalSquare :size="18" />Gateway 状态</div>
+          <div class="diagnostics">
+            <span v-for="item in statuses.openclaw?.diagnostics || []" :key="item">{{ item }}</span>
+          </div>
+          <div class="capabilities">
+            <span v-for="(enabled, name) in statuses.openclaw?.capabilities" :key="name" :class="{ ok: enabled }">{{ name }}</span>
+          </div>
         </div>
       </section>
 

@@ -90,6 +90,9 @@ function registerIpc() {
     ipcMain.handle("agent:stop", async (_, agent) => runtimeFor(agent).stop());
     ipcMain.handle("agent:restart", async (_, agent) => runtimeFor(agent).restart());
     ipcMain.handle("agent:logs", async () => logs);
+    ipcMain.handle("openclaw:read-model-config", async () => openclaw.readModelConfig());
+    ipcMain.handle("openclaw:write-model-config", async (_, config) => openclaw.writeModelConfig(config));
+    ipcMain.handle("openclaw:gateway-status", async () => openclaw.getStatus());
     ipcMain.handle("hermes:read-config", async () => hermes.readConfig());
     ipcMain.handle("hermes:write-config", async (_, config) => hermes.writeConfig(config));
     ipcMain.handle("hermes:test-connector", async (_, id) => hermes.testConnector(id));

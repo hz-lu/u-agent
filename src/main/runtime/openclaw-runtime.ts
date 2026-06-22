@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
 import path from "node:path";
-import { AgentLogLine, AgentStatus, ChatResponse } from "../../shared/types.js";
+import { AgentLogLine, AgentStatus, ChatResponse, ModelConfig } from "../../shared/types.js";
 import { PortablePaths } from "../portable-paths.js";
 import { checkTcpPort } from "../services/net.js";
 import { ProcessSupervisor } from "../services/process-supervisor.js";
@@ -114,11 +114,47 @@ export class OpenClawRuntime implements AgentRuntime {
     return this.start();
   }
 
+  readModelConfig(): ModelConfig {
+    this.rewritePortableConfigPaths();
+    const config = this.readOpenClawConfig();
+    const { providerId, modelId } = this.resolvePrimaryModel(config);
+    const provider = providerId ? config?.models?.providers?.[providerId] : null;
+    return {
+      provider: providerId,
+      model: modelId || provider?.models?.[0]?.id || "",
+      baseUrl: provider?.baseUrl || "",
+      apiKey: provider?.apiKey || ""
+    };
+  }
+
+  writeModelConfig(input: ModelConfig): ModelConfig {
+    this.ensureRuntimeDirs();
+    const config = this.readOpenClawConfig() || this.createDefaultOpenClawConfig();
+    config.models ||= { mode: "replace", providers: {} };
+    config.models.providers ||= {};
+    config.agents ||= {};
+    config.agents.defaults ||= {};
+    config.agents.defaults.model ||= { primary: "" };
+    const providerId = this.safeProviderId(input.provider || "openai-compatible");
+    const model = input.model.trim();
+    const providers = config.models.providers;
+    const existing = providers[providerId] || {};
+    providers[providerId] = {
+      ...existing,
+      api: existing.api || "openai-completions",
+      baseUrl: input.baseUrl.trim(),
+      apiKey: input.apiKey,
+      models: this.upsertModel(existing.models, model)
+    };
+    config.agents.defaults.model.primary = model ? `${providerId}/${model}` : "";
+    this.writeOpenClawConfig(config);
+    return this.readModelConfig();
+  }
+
   async chat(message: string, messages: Array<{ role: string; content: string }> = []): Promise<ChatResponse> {
     this.rewritePortableConfigPaths();
     const config = this.readOpenClawConfig();
-    const modelRef = config?.agents?.defaults?.model?.primary || "";
-    const [providerId, modelIdFromRef] = String(modelRef).split("/");
+    const { providerId, modelId: modelIdFromRef } = this.resolvePrimaryModel(config);
     const provider = providerId ? config?.models?.providers?.[providerId] : null;
     const model = modelIdFromRef || provider?.models?.[0]?.id;
 
@@ -206,6 +242,68 @@ export class OpenClawRuntime implements AgentRuntime {
     } catch {
       return null;
     }
+  }
+
+  private writeOpenClawConfig(config: any): void {
+    fs.mkdirSync(this.dataRoot, { recursive: true });
+    fs.writeFileSync(path.join(this.dataRoot, "openclaw.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  }
+
+  private createDefaultOpenClawConfig(): any {
+    return {
+      gateway: {
+        mode: "local",
+        bind: "loopback",
+        port: 18789,
+        auth: { token: "openclaw-local-token" }
+      },
+      skills: {
+        load: { extraDirs: ["skills"] },
+        entries: {}
+      },
+      models: {
+        mode: "replace",
+        providers: {}
+      },
+      agents: {
+        defaults: {
+          compaction: { mode: "safeguard" },
+          model: { primary: "" },
+          models: {}
+        }
+      },
+      plugins: {
+        allow: ["openclaw-weixin", "qwen", "memory-core"],
+        entries: {
+          "openclaw-weixin": { enabled: true, config: {} },
+          qwen: { enabled: true }
+        }
+      },
+      channels: {
+        "openclaw-weixin": { accounts: {} }
+      }
+    };
+  }
+
+  private resolvePrimaryModel(config: any): { providerId: string; modelId: string } {
+    const modelRef = String(config?.agents?.defaults?.model?.primary || "");
+    const separator = modelRef.indexOf("/");
+    if (separator < 0) return { providerId: modelRef, modelId: "" };
+    return {
+      providerId: modelRef.slice(0, separator),
+      modelId: modelRef.slice(separator + 1)
+    };
+  }
+
+  private safeProviderId(value: string): string {
+    return value.trim().replace(/\s+/g, "-") || "openai-compatible";
+  }
+
+  private upsertModel(models: unknown, model: string): Array<Record<string, string>> {
+    const current = Array.isArray(models) ? models.filter((item) => item && typeof item === "object") as Array<Record<string, string>> : [];
+    if (!model) return current;
+    if (current.some((item) => item.id === model)) return current;
+    return [{ id: model, label: model }, ...current];
   }
 
   private resolveChatCompletionsUrl(baseUrl: string): URL {

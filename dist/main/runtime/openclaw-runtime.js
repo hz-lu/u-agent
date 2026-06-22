@@ -105,11 +105,45 @@ export class OpenClawRuntime {
         await new Promise((resolve) => setTimeout(resolve, 800));
         return this.start();
     }
+    readModelConfig() {
+        this.rewritePortableConfigPaths();
+        const config = this.readOpenClawConfig();
+        const { providerId, modelId } = this.resolvePrimaryModel(config);
+        const provider = providerId ? config?.models?.providers?.[providerId] : null;
+        return {
+            provider: providerId,
+            model: modelId || provider?.models?.[0]?.id || "",
+            baseUrl: provider?.baseUrl || "",
+            apiKey: provider?.apiKey || ""
+        };
+    }
+    writeModelConfig(input) {
+        this.ensureRuntimeDirs();
+        const config = this.readOpenClawConfig() || this.createDefaultOpenClawConfig();
+        config.models ||= { mode: "replace", providers: {} };
+        config.models.providers ||= {};
+        config.agents ||= {};
+        config.agents.defaults ||= {};
+        config.agents.defaults.model ||= { primary: "" };
+        const providerId = this.safeProviderId(input.provider || "openai-compatible");
+        const model = input.model.trim();
+        const providers = config.models.providers;
+        const existing = providers[providerId] || {};
+        providers[providerId] = {
+            ...existing,
+            api: existing.api || "openai-completions",
+            baseUrl: input.baseUrl.trim(),
+            apiKey: input.apiKey,
+            models: this.upsertModel(existing.models, model)
+        };
+        config.agents.defaults.model.primary = model ? `${providerId}/${model}` : "";
+        this.writeOpenClawConfig(config);
+        return this.readModelConfig();
+    }
     async chat(message, messages = []) {
         this.rewritePortableConfigPaths();
         const config = this.readOpenClawConfig();
-        const modelRef = config?.agents?.defaults?.model?.primary || "";
-        const [providerId, modelIdFromRef] = String(modelRef).split("/");
+        const { providerId, modelId: modelIdFromRef } = this.resolvePrimaryModel(config);
         const provider = providerId ? config?.models?.providers?.[providerId] : null;
         const model = modelIdFromRef || provider?.models?.[0]?.id;
         if (!provider || !provider.baseUrl || !model) {
@@ -194,6 +228,66 @@ export class OpenClawRuntime {
         catch {
             return null;
         }
+    }
+    writeOpenClawConfig(config) {
+        fs.mkdirSync(this.dataRoot, { recursive: true });
+        fs.writeFileSync(path.join(this.dataRoot, "openclaw.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    }
+    createDefaultOpenClawConfig() {
+        return {
+            gateway: {
+                mode: "local",
+                bind: "loopback",
+                port: 18789,
+                auth: { token: "openclaw-local-token" }
+            },
+            skills: {
+                load: { extraDirs: ["skills"] },
+                entries: {}
+            },
+            models: {
+                mode: "replace",
+                providers: {}
+            },
+            agents: {
+                defaults: {
+                    compaction: { mode: "safeguard" },
+                    model: { primary: "" },
+                    models: {}
+                }
+            },
+            plugins: {
+                allow: ["openclaw-weixin", "qwen", "memory-core"],
+                entries: {
+                    "openclaw-weixin": { enabled: true, config: {} },
+                    qwen: { enabled: true }
+                }
+            },
+            channels: {
+                "openclaw-weixin": { accounts: {} }
+            }
+        };
+    }
+    resolvePrimaryModel(config) {
+        const modelRef = String(config?.agents?.defaults?.model?.primary || "");
+        const separator = modelRef.indexOf("/");
+        if (separator < 0)
+            return { providerId: modelRef, modelId: "" };
+        return {
+            providerId: modelRef.slice(0, separator),
+            modelId: modelRef.slice(separator + 1)
+        };
+    }
+    safeProviderId(value) {
+        return value.trim().replace(/\s+/g, "-") || "openai-compatible";
+    }
+    upsertModel(models, model) {
+        const current = Array.isArray(models) ? models.filter((item) => item && typeof item === "object") : [];
+        if (!model)
+            return current;
+        if (current.some((item) => item.id === model))
+            return current;
+        return [{ id: model, label: model }, ...current];
     }
     resolveChatCompletionsUrl(baseUrl) {
         const trimmed = baseUrl.replace(/\/+$/, "");
