@@ -2427,11 +2427,7 @@ async function extractRuntime() {
     return;
   }
   if (fs$1.existsSync(RUNTIME_DIR) && !fs$1.existsSync(path$1.join(RUNTIME_DIR, ".extracted")) && !fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd"))) {
-    console.log("[runtime] Removing broken local runtime from old version");
-    try {
-      fs$1.rmSync(RUNTIME_DIR, { recursive: true, force: true });
-    } catch {
-    }
+    console.log("[runtime] Broken local runtime detected, skipping startup cleanup to avoid blocking on slow USB storage");
   }
   if (fs$1.existsSync(path$1.join(RUNTIME_DIR, ".extracted"))) {
     console.log("[runtime] Already extracted, skipping");
@@ -2443,6 +2439,12 @@ async function extractRuntime() {
   }
   if (!fs$1.existsSync(path$1.join(runtimeSrc, "openclaw.zip"))) {
     console.log("[runtime] No openclaw.zip found, using USB runtime directly");
+    return;
+  }
+  const allowStartupExtraction = process.env.OPENCLAW_ALLOW_RUNTIME_EXTRACTION === "1" || fs$1.existsSync(path$1.join(runtimeSrc, "ALLOW_RUNTIME_EXTRACTION"));
+  if (!allowStartupExtraction) {
+    console.log("[runtime] openclaw.zip found, but startup extraction is disabled. Pre-expand runtime in the release package or set OPENCLAW_ALLOW_RUNTIME_EXTRACTION=1 for manual repair.");
+    updateSplash("运行时未完整预置，请在环境检查中查看修复提示", 90);
     return;
   }
   console.log("[runtime] Extracting runtime (first launch)...");

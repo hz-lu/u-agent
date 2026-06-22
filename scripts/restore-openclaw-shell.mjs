@@ -1095,6 +1095,25 @@ function patchMainProcessStability(filePath) {
     );
   }
 
+  source = source.replace(
+    "    console.log(\"[runtime] Removing broken local runtime from old version\");\n    try {\n      fs$1.rmSync(RUNTIME_DIR, { recursive: true, force: true });\n    } catch {\n    }",
+    "    console.log(\"[runtime] Broken local runtime detected, skipping startup cleanup to avoid blocking on slow USB storage\");"
+  );
+  if (!source.includes("OPENCLAW_ALLOW_RUNTIME_EXTRACTION")) {
+    source = source.replace(
+      "  console.log(\"[runtime] Extracting runtime (first launch)...\");",
+      [
+        "  const allowStartupExtraction = process.env.OPENCLAW_ALLOW_RUNTIME_EXTRACTION === \"1\" || fs$1.existsSync(path$1.join(runtimeSrc, \"ALLOW_RUNTIME_EXTRACTION\"));",
+        "  if (!allowStartupExtraction) {",
+        "    console.log(\"[runtime] openclaw.zip found, but startup extraction is disabled. Pre-expand runtime in the release package or set OPENCLAW_ALLOW_RUNTIME_EXTRACTION=1 for manual repair.\");",
+        "    updateSplash(\"运行时未完整预置，请在环境检查中查看修复提示\", 90);",
+        "    return;",
+        "  }",
+        "  console.log(\"[runtime] Extracting runtime (first launch)...\");"
+      ].join("\n")
+    );
+  }
+
   if (!source.includes("codex-desktop-crash-diagnostics")) {
     const dataRootAnchor = [
       "function getDataRoot() {",
