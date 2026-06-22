@@ -2,10 +2,11 @@ import { app, BrowserWindow, OpenDialogOptions, dialog, ipcMain, shell } from "e
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentId, AgentLogLine, ChatRequest, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
+import { AgentId, AgentLogLine, ChatMessage, ChatMode, ChatRequest, ChatSessions, ConnectorConfig, SandboxConfig, ScheduleInput } from "../shared/types.js";
 import { PortablePaths } from "./portable-paths.js";
 import { HermesRuntime } from "./runtime/hermes/hermes-runtime.js";
 import { OpenClawRuntime } from "./runtime/openclaw-runtime.js";
+import { JsonStore } from "./services/json-store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.NODE_ENV === "development";
@@ -14,7 +15,10 @@ let mainWindow: BrowserWindow | null = null;
 let paths: PortablePaths;
 let hermes: HermesRuntime;
 let openclaw: OpenClawRuntime;
+let chatStore: JsonStore<ChatSessions>;
 const logs: AgentLogLine[] = [];
+const chatModes: ChatMode[] = ["openclaw", "hermes", "collab"];
+const defaultChatSessions: ChatSessions = { openclaw: [], hermes: [], collab: [] };
 
 function appendDesktopCrashLog(kind: string, payload: unknown): void {
   try {
@@ -89,6 +93,22 @@ function runtimeFor(agent: AgentId) {
   return agent === "hermes" ? hermes : openclaw;
 }
 
+function normalizeChatSessions(input: Partial<Record<ChatMode, ChatMessage[]>> | null | undefined): ChatSessions {
+  const result: ChatSessions = { openclaw: [], hermes: [], collab: [] };
+  for (const mode of chatModes) {
+    const messages = Array.isArray(input?.[mode]) ? input[mode] || [] : [];
+    result[mode] = messages
+      .filter((message) => message?.role === "user" || message?.role === "assistant")
+      .map((message) => ({
+        role: message.role,
+        content: String(message.content || "").slice(0, 24000),
+        ...(message.speaker ? { speaker: String(message.speaker).slice(0, 80) } : {})
+      }))
+      .slice(-80);
+  }
+  return result;
+}
+
 function registerIpc(): void {
   ipcMain.handle("agent:list-status", async () => ({
     openclaw: await openclaw.getStatus(),
@@ -98,6 +118,8 @@ function registerIpc(): void {
   ipcMain.handle("agent:stop", async (_, agent: AgentId) => runtimeFor(agent).stop());
   ipcMain.handle("agent:restart", async (_, agent: AgentId) => runtimeFor(agent).restart());
   ipcMain.handle("agent:logs", async () => logs);
+  ipcMain.handle("chat:read-sessions", async () => normalizeChatSessions(chatStore.read()));
+  ipcMain.handle("chat:write-sessions", async (_, sessions) => chatStore.write(normalizeChatSessions(sessions)));
   ipcMain.handle("openclaw:read-model-config", async () => openclaw.readModelConfig());
   ipcMain.handle("openclaw:write-model-config", async (_, config) => openclaw.writeModelConfig(config));
   ipcMain.handle("openclaw:gateway-status", async () => openclaw.getStatus());
@@ -134,6 +156,7 @@ installCrashDiagnostics();
 app.whenReady().then(() => {
   paths = new PortablePaths();
   paths.ensureBaseDirs();
+  chatStore = new JsonStore(path.join(paths.dataRoot, ".agent-hub", "chat-sessions.json"), defaultChatSessions);
   hermes = new HermesRuntime(paths, () => mainWindow);
   openclaw = new OpenClawRuntime(paths);
   hermes.onLog(pushLog);

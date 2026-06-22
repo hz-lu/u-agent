@@ -19,15 +19,15 @@ import type {
   AgentId,
   AgentLogLine,
   AgentStatus,
+  ChatMessage,
+  ChatMode,
+  ChatSessions,
   ChatResponse,
   ConnectorConfig,
   HermesConfig,
   ModelConfig,
   SandboxConfig
 } from "../shared/types";
-
-type ChatMode = AgentId | "collab";
-type ChatMessage = { role: "user" | "assistant"; content: string; speaker?: string };
 
 const activeAgent = ref<AgentId>("hermes");
 const activeChatMode = ref<ChatMode>("hermes");
@@ -46,6 +46,7 @@ const statusOk = ref(true);
 const importPath = ref("");
 const lastTestResult = ref<ActionResult | null>(null);
 const scheduleDraft = reactive({ title: "", naturalLanguage: "", cron: "" });
+let saveChatSessionsQueue = Promise.resolve();
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
 const chatMessages = computed(() => chatSessions[activeChatMode.value]);
@@ -71,6 +72,7 @@ const sandboxFields: Record<SandboxConfig["id"], string[]> = {
   singularity: ["image"],
   modal: ["tokenId"]
 };
+const chatModes: ChatMode[] = ["openclaw", "hermes", "collab"];
 
 async function refresh() {
   const next = await window.agentHub.listStatus();
@@ -84,6 +86,33 @@ async function loadConfig() {
 
 async function loadOpenClawConfig() {
   openClawConfig.value = await window.agentHub.readOpenClawModelConfig();
+}
+
+async function loadChatSessions() {
+  const saved = await window.agentHub.readChatSessions() as ChatSessions;
+  for (const mode of chatModes) {
+    chatSessions[mode].splice(0, chatSessions[mode].length, ...(saved[mode] || []));
+  }
+}
+
+function currentChatSessions(): ChatSessions {
+  return {
+    openclaw: chatSessions.openclaw.map((message) => ({ ...message })),
+    hermes: chatSessions.hermes.map((message) => ({ ...message })),
+    collab: chatSessions.collab.map((message) => ({ ...message }))
+  };
+}
+
+function saveChatSessions() {
+  const snapshot = currentChatSessions();
+  saveChatSessionsQueue = saveChatSessionsQueue
+    .then(() => window.agentHub.writeChatSessions(snapshot))
+    .catch((error) => {
+      statusOk.value = false;
+      statusMessage.value = `会话保存失败: ${error instanceof Error ? error.message : String(error)}`;
+    })
+    .then(() => {});
+  return saveChatSessionsQueue;
 }
 
 async function saveConfig() {
@@ -197,6 +226,7 @@ async function sendChat() {
   const mode = activeChatMode.value;
   const session = chatSessions[mode];
   session.push({ role: "user", content: text });
+  void saveChatSessions();
   chatBusy.value = true;
   try {
     if (mode === "collab") {
@@ -210,6 +240,7 @@ async function sendChat() {
       speaker: chatModeLabel(mode),
       content: result.ok ? (result.reply || "") : `调用失败: ${result.error || "unknown error"}`
     });
+    void saveChatSessions();
   } finally {
     chatBusy.value = false;
   }
@@ -220,6 +251,7 @@ async function sendCollaborativeChat(text: string) {
   const openClawResult = await window.agentHub.sendChat({ agent: "openclaw", message: text, messages: [] }) as ChatResponse;
   const openClawReply = openClawResult.ok ? (openClawResult.reply || "") : `调用失败: ${openClawResult.error || "unknown error"}`;
   session.push({ role: "assistant", speaker: "OpenClaw 草案", content: openClawReply });
+  void saveChatSessions();
 
   const hermesPrompt = [
     "请作为 Hermes 对 OpenClaw 的草案进行复核、补充和整理。",
@@ -236,10 +268,11 @@ async function sendCollaborativeChat(text: string) {
     speaker: "Hermes 复核",
     content: hermesResult.ok ? (hermesResult.reply || "") : `调用失败: ${hermesResult.error || "unknown error"}`
   });
+  void saveChatSessions();
 }
 
 onMounted(async () => {
-  await Promise.all([refresh(), loadConfig(), loadOpenClawConfig()]);
+  await Promise.all([refresh(), loadConfig(), loadOpenClawConfig(), loadChatSessions()]);
   logs.value = await window.agentHub.readLogs();
   window.agentHub.onLog((line) => {
     logs.value.push(line);

@@ -1,5 +1,15 @@
 export type AgentId = "openclaw" | "hermes";
 
+export type ChatMode = AgentId | "collab";
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  speaker?: string;
+}
+
+export type ChatSessions = Record<ChatMode, ChatMessage[]>;
+
 export type RuntimeState = "missing" | "idle" | "starting" | "running" | "stopping" | "error";
 
 export interface AgentLogLine {
