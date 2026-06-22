@@ -123,12 +123,16 @@ function normalizeChatMessage(mode, message, index, options) {
         ? readChatMessageFile(message.contentFile, message.content)
         : message.content;
     const content = String(hydratedContent || "");
+    const existingContentFile = message.contentFile && resolveAgentHubFile(message.contentFile)
+        ? message.contentFile
+        : undefined;
     const base = {
         id,
         role: message.role,
         content,
         createdAt: message.createdAt || new Date().toISOString(),
-        ...(message.speaker ? { speaker: String(message.speaker).slice(0, 80) } : {})
+        ...(message.speaker ? { speaker: String(message.speaker).slice(0, 80) } : {}),
+        ...(options.hydrateFiles && existingContentFile ? { contentFile: existingContentFile } : {})
     };
     if (!options.persistFiles || content.length <= inlineChatContentLimit) {
         return {
@@ -148,9 +152,8 @@ function normalizeChatMessage(mode, message, index, options) {
     };
 }
 function readChatMessageFile(contentFile, fallback) {
-    const hubRoot = path.resolve(path.join(paths.dataRoot, ".agent-hub"));
-    const fullPath = path.resolve(hubRoot, contentFile);
-    if (fullPath !== hubRoot && !fullPath.startsWith(`${hubRoot}${path.sep}`))
+    const fullPath = resolveAgentHubFile(contentFile);
+    if (!fullPath)
         return fallback;
     try {
         return fs.existsSync(fullPath) ? fs.readFileSync(fullPath, "utf8") : fallback;
@@ -158,6 +161,13 @@ function readChatMessageFile(contentFile, fallback) {
     catch {
         return fallback;
     }
+}
+function resolveAgentHubFile(relativePath) {
+    const hubRoot = path.resolve(path.join(paths.dataRoot, ".agent-hub"));
+    const fullPath = path.resolve(hubRoot, relativePath);
+    if (fullPath === hubRoot || !fullPath.startsWith(`${hubRoot}${path.sep}`))
+        return null;
+    return fullPath;
 }
 function cleanUnusedChatMessageFiles(sessions) {
     if (!fs.existsSync(chatMessagesDir))
@@ -174,6 +184,15 @@ function cleanUnusedChatMessageFiles(sessions) {
             fs.rmSync(path.join(chatMessagesDir, entry.name), { force: true });
         }
     }
+}
+async function openChatMessageFile(contentFile) {
+    const fullPath = resolveAgentHubFile(String(contentFile || ""));
+    if (!fullPath || !fs.existsSync(fullPath))
+        return { ok: false, message: "全文文件不存在或路径无效。" };
+    const error = await shell.openPath(fullPath);
+    if (error)
+        return { ok: false, message: `打开全文文件失败: ${error}`, path: fullPath };
+    return { ok: true, message: "已打开全文文件。", path: fullPath };
 }
 function exportChatSession(mode) {
     if (!chatModes.includes(mode))
@@ -229,6 +248,7 @@ function registerIpc() {
     ipcMain.handle("chat:read-sessions", async () => readChatSessions());
     ipcMain.handle("chat:write-sessions", async (_, sessions) => writeChatSessions(sessions));
     ipcMain.handle("chat:export-session", async (_, mode) => exportChatSession(mode));
+    ipcMain.handle("chat:open-message-file", async (_, contentFile) => openChatMessageFile(contentFile));
     ipcMain.handle("openclaw:read-model-config", async () => openclaw.readModelConfig());
     ipcMain.handle("openclaw:write-model-config", async (_, config) => openclaw.writeModelConfig(config));
     ipcMain.handle("openclaw:gateway-status", async () => openclaw.getStatus());

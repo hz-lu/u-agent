@@ -6,6 +6,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Download,
+  FileText,
   KeyRound,
   Play,
   RefreshCw,
@@ -155,6 +156,13 @@ function clearCurrentChat() {
 async function exportCurrentChat() {
   await saveChatSessions();
   const result = await window.agentHub.exportChatSession(activeChatMode.value) as ActionResult;
+  statusOk.value = result.ok;
+  statusMessage.value = result.path ? `${result.message} ${result.path}` : result.message;
+}
+
+async function openMessageFile(message: ChatMessage) {
+  if (!message.contentFile) return;
+  const result = await window.agentHub.openChatMessageFile(message.contentFile) as ActionResult;
   statusOk.value = result.ok;
   statusMessage.value = result.path ? `${result.message} ${result.path}` : result.message;
 }
@@ -542,6 +550,9 @@ onMounted(async () => {
               <p>{{ visibleMessageContent(message, index) }}</p>
               <button v-if="isLongMessage(message)" class="secondary compact message-action" @click="toggleMessage(message, index)">
                 {{ expandedMessages[messageKey(message, index)] ? "折叠" : "展开全文" }}
+              </button>
+              <button v-if="message.contentFile" class="secondary compact message-action" @click="openMessageFile(message)">
+                <FileText :size="14" />打开全文文件
               </button>
             </div>
             <div v-if="!chatMessages.length" class="empty">选择一个会话模式，启动对应 Agent 后即可测试。</div>

@@ -8,6 +8,7 @@ const api = {
     readChatSessions: () => ipcRenderer.invoke("chat:read-sessions"),
     writeChatSessions: (sessions) => ipcRenderer.invoke("chat:write-sessions", sessions),
     exportChatSession: (mode) => ipcRenderer.invoke("chat:export-session", mode),
+    openChatMessageFile: (contentFile) => ipcRenderer.invoke("chat:open-message-file", contentFile),
     readOpenClawModelConfig: () => ipcRenderer.invoke("openclaw:read-model-config"),
     writeOpenClawModelConfig: (config) => ipcRenderer.invoke("openclaw:write-model-config", config),
     readOpenClawGatewayStatus: () => ipcRenderer.invoke("openclaw:gateway-status"),
