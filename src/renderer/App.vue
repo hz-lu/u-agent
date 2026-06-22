@@ -39,6 +39,7 @@ const embeddedUrl = ref("");
 const embeddedTitle = ref("");
 const chatInput = ref("");
 const chatSessions = reactive<Record<ChatMode, ChatMessage[]>>({ openclaw: [], hermes: [], collab: [] });
+const expandedMessages = reactive<Record<string, boolean>>({});
 const busy = ref(false);
 const chatBusy = ref(false);
 const statusMessage = ref("");
@@ -47,6 +48,7 @@ const importPath = ref("");
 const lastTestResult = ref<ActionResult | null>(null);
 const scheduleDraft = reactive({ title: "", naturalLanguage: "", cron: "" });
 let saveChatSessionsQueue = Promise.resolve();
+const collapsedMessageLimit = 6000;
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
 const chatMessages = computed(() => chatSessions[activeChatMode.value]);
@@ -75,6 +77,24 @@ function createChatMessage(role: ChatMessage["role"], content: string, speaker?:
     createdAt: new Date().toISOString(),
     ...(speaker ? { speaker } : {})
   };
+}
+
+function messageKey(message: ChatMessage, index: number): string {
+  return message.id || `${activeChatMode.value}-${index}`;
+}
+
+function isLongMessage(message: ChatMessage): boolean {
+  return message.content.length > collapsedMessageLimit;
+}
+
+function visibleMessageContent(message: ChatMessage, index: number): string {
+  if (!isLongMessage(message) || expandedMessages[messageKey(message, index)]) return message.content;
+  return `${message.content.slice(0, collapsedMessageLimit)}\n\n[内容较长，已折叠显示。展开后可查看全文。]`;
+}
+
+function toggleMessage(message: ChatMessage, index: number) {
+  const key = messageKey(message, index);
+  expandedMessages[key] = !expandedMessages[key];
 }
 const sandboxFields: Record<SandboxConfig["id"], string[]> = {
   local: [],
@@ -124,6 +144,12 @@ function saveChatSessions() {
     })
     .then(() => {});
   return saveChatSessionsQueue;
+}
+
+function clearCurrentChat() {
+  chatSessions[activeChatMode.value].splice(0, chatSessions[activeChatMode.value].length);
+  for (const key of Object.keys(expandedMessages)) delete expandedMessages[key];
+  void saveChatSessions();
 }
 
 async function saveConfig() {
@@ -498,11 +524,15 @@ onMounted(async () => {
               <button :class="{ active: activeChatMode === 'hermes' }" @click="activeChatMode = 'hermes'">Hermes</button>
               <button :class="{ active: activeChatMode === 'collab' }" @click="activeChatMode = 'collab'">协同</button>
             </div>
+            <button class="secondary compact" :disabled="chatBusy || !chatMessages.length" @click="clearCurrentChat">清空</button>
           </div>
           <div class="messages">
             <div v-for="(message, index) in chatMessages" :key="index" class="message" :class="message.role">
               <strong>{{ message.role === "user" ? "你" : (message.speaker || chatModeLabel(activeChatMode)) }}</strong>
-              <p>{{ message.content }}</p>
+              <p>{{ visibleMessageContent(message, index) }}</p>
+              <button v-if="isLongMessage(message)" class="secondary compact message-action" @click="toggleMessage(message, index)">
+                {{ expandedMessages[messageKey(message, index)] ? "折叠" : "展开全文" }}
+              </button>
             </div>
             <div v-if="!chatMessages.length" class="empty">选择一个会话模式，启动对应 Agent 后即可测试。</div>
           </div>

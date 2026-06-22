@@ -471,6 +471,18 @@ textarea {
   white-space: pre-wrap;
 }
 
+.message-action {
+  display: block;
+  width: fit-content;
+  min-height: 30px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.message.user .message-action {
+  margin-left: auto;
+}
+
 .message.user {
   text-align: right;
 }
