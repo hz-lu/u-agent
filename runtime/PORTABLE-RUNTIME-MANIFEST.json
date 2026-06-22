@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "name": "OpenClawPro Agent Hub portable runtime",
+  "description": "Source-controlled contract for portable runtime assets. Large runtime binaries are not committed to Git; release builders must provide these paths before packaging.",
+  "sharedRequiredPaths": [
+    "skills",
+    "extensions"
+  ],
+  "dataTemplatePaths": [
+    "data/.openclaw/openclaw.json",
+    "data/.hermes/config.yaml"
+  ],
+  "platforms": {
+    "windows-x64": {
+      "launchers": [
+        "OpenClawPro U盘便携版.exe",
+        "win-unpacked/OpenClawPro.exe"
+      ],
+      "requiredPaths": [
+        "win-unpacked/OpenClawPro.exe",
+        "win-unpacked/resources/app/dist/main/index.js",
+        "runtime/openclaw.zip",
+        "runtime/openclaw.cmd",
+        "runtime/node.exe",
+        "runtime/node_modules/openclaw/dist",
+        "runtime/HermesPortable/venv/Scripts/hermes.exe",
+        "runtime/HermesPortable/venv/Scripts/python.exe",
+        "runtime/HermesPortable/node/node.exe"
+      ]
+    },
+    "macos-arm64": {
+      "launchers": [
+        "OpenClawPro.command",
+        "macos/OpenClawPro.app"
+      ],
+      "requiredPaths": [
+        "runtime/macos-arm64/node/bin/node",
+        "runtime/macos-arm64/openclaw/bin/openclaw",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/dist",
+        "runtime/macos-arm64/HermesPortable/venv/bin/hermes",
+        "runtime/macos-arm64/HermesPortable/venv/bin/python"
+      ]
+    },
+    "macos-x64": {
+      "launchers": [
+        "OpenClawPro.command",
+        "macos/OpenClawPro.app"
+      ],
+      "requiredPaths": [
+        "runtime/macos-x64/node/bin/node",
+        "runtime/macos-x64/openclaw/bin/openclaw",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/dist",
+        "runtime/macos-x64/HermesPortable/venv/bin/hermes",
+        "runtime/macos-x64/HermesPortable/venv/bin/python"
+      ]
+    },
+    "linux-x64": {
+      "launchers": [
+        "OpenClawPro.sh",
+        "linux/OpenClawPro"
+      ],
+      "requiredPaths": [
+        "runtime/linux-x64/node/bin/node",
+        "runtime/linux-x64/openclaw/bin/openclaw",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/dist",
+        "runtime/linux-x64/HermesPortable/venv/bin/hermes",
+        "runtime/linux-x64/HermesPortable/venv/bin/python"
+      ]
+    },
+    "linux-arm64": {
+      "launchers": [
+        "OpenClawPro.sh",
+        "linux/OpenClawPro"
+      ],
+      "requiredPaths": [
+        "runtime/linux-arm64/node/bin/node",
+        "runtime/linux-arm64/openclaw/bin/openclaw",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/dist",
+        "runtime/linux-arm64/HermesPortable/venv/bin/hermes",
+        "runtime/linux-arm64/HermesPortable/venv/bin/python"
+      ]
+    }
+  },
+  "forbiddenRuntimePaths": [
+    "runtime/HermesPortable/data",
+    "runtime/HermesPortable/_home",
+    "runtime/HermesPortable/cache",
+    "runtime/HermesPortable/logs",
+    "runtime/HermesPortable/tmp"
+  ]
+}

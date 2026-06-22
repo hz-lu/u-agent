@@ -14,6 +14,9 @@ Thumbs.db
 # Large generated/backup snapshots are intentionally kept out of Git.
 vendor-snapshots/
 src/win-unpacked/
+runtime/**
+!runtime/
+!runtime/PORTABLE-RUNTIME-MANIFEST.json
 
 # Local editor state.
 .idea/

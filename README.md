@@ -63,6 +63,8 @@ X:\
 
 `X:` 表示任意 U 盘盘符。
 
+运行时资产契约维护在 `runtime/PORTABLE-RUNTIME-MANIFEST.json`。该文件只记录必须存在的 launcher、OpenClaw、Node、Hermes、Python 等路径，不提交大体积 runtime 二进制；生成 release 前应先让 `npm run audit:portable` 中对应平台的 manifest 缺失项清零。
+
 ## 零痕迹数据策略
 
 运行状态会尽量重定向到 U 盘：

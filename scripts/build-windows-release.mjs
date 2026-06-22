@@ -20,6 +20,7 @@ const zipPath = path.join(releaseRoot, `${packageName}.zip`);
 const manifestPath = path.join(releaseRoot, `${packageName}.manifest.json`);
 
 const requiredPaths = [
+  "runtime/PORTABLE-RUNTIME-MANIFEST.json",
   "win-unpacked/OpenClawPro.exe",
   "win-unpacked/resources/app/dist/main/index.js",
   "runtime/openclaw.zip",
@@ -34,6 +35,7 @@ const requiredPaths = [
 ];
 
 const sourceEntries = [
+  "runtime/PORTABLE-RUNTIME-MANIFEST.json",
   "win-unpacked",
   "runtime/openclaw.zip",
   "runtime/openclaw.cmd",
@@ -244,6 +246,7 @@ function releaseDocs() {
     excludesUserData: true,
     includes: {
       app: "win-unpacked",
+      runtimeManifest: "runtime/PORTABLE-RUNTIME-MANIFEST.json",
       openclawRuntime: "runtime/openclaw.zip",
       hermesRuntime: "runtime/HermesPortable",
       skills: "skills",

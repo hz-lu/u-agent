@@ -35,6 +35,7 @@ function releaseFileMatches(pattern) {
 }
 
 const openClawConfig = readJsonSafe("data/.openclaw/openclaw.json");
+const runtimeManifest = readJsonSafe("runtime/PORTABLE-RUNTIME-MANIFEST.json");
 const extraDirs = openClawConfig?.skills?.load?.extraDirs || [];
 const rootDrive = path.parse(usbRoot).root.replace(/\\$/, "").toLowerCase();
 const absolutePathsOutsideRoot = [];
@@ -63,7 +64,47 @@ function inspectValue(value, location) {
 }
 inspectValue(openClawConfig || {}, "openclaw");
 
+function auditRuntimeManifest(manifest) {
+  if (!manifest || typeof manifest !== "object") {
+    return {
+      present: false,
+      platforms: {},
+      sharedMissing: [],
+      dataTemplateMissing: [],
+      forbiddenPresent: []
+    };
+  }
+
+  const sharedRequiredPaths = Array.isArray(manifest.sharedRequiredPaths) ? manifest.sharedRequiredPaths : [];
+  const dataTemplatePaths = Array.isArray(manifest.dataTemplatePaths) ? manifest.dataTemplatePaths : [];
+  const forbiddenRuntimePaths = Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : [];
+  const platforms = {};
+
+  for (const [platform, spec] of Object.entries(manifest.platforms || {})) {
+    const requiredPaths = Array.isArray(spec?.requiredPaths) ? spec.requiredPaths : [];
+    const launchers = Array.isArray(spec?.launchers) ? spec.launchers : [];
+    platforms[platform] = {
+      required: requiredPaths.length,
+      missingRequired: requiredPaths.filter((relPath) => !exists(relPath)),
+      launcherReady: launchers.length > 0 && launchers.some((relPath) => exists(relPath)),
+      launchers
+    };
+  }
+
+  return {
+    present: true,
+    schemaVersion: manifest.schemaVersion || null,
+    platforms,
+    sharedMissing: sharedRequiredPaths.filter((relPath) => !exists(relPath)),
+    dataTemplateMissing: dataTemplatePaths.filter((relPath) => !exists(relPath)),
+    forbiddenPresent: forbiddenRuntimePaths.filter((relPath) => exists(relPath))
+  };
+}
+
+const runtimeManifestAudit = auditRuntimeManifest(runtimeManifest);
+
 const checks = {
+  portableRuntimeManifest: runtimeManifestAudit.present,
   windowsApp: exists("win-unpacked/OpenClawPro.exe"),
   windowsAppResources: exists("win-unpacked/resources/app/dist/main/index.js"),
   windowsLauncher: exists("OpenClawPro U盘便携版.exe") || exists("win-unpacked/OpenClawPro.exe"),
@@ -101,11 +142,12 @@ const report = {
   summary: {
     windowsPortableUsable: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.hermesWindowsRuntime && checks.dataDir,
     zeroInstallWindowsMostlyReady: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.hermesWindowsPython && checks.hermesWindowsNode,
-    strictZeroTraceReady: checks.dataDir && !checks.legacyHermesDataInRuntime,
+    strictZeroTraceReady: checks.dataDir && !checks.legacyHermesDataInRuntime && runtimeManifestAudit.forbiddenPresent.length === 0,
     threePlatformNativeReady: checks.hermesWindowsRuntime && checks.hermesMacArm64Runtime && checks.hermesMacX64Runtime && checks.hermesLinuxX64Runtime && checks.hermesLinuxArm64Runtime && checks.macLauncher && checks.linuxLauncher,
     universalZipReady: checks.universalManifest && checks.universalZipPackage,
   },
   checks,
+  runtimeManifest: runtimeManifestAudit,
   counts: {
     rootRuntimeEntries: countChildren("runtime"),
     skills: countChildren("skills"),
@@ -116,8 +158,18 @@ const report = {
   gaps: [],
 };
 
+if (!checks.portableRuntimeManifest) report.gaps.push("runtime/PORTABLE-RUNTIME-MANIFEST.json is missing; portable runtime expectations are not source-controlled.");
 if (!checks.openClawCommandOnUsb) report.gaps.push("runtime/openclaw.cmd is missing; current app may extract/use host cache before OpenClaw CLI is fully USB-local.");
 if (checks.legacyHermesDataInRuntime) report.gaps.push("runtime/HermesPortable still contains data/_home; strict zero-trace packaging should remove or migrate these into data/.hermes.");
+if (runtimeManifestAudit.forbiddenPresent.length) report.gaps.push(`Runtime manifest forbidden paths are present: ${runtimeManifestAudit.forbiddenPresent.join(", ")}`);
+for (const [platform, platformAudit] of Object.entries(runtimeManifestAudit.platforms)) {
+  if (platformAudit.missingRequired.length) {
+    report.gaps.push(`${platform} runtime manifest missing ${platformAudit.missingRequired.length} required path(s): ${platformAudit.missingRequired.slice(0, 5).join(", ")}${platformAudit.missingRequired.length > 5 ? ", ..." : ""}`);
+  }
+  if (!platformAudit.launcherReady) report.gaps.push(`${platform} runtime manifest has no available launcher: ${platformAudit.launchers.join(" or ")}`);
+}
+if (runtimeManifestAudit.sharedMissing.length) report.gaps.push(`Shared portable paths are missing: ${runtimeManifestAudit.sharedMissing.join(", ")}`);
+if (runtimeManifestAudit.dataTemplateMissing.length) report.gaps.push(`Portable data templates are missing: ${runtimeManifestAudit.dataTemplateMissing.join(", ")}`);
 if (!report.summary.threePlatformNativeReady) report.gaps.push("macOS arm64/x64 and Linux x64/arm64 runtimes/launchers are not bundled.");
 if (!checks.universalManifest) report.gaps.push("No generated universal zip manifest was found.");
 if (!checks.universalZipPackage) report.gaps.push("No generated universal zip package was found.");
