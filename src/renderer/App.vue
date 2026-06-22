@@ -236,6 +236,7 @@ async function sendChat() {
   chatInput.value = "";
   const mode = activeChatMode.value;
   const session = chatSessions[mode];
+  const history = session.map((item) => ({ role: item.role, content: item.content }));
   session.push(createChatMessage("user", text));
   void saveChatSessions();
   chatBusy.value = true;
@@ -244,7 +245,6 @@ async function sendChat() {
       await sendCollaborativeChat(text);
       return;
     }
-    const history = session.map((item) => ({ role: item.role, content: item.content }));
     const result = await window.agentHub.sendChat({ agent: mode, message: text, messages: history }) as ChatResponse;
     session.push(createChatMessage(
       "assistant",

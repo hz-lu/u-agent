@@ -218,7 +218,7 @@ function registerIpc() {
     ipcMain.handle("chat:send", async (_, request) => {
         if (request.agent === "hermes")
             return hermes.chat(request.message, request.messages || []);
-        return openclaw.chat(request.message);
+        return openclaw.chat(request.message, request.messages || []);
     });
 }
 installCrashDiagnostics();

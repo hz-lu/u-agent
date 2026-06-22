@@ -235,7 +235,7 @@ function registerIpc(): void {
   ipcMain.handle("hermes:start-api", async () => hermes.startApiServer(true));
   ipcMain.handle("chat:send", async (_, request: ChatRequest) => {
     if (request.agent === "hermes") return hermes.chat(request.message, request.messages || []);
-    return openclaw.chat(request.message);
+    return openclaw.chat(request.message, request.messages || []);
   });
 }
 
