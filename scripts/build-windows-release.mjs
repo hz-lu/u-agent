@@ -18,24 +18,39 @@ const version = [
 const packageName = `OpenClawPro-AgentHub-Windows-Portable-${version}`;
 const zipPath = path.join(releaseRoot, `${packageName}.zip`);
 const manifestPath = path.join(releaseRoot, `${packageName}.manifest.json`);
+const runtimeManifestRel = "runtime/PORTABLE-RUNTIME-MANIFEST.json";
+const runtimeManifestPath = path.join(usbRoot, runtimeManifestRel);
 
-const requiredPaths = [
-  "runtime/PORTABLE-RUNTIME-MANIFEST.json",
-  "win-unpacked/OpenClawPro.exe",
-  "win-unpacked/resources/app/dist/main/index.js",
-  "runtime/openclaw.zip",
-  "runtime/openclaw.cmd",
-  "runtime/node.exe",
-  "runtime/node_modules/openclaw/dist",
-  "runtime/HermesPortable/venv/Scripts/hermes.exe",
-  "runtime/HermesPortable/venv/Scripts/python.exe",
-  "runtime/HermesPortable/node/node.exe",
-  "skills",
-  "extensions"
-];
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
+
+function exists(relPath) {
+  return fs.existsSync(path.join(usbRoot, relPath));
+}
+
+function readJsonRequired(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    fail(`Unable to read runtime manifest: ${filePath}\n${error.message}`);
+  }
+}
+
+const runtimeManifest = readJsonRequired(runtimeManifestPath);
+const windowsRuntimeSpec = runtimeManifest?.platforms?.["windows-x64"];
+if (!windowsRuntimeSpec) fail("runtime manifest is missing platforms.windows-x64");
+
+const requiredPaths = Array.from(new Set([
+  runtimeManifestRel,
+  ...(Array.isArray(runtimeManifest.sharedRequiredPaths) ? runtimeManifest.sharedRequiredPaths : []),
+  ...(Array.isArray(windowsRuntimeSpec.requiredPaths) ? windowsRuntimeSpec.requiredPaths : [])
+]));
+const forbiddenRuntimePaths = Array.isArray(runtimeManifest.forbiddenRuntimePaths) ? runtimeManifest.forbiddenRuntimePaths : [];
 
 const sourceEntries = [
-  "runtime/PORTABLE-RUNTIME-MANIFEST.json",
+  runtimeManifestRel,
   "win-unpacked",
   "runtime/openclaw.zip",
   "runtime/openclaw.cmd",
@@ -65,15 +80,6 @@ const forbiddenZipPrefixes = [
   `${packageName}/data/.hermes/response_store.db`,
   `${packageName}/data/.hermes/kanban.db`
 ];
-
-function fail(message) {
-  console.error(message);
-  process.exit(1);
-}
-
-function exists(relPath) {
-  return fs.existsSync(path.join(usbRoot, relPath));
-}
 
 function listFiles(root) {
   if (!fs.existsSync(root)) return [];
@@ -246,7 +252,7 @@ function releaseDocs() {
     excludesUserData: true,
     includes: {
       app: "win-unpacked",
-      runtimeManifest: "runtime/PORTABLE-RUNTIME-MANIFEST.json",
+      runtimeManifest: runtimeManifestRel,
       openclawRuntime: "runtime/openclaw.zip",
       hermesRuntime: "runtime/HermesPortable",
       skills: "skills",
@@ -278,13 +284,28 @@ function shouldSkipSource(relPath) {
   if (base.endsWith(".pyc") || base.endsWith(".pyo")) return true;
   if (rel.includes("/.git/") || rel.startsWith(".git/")) return true;
   if (rel.includes("/.cache/") || rel.startsWith(".cache/")) return true;
-  if (rel === "runtime/HermesPortable/data" || rel.startsWith("runtime/HermesPortable/data/")) return true;
-  if (rel === "runtime/HermesPortable/_home" || rel.startsWith("runtime/HermesPortable/_home/")) return true;
-  if (rel === "runtime/HermesPortable/cache" || rel.startsWith("runtime/HermesPortable/cache/")) return true;
-  if (rel === "runtime/HermesPortable/logs" || rel.startsWith("runtime/HermesPortable/logs/")) return true;
-  if (rel === "runtime/HermesPortable/tmp" || rel.startsWith("runtime/HermesPortable/tmp/")) return true;
+  if (forbiddenRuntimePaths.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`))) return true;
   if (rel.includes("/tests/") || rel.includes("/benchmarks/")) return true;
   return false;
+}
+
+function validateWindowsReleaseInputs() {
+  const findings = [];
+  const launchers = Array.isArray(windowsRuntimeSpec.launchers) ? windowsRuntimeSpec.launchers : [];
+  if (!launchers.some((relPath) => exists(relPath))) {
+    findings.push(`No Windows launcher found from runtime manifest: ${launchers.join(" or ")}`);
+  }
+  const forbiddenPresent = forbiddenRuntimePaths.filter((relPath) => exists(relPath));
+  if (forbiddenPresent.length) {
+    findings.push(`Forbidden runtime user-data paths must be moved under data/ before release:\n${forbiddenPresent.join("\n")}`);
+  }
+  const missingRequired = requiredPaths.filter((relPath) => !exists(relPath));
+  if (missingRequired.length) {
+    findings.push(`Required portable files are missing:\n${missingRequired.map((relPath) => `- ${path.join(usbRoot, relPath)}`).join("\n")}`);
+  }
+  if (findings.length) {
+    fail(findings.join("\n\n"));
+  }
 }
 
 function listSourceFiles(relEntry) {
@@ -391,9 +412,7 @@ function buildZip() {
   console.log(JSON.stringify(manifest, null, 2));
 }
 
-for (const rel of requiredPaths) {
-  if (!exists(rel)) fail(`Required portable file is missing: ${path.join(usbRoot, rel)}`);
-}
+validateWindowsReleaseInputs();
 
 validateOpenClawRuntime();
 buildZip();
