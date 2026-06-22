@@ -42,7 +42,8 @@ const chatInput = ref("");
 const chatSessions = reactive<Record<ChatMode, ChatMessage[]>>({ openclaw: [], hermes: [], collab: [] });
 const expandedMessages = reactive<Record<string, boolean>>({});
 const busy = ref(false);
-const chatBusy = ref(false);
+const chatBusyModes = reactive<Record<ChatMode, boolean>>({ openclaw: false, hermes: false, collab: false });
+const collabTask = reactive({ running: false, cancelled: false, stage: "", startedAt: "" });
 const statusMessage = ref("");
 const statusOk = ref(true);
 const importPath = ref("");
@@ -53,6 +54,7 @@ const collapsedMessageLimit = 6000;
 
 const activeStatus = computed(() => statuses[activeAgent.value]);
 const chatMessages = computed(() => chatSessions[activeChatMode.value]);
+const chatBusy = computed(() => chatBusyModes[activeChatMode.value]);
 const connectorFields: Record<ConnectorConfig["id"], string[]> = {
   telegram: ["botToken"],
   discord: ["botToken"],
@@ -280,12 +282,12 @@ async function sendChat() {
   const history = session.map((item) => ({ role: item.role, content: item.content }));
   session.push(createChatMessage("user", text));
   void saveChatSessions();
-  chatBusy.value = true;
+  if (mode === "collab") {
+    startCollaborativeChat(text);
+    return;
+  }
+  chatBusyModes[mode] = true;
   try {
-    if (mode === "collab") {
-      await sendCollaborativeChat(text);
-      return;
-    }
     const result = await window.agentHub.sendChat({ agent: mode, message: text, messages: history }) as ChatResponse;
     session.push(createChatMessage(
       "assistant",
@@ -294,33 +296,80 @@ async function sendChat() {
     ));
     void saveChatSessions();
   } finally {
-    chatBusy.value = false;
+    chatBusyModes[mode] = false;
   }
+}
+
+function startCollaborativeChat(text: string) {
+  if (collabTask.running) return;
+  collabTask.running = true;
+  collabTask.cancelled = false;
+  collabTask.stage = "OpenClaw 正在生成草案";
+  collabTask.startedAt = new Date().toISOString();
+  chatBusyModes.collab = true;
+  void sendCollaborativeChat(text).finally(() => {
+    collabTask.running = false;
+    chatBusyModes.collab = false;
+  });
+}
+
+function cancelCollaborativeChat() {
+  if (!collabTask.running) return;
+  collabTask.cancelled = true;
+  collabTask.stage = "正在取消，当前请求返回后停止后续阶段";
 }
 
 async function sendCollaborativeChat(text: string) {
   const session = chatSessions.collab;
-  const openClawResult = await window.agentHub.sendChat({ agent: "openclaw", message: text, messages: [] }) as ChatResponse;
-  const openClawReply = openClawResult.ok ? (openClawResult.reply || "") : `调用失败: ${openClawResult.error || "unknown error"}`;
-  session.push(createChatMessage("assistant", openClawReply, "OpenClaw 草案"));
-  void saveChatSessions();
+  try {
+    const openClawResult = await window.agentHub.sendChat({ agent: "openclaw", message: text, messages: [] }) as ChatResponse;
+    if (!openClawResult.ok) {
+      session.push(createChatMessage("assistant", `OpenClaw 草案失败: ${openClawResult.error || "unknown error"}`, "协同任务"));
+      return;
+    }
+    const openClawReply = openClawResult.reply || "";
+    session.push(createChatMessage("assistant", openClawReply, "OpenClaw 草案"));
+    void saveChatSessions();
 
-  const hermesPrompt = [
-    "请作为 Hermes 对 OpenClaw 的草案进行复核、补充和整理。",
-    `用户请求：${text}`,
-    `OpenClaw 草案：${openClawReply}`
-  ].join("\n\n");
-  const hermesResult = await window.agentHub.sendChat({
-    agent: "hermes",
-    message: hermesPrompt,
-    messages: [{ role: "system", content: "你负责复核 OpenClaw 的草案，指出风险、补充遗漏，并给出最终建议。" }]
-  }) as ChatResponse;
-  session.push(createChatMessage(
-    "assistant",
-    hermesResult.ok ? (hermesResult.reply || "") : `调用失败: ${hermesResult.error || "unknown error"}`,
-    "Hermes 复核"
-  ));
-  void saveChatSessions();
+    if (collabTask.cancelled) {
+      session.push(createChatMessage("assistant", "协同任务已取消：OpenClaw 草案已保留，Hermes 复核未启动。", "协同任务"));
+      return;
+    }
+
+    collabTask.stage = "Hermes 正在复核草案";
+    const hermesPrompt = [
+      "请作为 Hermes 对 OpenClaw 的草案进行复核、补充和整理。",
+      `用户请求：${text}`,
+      `OpenClaw 草案：${openClawReply}`
+    ].join("\n\n");
+    const hermesResult = await window.agentHub.sendChat({
+      agent: "hermes",
+      message: hermesPrompt,
+      messages: [{ role: "system", content: "你负责复核 OpenClaw 的草案，指出风险、补充遗漏，并给出最终建议。" }]
+    }) as ChatResponse;
+    if (collabTask.cancelled) {
+      session.push(createChatMessage("assistant", "协同任务已取消：Hermes 复核已返回，但结果未写入会话。", "协同任务"));
+      return;
+    }
+    session.push(createChatMessage(
+      "assistant",
+      hermesResult.ok ? (hermesResult.reply || "") : `Hermes 复核失败: ${hermesResult.error || "unknown error"}`,
+      "Hermes 复核"
+    ));
+  } catch (error) {
+    session.push(createChatMessage(
+      "assistant",
+      `协同任务异常: ${error instanceof Error ? error.message : String(error)}`,
+      "协同任务"
+    ));
+  } finally {
+    const finalStage = collabTask.cancelled ? "已取消" : "已完成";
+    collabTask.stage = finalStage;
+    window.setTimeout(() => {
+      if (!collabTask.running && collabTask.stage === finalStage) collabTask.stage = "";
+    }, 5000);
+    void saveChatSessions();
+  }
 }
 
 onMounted(async () => {
@@ -545,6 +594,10 @@ onMounted(async () => {
             </div>
           </div>
           <div class="messages">
+            <div v-if="activeChatMode === 'collab' && (collabTask.running || collabTask.stage)" class="collab-progress" :class="{ done: !collabTask.running }">
+              <span>{{ collabTask.stage || "协同任务准备中" }}</span>
+              <button v-if="collabTask.running" class="secondary compact" @click="cancelCollaborativeChat"><Square :size="14" />取消</button>
+            </div>
             <div v-for="(message, index) in chatMessages" :key="index" class="message" :class="message.role">
               <strong>{{ message.role === "user" ? "你" : (message.speaker || chatModeLabel(activeChatMode)) }}</strong>
               <p>{{ visibleMessageContent(message, index) }}</p>

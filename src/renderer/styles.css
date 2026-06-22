@@ -456,6 +456,25 @@ textarea {
   background: #f8fafc;
 }
 
+.collab-progress {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.collab-progress.done {
+  border-color: #d8e1ec;
+  background: #f6f8fb;
+  color: #475569;
+}
+
 .message {
   margin-bottom: 12px;
 }
