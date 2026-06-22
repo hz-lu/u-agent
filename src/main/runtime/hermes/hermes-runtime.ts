@@ -76,12 +76,6 @@ function appendLimited(current: string, text: string, limit: number): string {
   return next.length > limit ? next.slice(-limit) : next;
 }
 
-function truncateForUi(text: string, limit = 24000): string {
-  if (text.length <= limit) return text;
-  const half = Math.floor(limit / 2);
-  return `${text.slice(0, half)}\n\n[中间内容已折叠，完整内容已保存到 U 盘 data/.hermes/runs 目录。]\n\n${text.slice(-half)}`;
-}
-
 export class HermesRuntime implements AgentRuntime {
   private readonly dashboard = new ProcessSupervisor("hermes");
   private readonly gateway = new ProcessSupervisor("hermes");
@@ -473,6 +467,13 @@ export class HermesRuntime implements AgentRuntime {
         const classified = this.classifyChatError(rawText, runId, runDir);
         finish({ ...classified, error: `${classified.error}\n\n技术日志：${runDir}` });
       };
+      const readCompleteResponse = async () => {
+        try {
+          return await fs.promises.readFile(responsePath, "utf8");
+        } catch {
+          return rawTail;
+        }
+      };
       const req = http.request({
         hostname: "127.0.0.1",
         port: 8642,
@@ -489,18 +490,19 @@ export class HermesRuntime implements AgentRuntime {
         res.on("data", (chunk) => appendResponse(String(chunk)));
         res.on("end", async () => {
           await spool;
+          const rawResponse = await readCompleteResponse();
           try {
-            const json = JSON.parse(rawTail);
-            const reply = json.choices?.[0]?.message?.content || json.reply || rawTail;
+            const json = JSON.parse(rawResponse || "{}");
+            const reply = json.choices?.[0]?.message?.content || json.reply || rawResponse;
             const ok = (res.statusCode || 0) < 400;
             finish(ok
-              ? { ok: true, reply: truncateForUi(reply), runId, runDir }
+              ? { ok: true, reply, runId, runDir }
               : (() => {
-                const classified = this.classifyChatError(rawTail, runId, runDir);
+                const classified = this.classifyChatError(rawResponse || rawTail, runId, runDir);
                 return { ...classified, error: `${classified.error}\n\n技术日志：${runDir}` };
               })());
           } catch {
-            const errorText = rawTail || `HTTP ${res.statusCode}`;
+            const errorText = rawResponse || rawTail || `HTTP ${res.statusCode}`;
             finishError(errorText);
           }
         });
