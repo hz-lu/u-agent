@@ -13293,11 +13293,15 @@ const _sfc_main$v = {
       try {
         hermesActionBusy.value = "start";
         showToast("正在启动 Hermes...");
-        await window.uclaw.ipcStartHermes({ open: false });
+        const status = await window.uclaw.ipcStartHermes({ open: false });
         await refreshHermesStatus();
         await loadHermesLogs();
         activeLogSource.value = "hermes";
-        showToast("Hermes 已启动");
+        if (status?.apiServerReady || status?.dashboardReady || status?.configReady) {
+          showToast(status?.apiServerReady ? "Hermes 已启动，Agent API 已就绪" : "Hermes 部分启动，请查看日志");
+        } else {
+          showToast("Hermes 启动失败: " + (status?.lastError || "端口未就绪，请查看 Hermes 日志"), true);
+        }
       } catch (e) {
         showToast("Hermes 启动失败: " + e.message, true);
       } finally {
@@ -13309,11 +13313,15 @@ const _sfc_main$v = {
         hermesActionBusy.value = "restart";
         showToast("正在重启 Hermes...");
         await window.uclaw.ipcStopHermes();
-        await window.uclaw.ipcStartHermes({ open: false });
+        const status = await window.uclaw.ipcStartHermes({ open: false });
         await refreshHermesStatus();
         await loadHermesLogs();
         activeLogSource.value = "hermes";
-        showToast("Hermes 已重启");
+        if (status?.apiServerReady || status?.dashboardReady || status?.configReady) {
+          showToast(status?.apiServerReady ? "Hermes 已重启，Agent API 已就绪" : "Hermes 部分重启，请查看日志");
+        } else {
+          showToast("Hermes 重启失败: " + (status?.lastError || "端口未就绪，请查看 Hermes 日志"), true);
+        }
       } catch (e) {
         showToast("Hermes 重启失败: " + e.message, true);
       } finally {

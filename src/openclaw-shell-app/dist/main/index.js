@@ -1167,38 +1167,56 @@ class HermesManager {
     this.stopping = false;
     const launchPython = fs$1.existsSync(python) ? python : this.getPortablePython();
     try {
-      this.proc = child_process.spawn(launchPython, [configServer], {
-        cwd: root,
-        env: this.getHermesEnv(),
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true
-      });
-      this.status = "running";
-      safeSend("hermes-log", { type: "system", msg: "[hermes-portable] config server starting with " + launchPython + " " + configServer });
-      this.emitStatus();
-      this.proc.stdout?.on("data", (data) => safeSend("hermes-log", { type: "stdout", msg: Buffer.from(data).toString("utf8") }));
-      this.proc.stderr?.on("data", (data) => safeSend("hermes-log", { type: "stderr", msg: Buffer.from(data).toString("utf8") }));
-      this.proc.on("error", (err) => {
+      if (!(await this.checkTcpPort(17520))) {
+        this.proc = child_process.spawn(launchPython, [configServer], {
+          cwd: root,
+          env: this.getHermesEnv(),
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true
+        });
+        this.status = "starting";
+        safeSend("hermes-log", { type: "system", msg: "[hermes-portable] config server starting with " + launchPython + " " + configServer });
+        this.emitStatus();
+        this.proc.stdout?.on("data", (data) => safeSend("hermes-log", { type: "stdout", msg: Buffer.from(data).toString("utf8") }));
+        this.proc.stderr?.on("data", (data) => safeSend("hermes-log", { type: "stderr", msg: Buffer.from(data).toString("utf8") }));
+        this.proc.on("error", (err) => {
+          this.status = "error";
+          this.lastError = err.message;
+          safeSend("hermes-log", { type: "error", msg: err.message });
+          this.emitStatus();
+        });
+        this.proc.on("exit", (code, signal) => {
+          const wasStopping = this.stopping;
+          this.proc = null;
+          this.memoryMb = 0;
+          this.stopping = false;
+          this.status = wasStopping || code === 0 ? "idle" : "error";
+          if (this.status === "error") this.lastError = "Hermes config server exited with code " + (code ?? "null") + (signal ? ", signal " + signal : "");
+          safeSend("hermes-log", { type: "exit", msg: "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? "") });
+          this.emitStatus();
+        });
+      }
+      const configReady = await this.waitForPort(17520, 2e4, () => !!this.proc);
+      if (!configReady) {
         this.status = "error";
-        this.lastError = err.message;
-        safeSend("hermes-log", { type: "error", msg: err.message });
+        this.lastError = "Hermes config server did not become ready on 127.0.0.1:17520";
+        safeSend("hermes-log", { type: "stderr", msg: "[config] " + this.lastError });
         this.emitStatus();
-      });
-      this.proc.on("exit", (code, signal) => {
-        const wasStopping = this.stopping;
-        this.proc = null;
-        this.memoryMb = 0;
-        this.stopping = false;
-        this.status = wasStopping || code === 0 ? "idle" : "error";
-        if (this.status === "error") this.lastError = "Hermes config server exited with code " + (code ?? "null") + (signal ? ", signal " + signal : "");
-        safeSend("hermes-log", { type: "exit", msg: "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? "") });
+        return await this.getStatus();
+      }
+      if (options.open === true) openHermesInMainWindow("http://127.0.0.1:17520");
+      const apiStatus = await this.startApiServer({ open: false });
+      if (!apiStatus.apiServerReady) {
+        this.status = "error";
+        this.lastError = apiStatus.lastError || this.lastError || "Hermes Agent API did not become ready on 127.0.0.1:8642";
+        safeSend("hermes-log", { type: "stderr", msg: "[api-server] " + this.lastError });
         this.emitStatus();
-      });
-      if (options.open === true) setTimeout(() => openHermesInMainWindow("http://127.0.0.1:17520"), 1800);
+      }
       return await this.getStatus();
     } catch (err) {
       this.status = "error";
       this.lastError = err instanceof Error ? err.message : String(err);
+      safeSend("hermes-log", { type: "error", msg: "[hermes-portable] start failed: " + this.lastError });
       this.emitStatus();
       return this.snapshot();
     }
@@ -1244,10 +1262,11 @@ class HermesManager {
       req.end();
     });
   }
-  async waitForPort(port, timeoutMs = 2e4) {
+  async waitForPort(port, timeoutMs = 2e4, isProcessAlive = null) {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       if (await this.checkTcpPort(port)) return true;
+      if (typeof isProcessAlive === "function" && !isProcessAlive()) return false;
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     return await this.checkTcpPort(port);
@@ -1346,7 +1365,7 @@ class HermesManager {
     if (!this.dashboardProc) {
       this.dashboardProc = this.spawnHermes(["dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open"], "dashboard");
     }
-    const ready = await this.waitForPort(9119, 9e4);
+    const ready = await this.waitForPort(9119, 9e4, () => !!this.dashboardProc);
     if (ready && open) openHermesInMainWindow("http://127.0.0.1:9119");
     if (!ready) {
       this.lastError = "Hermes Dashboard did not become ready on 127.0.0.1:9119";
@@ -1370,7 +1389,7 @@ class HermesManager {
         HERMES_ACCEPT_HOOKS: "1"
       });
     }
-    const ready = await this.waitForPort(8642, 9e4);
+    const ready = await this.waitForPort(8642, 9e4, () => !!this.apiProc);
     if (ready && open) safeSend("hermes-log", { type: "system", msg: "[api-server] Agent API ready at http://127.0.0.1:8642/v1 (Bearer auth required)" });
     if (!ready) {
       this.lastError = "Hermes API Server did not become ready on 127.0.0.1:8642. Check Hermes model/provider config first.";
@@ -1413,7 +1432,10 @@ class HermesManager {
     const dashboardReady = await this.checkTcpPort(9119);
     const apiServerReady = await this.checkTcpPort(8642);
     const gatewayReady = apiServerReady;
-    if (configReady || dashboardReady || apiServerReady || this.proc || this.dashboardProc || this.apiProc) this.status = "running";
+    if (configReady || dashboardReady || apiServerReady) this.status = "running";
+    else if (this.proc || this.dashboardProc || this.apiProc) {
+      if (this.status !== "error") this.status = "starting";
+    }
     else if (this.status !== "error") this.status = "idle";
     this.refreshMemory();
     const snap = {
