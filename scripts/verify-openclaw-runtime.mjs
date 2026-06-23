@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import { builtinModules } from "node:module";
+import { spawnSync } from "node:child_process";
 import { resolvePortableRoot } from "./portable-root.mjs";
 
 const usbRoot = resolvePortableRoot();
@@ -73,6 +75,77 @@ function findMissingDistReferences() {
   return missing;
 }
 
+function getPackageName(specifier) {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
+}
+
+function findMissingPackageImports() {
+  const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
+  const files = listFiles(distRoot).filter((file) => /\.(?:js|mjs)$/i.test(file));
+  const missingByPackage = new Map();
+  const importPattern = /(?:^|[;\n])\s*(?:import\s+(?:[^"'`;]*?\s+from\s+)?|export\s+(?:[^"'`;]*?\s+from\s+))["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g;
+
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf8");
+    for (const match of source.matchAll(importPattern)) {
+      const specifier = match[1] || match[2];
+      if (!specifier) continue;
+      if (specifier.startsWith(".") || specifier.startsWith("/") || /^[a-zA-Z][a-zA-Z+.-]*:/.test(specifier)) continue;
+      if (builtins.has(specifier)) continue;
+
+      const packageName = getPackageName(specifier);
+      if (packageName === "openclaw") continue;
+      const packageJson = path.join(openclawPackage, "node_modules", ...packageName.split("/"), "package.json");
+      if (!fs.existsSync(packageJson)) {
+        const items = missingByPackage.get(packageName) || [];
+        if (items.length < 5) items.push({ from: file, specifier });
+        missingByPackage.set(packageName, items);
+      }
+    }
+  }
+
+  return [...missingByPackage.entries()].map(([packageName, imports]) => ({ packageName, imports }));
+}
+
+function findRunnableNode() {
+  if (nodeRuntime && process.platform === "win32") return nodeRuntime;
+  return process.execPath || nodeRuntime;
+}
+
+function runOpenClawCliSmoke() {
+  if (!fs.existsSync(openclawPackageEntry)) {
+    return { ok: false, skipped: true, command: null, status: null, stdout: "", stderr: "OpenClaw package entry is missing." };
+  }
+  const nodeCommand = findRunnableNode();
+  if (!nodeCommand) {
+    return { ok: false, skipped: true, command: null, status: null, stdout: "", stderr: "No runnable Node command found." };
+  }
+  const args = [openclawPackageEntry, "gateway", "run", "--help"];
+  const result = spawnSync(nodeCommand, args, {
+    cwd: runtimeRoot,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 15000,
+    env: {
+      ...process.env,
+      OPENCLAW_HOME: dataRoot,
+      XDG_CONFIG_HOME: path.join(dataRoot, "config"),
+      XDG_CACHE_HOME: path.join(dataRoot, "cache"),
+      HOME: path.join(dataRoot, "home"),
+      USERPROFILE: path.join(dataRoot, "home")
+    }
+  });
+  return {
+    ok: result.status === 0,
+    skipped: false,
+    command: `${nodeCommand} ${args.join(" ")}`,
+    status: result.status,
+    stdout: (result.stdout || "").slice(-4000),
+    stderr: (result.stderr || result.error?.message || "").slice(-4000)
+  };
+}
+
 const openclawCommandCandidates = [path.join(runtimeRoot, "openclaw.cmd"), path.join(runtimeRoot, "openclaw")];
 const nodeRuntimeCandidates = [path.join(runtimeRoot, "node.exe"), path.join(runtimeRoot, "node")];
 const openclawCmd = openclawCommandCandidates.find((candidate) => fs.existsSync(candidate)) || null;
@@ -82,6 +155,8 @@ const openclawPackageEntry = path.join(openclawPackage, "openclaw.mjs");
 const openclawPackageJson = path.join(openclawPackage, "package.json");
 const openclawEntry = entryCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const missingDistReferences = findMissingDistReferences();
+const missingPackageImports = findMissingPackageImports();
+const cliSmoke = runOpenClawCliSmoke();
 const runtimeErrors = [];
 
 if (!openclawCmd) runtimeErrors.push(`Missing OpenClaw command: ${openclawCommandCandidates.join(" or ")}`);
@@ -96,6 +171,9 @@ for (const item of missingDistReferences.slice(0, 20)) {
 }
 if (missingDistReferences.length > 20) {
   runtimeErrors.push(`${missingDistReferences.length - 20} additional missing OpenClaw dist asset references.`);
+}
+if (!cliSmoke.ok) {
+  runtimeErrors.push(`OpenClaw Gateway CLI smoke test failed: ${cliSmoke.stderr || cliSmoke.stdout || `exit ${cliSmoke.status}`}`);
 }
 
 const report = {
@@ -120,6 +198,8 @@ const report = {
     distRoot,
     entry: openclawEntry,
     missingDistReferences,
+    missingPackageImports,
+    cliSmoke,
     errors: runtimeErrors
   },
   gateway: {

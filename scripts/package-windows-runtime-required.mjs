@@ -101,6 +101,32 @@ function copyRuntimeEntry(sourceRel, targetRel, forbiddenRuntimePaths) {
   }
 }
 
+async function repairOpenClawPackageFromOfflineZip(forbiddenRuntimePaths) {
+  const offlineZip = path.join(stagingRuntimeRoot, "openclaw.zip");
+  if (!fs.existsSync(offlineZip)) return false;
+
+  const repairRoot = path.join(stagingRoot, ".openclaw-offline-repair");
+  fs.rmSync(repairRoot, { recursive: true, force: true });
+  mkdirp(repairRoot);
+  await extractZip(offlineZip, { dir: repairRoot });
+
+  const extractedOpenClaw = path.join(repairRoot, "node_modules", "openclaw");
+  if (!fs.existsSync(path.join(extractedOpenClaw, "package.json"))) {
+    fs.rmSync(repairRoot, { recursive: true, force: true });
+    return false;
+  }
+
+  const targetOpenClaw = path.join(stagingRuntimeRoot, "node_modules", "openclaw");
+  fs.rmSync(targetOpenClaw, { recursive: true, force: true });
+  fs.cpSync(extractedOpenClaw, targetOpenClaw, { recursive: true, force: true });
+  fs.rmSync(repairRoot, { recursive: true, force: true });
+
+  if (runtimeProfile === "slim") {
+    pruneStagedRuntime(forbiddenRuntimePaths);
+  }
+  return true;
+}
+
 function hasUsableSourceRuntimePath(sourceRoot, runtimeRelPath) {
   const relPath = runtimeRelPath.replace(/^runtime[\\/]/, "");
   const fullPath = path.join(sourceRoot, relPath);
@@ -276,6 +302,7 @@ if (!sourceRuntimeRoot) {
   fs.rmSync(stagingRoot, { recursive: true, force: true });
   mkdirp(stagingRoot);
   await extractZip(runtimeZip, { dir: stagingRoot });
+  await repairOpenClawPackageFromOfflineZip(Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : []);
   if (runtimeProfile === "slim") {
     pruneStagedRuntime(Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : []);
   } else if (path.resolve(runtimeZip) !== path.resolve(zipPath)) {
@@ -328,6 +355,7 @@ copyFile(manifestSourcePath, path.join(stagingRuntimeRoot, "PORTABLE-RUNTIME-MAN
 for (const [sourceRel, targetRel] of runtimeEntries) {
   copyRuntimeEntry(sourceRel, targetRel, forbiddenRuntimePaths);
 }
+await repairOpenClawPackageFromOfflineZip(forbiddenRuntimePaths);
 
 const runtimeOnlyRequired = windowsSpec.requiredPaths
   .filter((relPath) => relPath.startsWith("runtime/"))
