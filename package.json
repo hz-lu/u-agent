@@ -27,6 +27,7 @@
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
+    "diagnose:hermes-startup": "node scripts/diagnose-hermes-startup.mjs",
     "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",
     "fetch:hermes": "node scripts/fetch-hermes.mjs",
     "restore:openclaw-shell": "node scripts/restore-openclaw-shell.mjs"

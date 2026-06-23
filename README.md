@@ -209,6 +209,19 @@ npm run typecheck
 npm run build
 ```
 
+如果 Windows PowerShell 提示 `无法加载文件 ... npm.ps1，因为在此系统上禁止运行脚本`，不要改项目代码，直接使用 `npm.cmd`：
+
+```powershell
+npm.cmd run build
+npm.cmd run stage:windows-portable:slim
+```
+
+也可以运行仓库内的批处理入口：
+
+```powershell
+scripts\windows-stage-slim.cmd
+```
+
 部署构建产物到当前 U 盘应用目录：
 
 ```powershell
@@ -231,7 +244,10 @@ npm run verify:hermes
 npm run verify:hermes-memory
 npm run verify:hermes-skills
 npm run verify:hermes-skill-growth
+npm run diagnose:hermes-startup
 ```
+
+如果 Hermes UI 提示失败但日志面板信息不足，优先运行 `scripts\windows-diagnose-hermes.cmd`。诊断会把报告写到 `data\.hermes\logs\startup-diagnose.json`，并把启动过程写到 `data\.hermes\logs\startup-diagnose.log`。
 
 常用直接检查：
 

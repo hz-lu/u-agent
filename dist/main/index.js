@@ -486,6 +486,32 @@ class HermesManager {
     this.apiProc = null;
     this.apiServerKey = process.env.HERMES_API_SERVER_KEY || "openclaw-local-hermes";
   }
+  getHermesDataRoot() {
+    return path$1.join(getAppRoot(), "data", ".hermes");
+  }
+  getHermesLogsRoot() {
+    return path$1.join(this.getHermesDataRoot(), "logs");
+  }
+  writeLauncherLog(type, msg) {
+    const text = String(msg || "").trimEnd();
+    if (!text) return;
+    try {
+      const logsRoot = this.getHermesLogsRoot();
+      fs$1.mkdirSync(logsRoot, { recursive: true });
+      const line = JSON.stringify({
+        time: new Date().toISOString(),
+        type: type || "system",
+        msg: text
+      }) + "\n";
+      fs$1.appendFileSync(path$1.join(logsRoot, "launcher.log"), line, "utf8");
+    } catch (err) {
+      console.warn("[hermes-launcher-log] write failed:", err?.message || err);
+    }
+  }
+  emitLog(type, msg) {
+    this.writeLauncherLog(type, msg);
+    safeSend("hermes-log", { type, msg });
+  }
   getPortableRoot() {
     const envRoot = process.env.HERMES_PORTABLE_ROOT?.trim();
     if (envRoot) return envRoot;
@@ -521,7 +547,7 @@ class HermesManager {
   getHermesEnv() {
     const root = this.getPortableRoot();
     const usbRoot = getAppRoot();
-    const data = path$1.join(usbRoot, "data", ".hermes");
+    const data = this.getHermesDataRoot();
     const home = path$1.join(data, "home");
     const venvScripts = path$1.join(root, "venv", "Scripts");
     const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : path$1.join(root, "node");
@@ -1128,7 +1154,8 @@ class HermesManager {
       skillGrowthReport,
       modelBridgeReady: !!primaryModel,
       modelBridge: primaryModel || "未配置 OpenClaw 当前模型",
-      lastError: this.lastError
+      lastError: this.lastError,
+      launcherLogPath: path$1.join(this.getHermesLogsRoot(), "launcher.log")
     };
   }
   emitStatus() {
@@ -1158,6 +1185,7 @@ class HermesManager {
     if (!fs$1.existsSync(configServer) || !fs$1.existsSync(this.getPortablePython())) {
       this.status = "error";
       this.lastError = "Hermes Portable 未安装完整：缺少 config_server.py 或 portable python";
+      this.emitLog("error", "[hermes-portable] " + this.lastError + "\nroot=" + root + "\nconfigServer=" + configServer + "\npython=" + this.getPortablePython());
       this.emitStatus();
       return this.snapshot();
     }
@@ -1168,6 +1196,7 @@ class HermesManager {
     const launchPython = fs$1.existsSync(python) ? python : this.getPortablePython();
     try {
       if (!(await this.checkTcpPort(17520))) {
+        this.emitLog("system", "[hermes-portable] config server launch request\nroot=" + root + "\ncwd=" + root + "\npython=" + launchPython + "\nscript=" + configServer + "\nlogs=" + this.getHermesLogsRoot());
         this.proc = child_process.spawn(launchPython, [configServer], {
           cwd: root,
           env: this.getHermesEnv(),
@@ -1175,14 +1204,14 @@ class HermesManager {
           windowsHide: true
         });
         this.status = "starting";
-        safeSend("hermes-log", { type: "system", msg: "[hermes-portable] config server starting with " + launchPython + " " + configServer });
+        this.emitLog("system", "[hermes-portable] config server spawned pid=" + (this.proc.pid || "unknown") + " command=" + launchPython + " " + configServer);
         this.emitStatus();
-        this.proc.stdout?.on("data", (data) => safeSend("hermes-log", { type: "stdout", msg: Buffer.from(data).toString("utf8") }));
-        this.proc.stderr?.on("data", (data) => safeSend("hermes-log", { type: "stderr", msg: Buffer.from(data).toString("utf8") }));
+        this.proc.stdout?.on("data", (data) => this.emitLog("stdout", "[config] " + Buffer.from(data).toString("utf8")));
+        this.proc.stderr?.on("data", (data) => this.emitLog("stderr", "[config] " + Buffer.from(data).toString("utf8")));
         this.proc.on("error", (err) => {
           this.status = "error";
           this.lastError = err.message;
-          safeSend("hermes-log", { type: "error", msg: err.message });
+          this.emitLog("error", "[hermes-portable] config server spawn error: " + err.message);
           this.emitStatus();
         });
         this.proc.on("exit", (code, signal) => {
@@ -1192,7 +1221,7 @@ class HermesManager {
           this.stopping = false;
           this.status = wasStopping || code === 0 ? "idle" : "error";
           if (this.status === "error") this.lastError = "Hermes config server exited with code " + (code ?? "null") + (signal ? ", signal " + signal : "");
-          safeSend("hermes-log", { type: "exit", msg: "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? "") });
+          this.emitLog("exit", "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? ""));
           this.emitStatus();
         });
       }
@@ -1200,7 +1229,7 @@ class HermesManager {
       if (!configReady) {
         this.status = "error";
         this.lastError = "Hermes config server did not become ready on 127.0.0.1:17520";
-        safeSend("hermes-log", { type: "stderr", msg: "[config] " + this.lastError });
+        this.emitLog("stderr", "[config] " + this.lastError + "\nlauncherLog=" + path$1.join(this.getHermesLogsRoot(), "launcher.log"));
         this.emitStatus();
         return await this.getStatus();
       }
@@ -1209,14 +1238,14 @@ class HermesManager {
       if (!apiStatus.apiServerReady) {
         this.status = "error";
         this.lastError = apiStatus.lastError || this.lastError || "Hermes Agent API did not become ready on 127.0.0.1:8642";
-        safeSend("hermes-log", { type: "stderr", msg: "[api-server] " + this.lastError });
+        this.emitLog("stderr", "[api-server] " + this.lastError);
         this.emitStatus();
       }
       return await this.getStatus();
     } catch (err) {
       this.status = "error";
       this.lastError = err instanceof Error ? err.message : String(err);
-      safeSend("hermes-log", { type: "error", msg: "[hermes-portable] start failed: " + this.lastError });
+      this.emitLog("error", "[hermes-portable] start failed: " + this.lastError);
       this.emitStatus();
       return this.snapshot();
     }
@@ -1289,9 +1318,11 @@ class HermesManager {
     if (!fs$1.existsSync(hermesBin)) {
       this.status = "error";
       this.lastError = "Hermes CLI not found: " + hermesBin;
+      this.emitLog("error", "[hermes-portable] " + this.lastError + "\nroot=" + root);
       this.emitStatus();
       return null;
     }
+    this.emitLog("system", "[hermes-portable] " + label + " launch request\nroot=" + root + "\ncwd=" + root + "\ncommand=" + hermesBin + " " + args.join(" ") + "\nlogs=" + this.getHermesLogsRoot());
     const proc = child_process.spawn(hermesBin, args, {
       cwd: root,
       env: { ...this.getHermesEnv(), ...defaultEnvPatch, ...envPatch },
@@ -1300,19 +1331,19 @@ class HermesManager {
     });
     this.status = "running";
     this.lastError = "";
-    safeSend("hermes-log", { type: "system", msg: "[hermes-portable] " + label + " starting: " + hermesBin + " " + args.join(" ") });
-    proc.stdout?.on("data", (data) => safeSend("hermes-log", { type: "stdout", msg: "[" + label + "] " + Buffer.from(data).toString("utf8") }));
-    proc.stderr?.on("data", (data) => safeSend("hermes-log", { type: "stderr", msg: "[" + label + "] " + Buffer.from(data).toString("utf8") }));
+    this.emitLog("system", "[hermes-portable] " + label + " spawned pid=" + (proc.pid || "unknown"));
+    proc.stdout?.on("data", (data) => this.emitLog("stdout", "[" + label + "] " + Buffer.from(data).toString("utf8")));
+    proc.stderr?.on("data", (data) => this.emitLog("stderr", "[" + label + "] " + Buffer.from(data).toString("utf8")));
     proc.on("error", (err) => {
       this.status = "error";
       this.lastError = label + ": " + err.message;
-      safeSend("hermes-log", { type: "error", msg: this.lastError });
+      this.emitLog("error", this.lastError);
       this.emitStatus();
     });
     proc.on("exit", (code, signal) => {
       if (this.dashboardProc === proc) this.dashboardProc = null;
       if (this.apiProc === proc) this.apiProc = null;
-      safeSend("hermes-log", { type: "exit", msg: "[hermes-portable] " + label + " exited code=" + (code ?? "null") + " signal=" + (signal ?? "") });
+      this.emitLog("exit", "[hermes-portable] " + label + " exited code=" + (code ?? "null") + " signal=" + (signal ?? ""));
       this.getStatus().catch(() => this.emitStatus());
     });
     this.emitStatus();
@@ -1356,7 +1387,7 @@ class HermesManager {
         if (open) openHermesInMainWindow("http://127.0.0.1:9119");
         return await this.getStatus();
       }
-      safeSend("hermes-log", { type: "system", msg: "[dashboard] stale dashboard detected, restarting 9119" });
+      this.emitLog("system", "[dashboard] stale dashboard detected, restarting 9119");
       await this.stopPort(9119);
       await this.stopHermesDashboard();
       this.dashboardProc = null;
@@ -1369,14 +1400,14 @@ class HermesManager {
     if (ready && open) openHermesInMainWindow("http://127.0.0.1:9119");
     if (!ready) {
       this.lastError = "Hermes Dashboard did not become ready on 127.0.0.1:9119";
-      safeSend("hermes-log", { type: "stderr", msg: "[dashboard] " + this.lastError });
+      this.emitLog("stderr", "[dashboard] " + this.lastError);
     }
     return await this.getStatus();
   }
   async startApiServer(options = {}) {
     const open = options.open === true;
     if (await this.checkTcpPort(8642)) {
-      if (open) safeSend("hermes-log", { type: "system", msg: "[api-server] Agent API ready at http://127.0.0.1:8642/v1 (Bearer auth required)" });
+      if (open) this.emitLog("system", "[api-server] Agent API ready at http://127.0.0.1:8642/v1 (Bearer auth required)");
       return await this.getStatus();
     }
     if (!this.apiProc) {
@@ -1390,10 +1421,10 @@ class HermesManager {
       });
     }
     const ready = await this.waitForPort(8642, 9e4, () => !!this.apiProc);
-    if (ready && open) safeSend("hermes-log", { type: "system", msg: "[api-server] Agent API ready at http://127.0.0.1:8642/v1 (Bearer auth required)" });
+    if (ready && open) this.emitLog("system", "[api-server] Agent API ready at http://127.0.0.1:8642/v1 (Bearer auth required)");
     if (!ready) {
       this.lastError = "Hermes API Server did not become ready on 127.0.0.1:8642. Check Hermes model/provider config first.";
-      safeSend("hermes-log", { type: "stderr", msg: "[api-server] " + this.lastError });
+      this.emitLog("stderr", "[api-server] " + this.lastError);
     }
     return await this.getStatus();
   }
@@ -22252,7 +22283,7 @@ function registerIPCHandlers({ gateway }) {
   electron.ipcMain.handle("hermes:getLogs", async (_, options = {}) => {
     const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(1e3, Number(options.limit))) : 300;
     const logsRoot = path$1.join(getAppRoot(), "data", ".hermes", "logs");
-    const files = ["gateway.log", "agent.log", "errors.log", "gui.log", "gateway-exit-diag.log"];
+    const files = ["launcher.log", "gateway.log", "agent.log", "errors.log", "gui.log", "gateway-exit-diag.log"];
     const rows = [];
     for (const name of files) {
       const filePath = path$1.join(logsRoot, name);
