@@ -119,12 +119,14 @@ function validateOpenClawRuntime() {
   if (!entry) fail(`Required OpenClaw build output is missing: ${entryCandidates.join(" or ")}`);
 
   const files = listFiles(distRoot).filter((file) => /\.(?:html|js|mjs|css)$/i.test(file));
-  const referencePattern = /["'`](?!https?:|data:|node:|#)(\.{1,2}\/[^"'`]+?\.(?:js|mjs|css|json|wasm))["'`]/g;
+  const scriptReferencePattern = /\b(?:import|export)\s+(?:[^"'`;]*?\s+from\s+)?["'](\.{1,2}\/[^"']+?\.(?:js|mjs|css|json|wasm))["']|import\(\s*["'](\.{1,2}\/[^"']+?\.(?:js|mjs|css|json|wasm))["']\s*\)/g;
+  const markupReferencePattern = /\b(?:src|href)=["'](\.{1,2}\/[^"']+?\.(?:js|mjs|css|json|wasm))["']/g;
   const missing = [];
   for (const file of files) {
     const source = fs.readFileSync(file, "utf8");
+    const referencePattern = /\.(?:js|mjs)$/i.test(file) ? scriptReferencePattern : markupReferencePattern;
     for (const match of source.matchAll(referencePattern)) {
-      const reference = match[1];
+      const reference = match[1] || match[2];
       const target = path.resolve(path.dirname(file), reference.split(/[?#]/, 1)[0]);
       if (!fs.existsSync(target)) missing.push({ from: file, reference });
     }

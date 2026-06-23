@@ -13,6 +13,7 @@ Thumbs.db
 # Large generated/backup snapshots are intentionally kept out of Git.
 vendor-snapshots/
 src/win-unpacked/
+src/runtime/
 /win-unpacked/**
 !/win-unpacked/
 !/win-unpacked/**/
