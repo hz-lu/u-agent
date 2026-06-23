@@ -17,7 +17,9 @@
     "scan:usb": "node scripts/scan-usb.mjs",
     "audit:portable": "node scripts/audit-portable-release.mjs",
     "audit:openclaw-shell": "node scripts/audit-openclaw-shell-features.mjs",
+    "package:windows-shell": "node scripts/package-windows-shell.mjs",
     "package:windows-runtime": "node scripts/package-windows-runtime-required.mjs",
+    "stage:windows-portable": "node scripts/stage-windows-portable-test.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
@@ -33,9 +35,11 @@
     "vue": "^3.5.13"
   },
   "devDependencies": {
+    "@electron/get": "^2.0.3",
     "@types/node": "^22.10.2",
     "cross-env": "^7.0.3",
     "electron": "^35.7.5",
+    "extract-zip": "^2.0.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "vue-tsc": "^2.2.0"
