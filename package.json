@@ -17,6 +17,7 @@
     "scan:usb": "node scripts/scan-usb.mjs",
     "audit:portable": "node scripts/audit-portable-release.mjs",
     "audit:openclaw-shell": "node scripts/audit-openclaw-shell-features.mjs",
+    "package:windows-runtime": "node scripts/package-windows-runtime-required.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",

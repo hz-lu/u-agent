@@ -22,10 +22,13 @@
         "runtime/openclaw.zip",
         "runtime/openclaw.cmd",
         "runtime/node.exe",
+        "runtime/node_modules/openclaw/openclaw.mjs",
+        "runtime/node_modules/openclaw/package.json",
         "runtime/node_modules/openclaw/dist",
         "runtime/HermesPortable/venv/Scripts/hermes.exe",
         "runtime/HermesPortable/venv/Scripts/python.exe",
-        "runtime/HermesPortable/node/node.exe"
+        "runtime/HermesPortable/node/node.exe",
+        "runtime/HermesPortable/hermes-agent/pyproject.toml"
       ]
     },
     "macos-arm64": {

@@ -10,6 +10,7 @@ const hermesExe = path.join(hermesRoot, "venv", "Scripts", "hermes.exe");
 const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
 const nodeExe = path.join(hermesRoot, "node", "node.exe");
 const configServer = path.join(hermesRoot, "lib", "config_server.py");
+const hermesSource = path.join(hermesRoot, "hermes-agent", "pyproject.toml");
 
 function run(command, args, cwd = hermesRoot) {
   if (!fs.existsSync(command)) return { ok: false, error: `missing: ${command}` };
@@ -90,7 +91,7 @@ const report = {
     pythonExe: fs.existsSync(pythonExe),
     nodeExe: fs.existsSync(nodeExe),
     configServer: fs.existsSync(configServer),
-    source: fs.existsSync(path.join(hermesRoot, "hermes-agent", "pyproject.toml"))
+    source: fs.existsSync(hermesSource)
   },
   versions: {
     hermes: run(hermesExe, ["--version"]),
@@ -111,3 +112,12 @@ const report = {
 };
 
 console.log(JSON.stringify(report, null, 2));
+
+const requiredMissing = Object.entries(report.files)
+  .filter(([, present]) => !present)
+  .map(([name]) => name);
+
+if (requiredMissing.length) {
+  console.error(`Hermes runtime is incomplete. Missing: ${requiredMissing.join(", ")}`);
+  process.exitCode = 1;
+}

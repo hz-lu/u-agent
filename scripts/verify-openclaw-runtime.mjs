@@ -78,6 +78,8 @@ const nodeRuntimeCandidates = [path.join(runtimeRoot, "node.exe"), path.join(run
 const openclawCmd = openclawCommandCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const nodeRuntime = nodeRuntimeCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const openclawPackage = path.join(runtimeRoot, "node_modules", "openclaw");
+const openclawPackageEntry = path.join(openclawPackage, "openclaw.mjs");
+const openclawPackageJson = path.join(openclawPackage, "package.json");
 const openclawEntry = entryCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const missingDistReferences = findMissingDistReferences();
 const runtimeErrors = [];
@@ -85,6 +87,8 @@ const runtimeErrors = [];
 if (!openclawCmd) runtimeErrors.push(`Missing OpenClaw command: ${openclawCommandCandidates.join(" or ")}`);
 if (!nodeRuntime) runtimeErrors.push(`Missing bundled Node runtime: ${nodeRuntimeCandidates.join(" or ")}`);
 if (!fs.existsSync(openclawPackage)) runtimeErrors.push(`Missing OpenClaw package: ${openclawPackage}`);
+if (fs.existsSync(openclawPackage) && !fs.existsSync(openclawPackageEntry)) runtimeErrors.push(`Missing OpenClaw package entry: ${openclawPackageEntry}`);
+if (fs.existsSync(openclawPackage) && !fs.existsSync(openclawPackageJson)) runtimeErrors.push(`Missing OpenClaw package.json: ${openclawPackageJson}`);
 if (fs.existsSync(openclawPackage) && !fs.existsSync(distRoot)) runtimeErrors.push(`Missing OpenClaw dist: ${distRoot}`);
 if (fs.existsSync(distRoot) && !openclawEntry) runtimeErrors.push(`Missing OpenClaw dist/entry.(m)js under: ${distRoot}`);
 for (const item of missingDistReferences.slice(0, 20)) {
@@ -103,6 +107,8 @@ const report = {
     openclawZip: fs.existsSync(path.join(runtimeRoot, "openclaw.zip")),
     nodeExe: Boolean(nodeRuntime),
     openclawPackage: fs.existsSync(openclawPackage),
+    openclawPackageEntry: fs.existsSync(openclawPackageEntry),
+    openclawPackageJson: fs.existsSync(openclawPackageJson),
     openclawDist: fs.existsSync(distRoot),
     openclawEntry: Boolean(openclawEntry),
     config: fs.existsSync(configFile)
@@ -131,3 +137,7 @@ const report = {
 };
 
 console.log(JSON.stringify(report, null, 2));
+
+if (!report.runtimeIntegrity.ok) {
+  process.exitCode = 1;
+}
