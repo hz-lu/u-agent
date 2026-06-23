@@ -1854,6 +1854,16 @@ function sendGatewayStatus(running, errorMsg = "") {
   safeSend("gateway-status", { running, errorMsg, port: GATEWAY_DEFAULT_PORT });
 }
 function sendGatewayLog(type2, msg) {
+  try {
+    const logDir = path$1.join(getDataRoot(), ".openclaw", "logs");
+    fs$1.mkdirSync(logDir, { recursive: true });
+    fs$1.appendFileSync(path$1.join(logDir, "gateway-launcher.log"), JSON.stringify({
+      time: new Date().toISOString(),
+      type: type2,
+      msg: String(msg || "")
+    }) + "\n", "utf8");
+  } catch {
+  }
   safeSend("gateway-log", { type: type2, msg });
 }
 function createWindow(gateway) {
@@ -2582,6 +2592,51 @@ function getOpenClawPath() {
   if (fs$1.existsSync(extractedCli)) return extractedCli;
   return "openclaw";
 }
+function getOpenClawRuntimeDiagnosis() {
+  const appRoot = getAppRoot();
+  const runtimeRoot = RUNTIME_DIR;
+  const entry = path$1.join(runtimeRoot, "node_modules", "openclaw", "openclaw.mjs");
+  const dist = path$1.join(runtimeRoot, "node_modules", "openclaw", "dist");
+  const nestedEntry = path$1.join(runtimeRoot, "runtime", "node_modules", "openclaw", "openclaw.mjs");
+  const appNestedEntry = path$1.join(appRoot, "u-agent", "runtime", "node_modules", "openclaw", "openclaw.mjs");
+  const stagingEntry = path$1.join(appRoot, "release", "windows-shell-e2e-slim-staging", "runtime", "node_modules", "openclaw", "openclaw.mjs");
+  const rootEntries = fs$1.existsSync(appRoot) ? fs$1.readdirSync(appRoot).slice(0, 40) : [];
+  const runtimeEntries = fs$1.existsSync(runtimeRoot) ? fs$1.readdirSync(runtimeRoot).slice(0, 40) : [];
+  const problems = [];
+  if (!fs$1.existsSync(path$1.join(runtimeRoot, "openclaw.cmd"))) problems.push("缺少 runtime/openclaw.cmd");
+  if (!fs$1.existsSync(path$1.join(runtimeRoot, "node.exe"))) problems.push("缺少 runtime/node.exe");
+  if (!fs$1.existsSync(entry)) problems.push("缺少 runtime/node_modules/openclaw/openclaw.mjs");
+  if (!fs$1.existsSync(dist)) problems.push("缺少 runtime/node_modules/openclaw/dist");
+  const hints = [];
+  if (fs$1.existsSync(nestedEntry)) hints.push("检测到 runtime/runtime/node_modules/openclaw/openclaw.mjs：runtime 可能多套了一层 runtime 目录。请把内层 runtime 的内容移动到 U 盘根目录的 runtime。");
+  if (fs$1.existsSync(appNestedEntry)) hints.push("检测到 u-agent/runtime/node_modules/openclaw/openclaw.mjs：程序当前按 U 盘根目录运行，请把 u-agent 目录内的 runtime 复制到 U 盘根目录 runtime，或从完整 staging 目录启动。");
+  if (fs$1.existsSync(stagingEntry)) hints.push("检测到 release/windows-shell-e2e-slim-staging/runtime：请复制 staging 目录里面的内容到 U 盘根目录，而不是复制整个 staging 目录本身。");
+  return {
+    ok: problems.length === 0,
+    appRoot,
+    runtimeRoot,
+    expectedEntry: entry,
+    expectedDist: dist,
+    problems,
+    hints,
+    rootEntries,
+    runtimeEntries
+  };
+}
+function formatOpenClawRuntimeDiagnosis(diag) {
+  return [
+    "OpenClaw runtime 不完整，Gateway 未启动。",
+    "当前程序根目录: " + diag.appRoot,
+    "当前 runtime 目录: " + diag.runtimeRoot,
+    "期望入口文件: " + diag.expectedEntry,
+    "缺失项:",
+    ...diag.problems.map((item) => "  - " + item),
+    diag.hints.length ? "可能原因:" : "",
+    ...diag.hints.map((item) => "  - " + item),
+    "U盘根目录前 40 项: " + diag.rootEntries.join(", "),
+    "runtime 目录前 40 项: " + diag.runtimeEntries.join(", ")
+  ].filter(Boolean).join("\n");
+}
 function writeDnsHook() {
   const hookPath = path$1.join(RUNTIME_DIR, "dns-hook.cjs");
   if (fs$1.existsSync(hookPath)) return hookPath;
@@ -2865,6 +2920,19 @@ function createGatewayManager() {
       sendBootPhase("done", "启动成功", "Gateway 已在运行中", 100);
       sendGatewayStatus(true);
       return Promise.resolve({ success: true, already: true });
+    }
+    const runtimeDiag = getOpenClawRuntimeDiagnosis();
+    if (!runtimeDiag.ok) {
+      const detail = formatOpenClawRuntimeDiagnosis(runtimeDiag);
+      sendGatewayLog("stderr", detail);
+      sendBootPhase("error", "OpenClaw 运行时不完整", "缺少 runtime/node_modules/openclaw/openclaw.mjs，请检查 U 盘 runtime 复制层级。", 0);
+      sendGatewayStatus(false, "OpenClaw 运行时不完整");
+      return Promise.resolve({
+        success: false,
+        error: "OpenClaw 运行时不完整",
+        errorDetail: detail,
+        errorAction: "copy-runtime"
+      });
     }
     sendBootPhase("cleanup", "清理残留进程", "检查端口占用...", 5);
     await killProcessOnPort(port);
