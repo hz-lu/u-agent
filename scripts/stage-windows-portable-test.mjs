@@ -3,8 +3,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const stagingRoot = path.resolve(process.env.WINDOWS_PORTABLE_STAGING || path.join(projectRoot, "release", "windows-shell-e2e-staging"));
-const runtimeStagingRoot = path.join(projectRoot, "release", "windows-runtime-required-staging", "runtime");
+const runtimeProfile = process.env.WINDOWS_RUNTIME_PROFILE === "slim" ? "slim" : "required";
+const stagingRoot = path.resolve(process.env.WINDOWS_PORTABLE_STAGING || path.join(projectRoot, "release", runtimeProfile === "slim" ? "windows-shell-e2e-slim-staging" : "windows-shell-e2e-staging"));
+const runtimeStagingRoot = path.join(projectRoot, "release", runtimeProfile === "slim" ? "windows-runtime-slim-staging" : "windows-runtime-required-staging", "runtime");
 
 function fail(message) {
   console.error(message);
@@ -111,7 +112,7 @@ function writeCleanDataTemplates() {
 }
 
 run("npm", ["run", "package:windows-shell"]);
-run("npm", ["run", "package:windows-runtime"]);
+run("npm", ["run", runtimeProfile === "slim" ? "package:windows-runtime:slim" : "package:windows-runtime"]);
 
 if (!fs.existsSync(runtimeStagingRoot)) {
   fail([
@@ -132,6 +133,7 @@ writeCleanDataTemplates();
 
 const report = {
   ok: true,
+  runtimeProfile,
   stagingRoot,
   app: path.join(stagingRoot, "win-unpacked", "OpenClawPro.exe"),
   runtime: path.join(stagingRoot, "runtime"),

@@ -7,9 +7,10 @@ import extractZip from "extract-zip";
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const preferredSourceRuntimeRoot = path.resolve(process.env.RUNTIME_SOURCE_ROOT || path.join(projectRoot, "src", "runtime"));
 const releaseRoot = path.join(projectRoot, "release");
-const stagingRoot = path.join(releaseRoot, "windows-runtime-required-staging");
+const runtimeProfile = process.env.WINDOWS_RUNTIME_PROFILE === "slim" ? "slim" : "required";
+const stagingRoot = path.join(releaseRoot, runtimeProfile === "slim" ? "windows-runtime-slim-staging" : "windows-runtime-required-staging");
 const stagingRuntimeRoot = path.join(stagingRoot, "runtime");
-const zipPath = path.join(releaseRoot, "OpenClawPro-AgentHub-Windows-Runtime-Required.zip");
+const zipPath = path.join(releaseRoot, runtimeProfile === "slim" ? "OpenClawPro-AgentHub-Windows-Runtime-Slim-Candidate.zip" : "OpenClawPro-AgentHub-Windows-Runtime-Required.zip");
 const manifestSourcePath = path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json");
 let sourceRuntimeRoot = preferredSourceRuntimeRoot;
 
@@ -46,7 +47,32 @@ function shouldSkipRuntimeRel(relPath, forbiddenRuntimePaths) {
   if (rel.includes("/.git/") || rel.startsWith(".git/")) return true;
   if (rel.includes("/.cache/") || rel.startsWith(".cache/")) return true;
   if (rel.includes("/tests/") || rel.includes("/benchmarks/")) return true;
+  if (runtimeProfile === "slim" && shouldSkipSlimRuntimeRel(rel)) return true;
   return forbiddenRuntimePaths.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`));
+}
+
+function shouldSkipSlimRuntimeRel(rel) {
+  const normalized = rel.replace(/\\/g, "/");
+  const exactPrefixes = [
+    "runtime/HermesPortable/python/cpython-3.12-windows-x86_64-none",
+    "runtime/HermesPortable/hermes-agent/apps",
+    "runtime/HermesPortable/hermes-agent/build",
+    "runtime/HermesPortable/hermes-agent/docs",
+    "runtime/HermesPortable/hermes-agent/nix",
+    "runtime/HermesPortable/hermes-agent/optional-skills",
+    "runtime/HermesPortable/hermes-agent/packaging",
+    "runtime/HermesPortable/hermes-agent/skills",
+    "runtime/HermesPortable/hermes-agent/ui-tui",
+    "runtime/HermesPortable/hermes-agent/web",
+    "runtime/HermesPortable/hermes-agent/website"
+  ];
+  if (exactPrefixes.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`))) return true;
+  if (normalized === "runtime/HermesPortable/lib/config_server.py.bak-frame-20260617082246") return true;
+  if (normalized.startsWith("runtime/node_modules/openclaw/node_modules/")) {
+    if (/(^|\/)(__tests__|test|tests|docs|doc|example|examples|benchmark|benchmarks)(\/|$)/i.test(normalized)) return true;
+    if (/\.(?:map|md|markdown)$/i.test(normalized)) return true;
+  }
+  return false;
 }
 
 function copyRuntimeEntry(sourceRel, targetRel, forbiddenRuntimePaths) {
@@ -109,9 +135,30 @@ function findRuntimeZip() {
   const candidates = [
     process.env.RUNTIME_ZIP,
     path.join(projectRoot, "OpenClawPro-AgentHub-Windows-Runtime-Required.zip"),
+    path.join(releaseRoot, "OpenClawPro-AgentHub-Windows-Runtime-Required.zip"),
     zipPath
   ].filter(Boolean);
   return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function pruneStagedRuntime(forbiddenRuntimePaths) {
+  if (!fs.existsSync(stagingRoot)) return;
+  const entries = [];
+  const stack = [stagingRoot];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      entries.push(full);
+    }
+  }
+  entries.sort((a, b) => b.length - a.length);
+  for (const full of entries) {
+    const rel = path.relative(stagingRoot, full).replace(/\\/g, "/");
+    if (!rel || rel === "runtime/PORTABLE-RUNTIME-MANIFEST.json") continue;
+    if (shouldSkipRuntimeRel(rel, forbiddenRuntimePaths)) fs.rmSync(full, { recursive: true, force: true });
+  }
 }
 
 function hasUsablePath(root, relPath) {
@@ -149,6 +196,7 @@ function listFiles(root) {
 function findPython() {
   const candidates = process.platform === "win32"
     ? [
+        path.join(stagingRuntimeRoot, "HermesPortable", "venv", "Scripts", "python.exe"),
         path.join(sourceRuntimeRoot, "HermesPortable", "venv", "Scripts", "python.exe"),
         "python",
         "py"
@@ -166,7 +214,7 @@ function writeZip(files) {
   const python = findPython();
   if (!python) fail("Unable to find Python for zip creation. Install python3 or run on Windows with src/runtime/HermesPortable present.");
 
-  const fileListPath = path.join(releaseRoot, "windows-runtime-required-files.json");
+  const fileListPath = path.join(releaseRoot, `windows-runtime-${runtimeProfile}-files.json`);
   fs.writeFileSync(fileListPath, JSON.stringify({
     zipPath,
     stagingRoot,
@@ -228,7 +276,9 @@ if (!sourceRuntimeRoot) {
   fs.rmSync(stagingRoot, { recursive: true, force: true });
   mkdirp(stagingRoot);
   await extractZip(runtimeZip, { dir: stagingRoot });
-  if (path.resolve(runtimeZip) !== path.resolve(zipPath)) {
+  if (runtimeProfile === "slim") {
+    pruneStagedRuntime(Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : []);
+  } else if (path.resolve(runtimeZip) !== path.resolve(zipPath)) {
     mkdirp(releaseRoot);
     fs.copyFileSync(runtimeZip, zipPath);
   }
@@ -236,9 +286,16 @@ if (!sourceRuntimeRoot) {
   const missing = requiredRuntimePaths.filter((relPath) => !hasUsablePath(stagingRoot, relPath));
   if (missing.length) fail(`Runtime zip is incomplete:\n${missing.map((relPath) => `- ${relPath}`).join("\n")}`);
 
+  if (runtimeProfile === "slim") {
+    mkdirp(releaseRoot);
+    const files = listFiles(stagingRoot);
+    writeZip(files);
+  }
+
   const stats = fs.statSync(zipPath);
   const report = {
     ok: true,
+    profile: runtimeProfile,
     zipPath,
     sizeBytes: stats.size,
     sizeMb: Math.round(stats.size / 1024 / 1024 * 10) / 10,
@@ -288,6 +345,7 @@ writeZip(files);
 const stats = fs.statSync(zipPath);
 const report = {
   ok: true,
+  profile: runtimeProfile,
   zipPath,
   sizeBytes: stats.size,
   sizeMb: Math.round(stats.size / 1024 / 1024 * 10) / 10,
