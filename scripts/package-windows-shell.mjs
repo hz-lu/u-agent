@@ -33,6 +33,39 @@ function run(command, args) {
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed`);
 }
 
+async function extractElectronZip(zipPath) {
+  if (process.platform !== "win32") {
+    await extractZip(zipPath, { dir: winUnpackedRoot });
+    return;
+  }
+
+  const tarResult = spawnSync("tar.exe", ["-xf", zipPath, "-C", winUnpackedRoot], {
+    cwd: projectRoot,
+    stdio: "inherit",
+    windowsHide: true
+  });
+  if (tarResult.status === 0) return;
+
+  console.warn("[windows-shell] tar.exe extract failed, falling back to PowerShell Expand-Archive");
+  const psResult = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
+    zipPath,
+    winUnpackedRoot
+  ], {
+    cwd: projectRoot,
+    stdio: "inherit",
+    windowsHide: true
+  });
+  if (psResult.status !== 0) {
+    fail(`Failed to extract Electron zip: ${zipPath}`);
+  }
+}
+
 function assertBuildOutput() {
   for (const required of [
     path.join(distRoot, "main", "index.js"),
@@ -134,7 +167,7 @@ const zipPath = await downloadArtifact({
 
 fs.rmSync(winUnpackedRoot, { recursive: true, force: true });
 fs.mkdirSync(winUnpackedRoot, { recursive: true });
-await extractZip(zipPath, { dir: winUnpackedRoot });
+await extractElectronZip(zipPath);
 renameElectronExe();
 
 fs.rmSync(appRoot, { recursive: true, force: true });
