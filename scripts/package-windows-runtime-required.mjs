@@ -2,14 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import extractZip from "extract-zip";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const sourceRuntimeRoot = path.resolve(process.env.RUNTIME_SOURCE_ROOT || path.join(projectRoot, "src", "runtime"));
+const preferredSourceRuntimeRoot = path.resolve(process.env.RUNTIME_SOURCE_ROOT || path.join(projectRoot, "src", "runtime"));
 const releaseRoot = path.join(projectRoot, "release");
 const stagingRoot = path.join(releaseRoot, "windows-runtime-required-staging");
 const stagingRuntimeRoot = path.join(stagingRoot, "runtime");
 const zipPath = path.join(releaseRoot, "OpenClawPro-AgentHub-Windows-Runtime-Required.zip");
 const manifestSourcePath = path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json");
+let sourceRuntimeRoot = preferredSourceRuntimeRoot;
 
 function fail(message) {
   console.error(message);
@@ -71,6 +73,45 @@ function copyRuntimeEntry(sourceRel, targetRel, forbiddenRuntimePaths) {
       }
     }
   }
+}
+
+function hasUsableSourceRuntimePath(sourceRoot, runtimeRelPath) {
+  const relPath = runtimeRelPath.replace(/^runtime[\\/]/, "");
+  const fullPath = path.join(sourceRoot, relPath);
+  if (!fs.existsSync(fullPath)) return false;
+  const stat = fs.statSync(fullPath);
+  if (stat.isFile()) return path.basename(fullPath) !== ".gitkeep";
+  if (!stat.isDirectory()) return true;
+  const stack = [fullPath];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const child = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(child);
+      else if (entry.isFile() && entry.name !== ".gitkeep") return true;
+    }
+  }
+  return false;
+}
+
+function findSourceRuntimeRoot(requiredRuntimePaths) {
+  const candidates = [
+    preferredSourceRuntimeRoot,
+    path.join(projectRoot, "runtime")
+  ];
+  for (const candidate of candidates) {
+    if (requiredRuntimePaths.every((relPath) => hasUsableSourceRuntimePath(candidate, relPath))) return candidate;
+  }
+  return null;
+}
+
+function findRuntimeZip() {
+  const candidates = [
+    process.env.RUNTIME_ZIP,
+    path.join(projectRoot, "OpenClawPro-AgentHub-Windows-Runtime-Required.zip"),
+    zipPath
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 }
 
 function hasUsablePath(root, relPath) {
@@ -166,11 +207,53 @@ function sha256(filePath) {
   return hash.digest("hex");
 }
 
-if (!fs.existsSync(sourceRuntimeRoot)) fail(`Runtime source root not found: ${sourceRuntimeRoot}`);
-
 const manifest = readJsonRequired(manifestSourcePath);
 const windowsSpec = manifest?.platforms?.["windows-x64"];
 if (!windowsSpec) fail("runtime manifest is missing platforms.windows-x64");
+const requiredRuntimePaths = windowsSpec.requiredPaths.filter((relPath) => relPath.startsWith("runtime/"));
+sourceRuntimeRoot = findSourceRuntimeRoot(requiredRuntimePaths);
+
+if (!sourceRuntimeRoot) {
+  const runtimeZip = findRuntimeZip();
+  if (!runtimeZip) {
+    fail([
+      "Windows runtime source is missing.",
+      `Checked source runtime: ${preferredSourceRuntimeRoot}`,
+      `Checked expanded runtime: ${path.join(projectRoot, "runtime")}`,
+      "Put OpenClawPro-AgentHub-Windows-Runtime-Required.zip in the project root or release/ directory, or set RUNTIME_ZIP=/path/to/zip.",
+      "The Windows app shell was generated successfully; only the portable runtime is missing."
+    ].join("\n"));
+  }
+
+  fs.rmSync(stagingRoot, { recursive: true, force: true });
+  mkdirp(stagingRoot);
+  await extractZip(runtimeZip, { dir: stagingRoot });
+  if (path.resolve(runtimeZip) !== path.resolve(zipPath)) {
+    mkdirp(releaseRoot);
+    fs.copyFileSync(runtimeZip, zipPath);
+  }
+
+  const missing = requiredRuntimePaths.filter((relPath) => !hasUsablePath(stagingRoot, relPath));
+  if (missing.length) fail(`Runtime zip is incomplete:\n${missing.map((relPath) => `- ${relPath}`).join("\n")}`);
+
+  const stats = fs.statSync(zipPath);
+  const report = {
+    ok: true,
+    zipPath,
+    sizeBytes: stats.size,
+    sizeMb: Math.round(stats.size / 1024 / 1024 * 10) / 10,
+    sha256: sha256(zipPath),
+    sourceRuntimeRoot: null,
+    sourceZip: runtimeZip,
+    stagingRuntimeRoot,
+    extractedFromZip: true,
+    excludesUserData: true,
+    requiredRuntimePathsChecked: requiredRuntimePaths
+  };
+  fs.writeFileSync(`${zipPath}.manifest.json`, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify(report, null, 2));
+  process.exit(0);
+}
 
 const forbiddenRuntimePaths = Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : [];
 const runtimeEntries = [
@@ -212,7 +295,7 @@ const report = {
   sha256: sha256(zipPath),
   sourceRuntimeRoot,
   excludesUserData: true,
-  requiredRuntimePathsChecked: windowsSpec.requiredPaths.filter((relPath) => relPath.startsWith("runtime/"))
+  requiredRuntimePathsChecked: requiredRuntimePaths
 };
 
 fs.writeFileSync(`${zipPath}.manifest.json`, `${JSON.stringify(report, null, 2)}\n`, "utf8");

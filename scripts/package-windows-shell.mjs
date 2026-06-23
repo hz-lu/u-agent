@@ -3,11 +3,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import extractZip from "extract-zip";
 import { downloadArtifact } from "@electron/get";
+import { rcedit } from "rcedit";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const distRoot = path.join(projectRoot, "dist");
 const winUnpackedRoot = path.join(projectRoot, "win-unpacked");
 const appRoot = path.join(winUnpackedRoot, "resources", "app");
+const executablePath = path.join(winUnpackedRoot, "OpenClawPro.exe");
 const electronVersion = process.env.ELECTRON_VERSION || readPackageVersion("electron");
 const targetArch = process.env.ELECTRON_TARGET_ARCH || "x64";
 
@@ -72,9 +74,37 @@ function restoreTrackedPlaceholders() {
 
 function renameElectronExe() {
   const electronExe = path.join(winUnpackedRoot, "electron.exe");
-  const targetExe = path.join(winUnpackedRoot, "OpenClawPro.exe");
   if (!fs.existsSync(electronExe)) fail(`Electron executable is missing after extract: ${electronExe}`);
-  fs.renameSync(electronExe, targetExe);
+  fs.renameSync(electronExe, executablePath);
+}
+
+function hasWine() {
+  if (process.platform === "win32") return true;
+  const result = spawnSync("wine", ["--version"], { encoding: "utf8", windowsHide: true });
+  return result.status === 0;
+}
+
+async function patchExecutableResources() {
+  const iconPath = path.join(distRoot, "assets", "icon.ico");
+  if (!fs.existsSync(iconPath)) fail(`Windows icon is missing: ${path.relative(projectRoot, iconPath)}`);
+  fs.copyFileSync(iconPath, path.join(appRoot, "icon.ico"));
+
+  const canPatch = process.platform === "win32" || hasWine();
+  if (!canPatch) {
+    console.warn("[windows-shell] skipped exe icon patch: rcedit requires Windows or Wine. Run npm run package:windows-shell on Windows before final testing/release.");
+    return { iconPatched: false, iconPath, reason: "rcedit requires Windows or Wine" };
+  }
+
+  await rcedit(executablePath, {
+    icon: iconPath,
+    "version-string": {
+      CompanyName: "OpenClawPro",
+      FileDescription: "OpenClawPro Agent Hub",
+      ProductName: "OpenClawPro",
+      OriginalFilename: "OpenClawPro.exe"
+    }
+  });
+  return { iconPatched: true, iconPath };
 }
 
 function countFiles(root) {
@@ -112,12 +142,14 @@ fs.mkdirSync(appRoot, { recursive: true });
 fs.cpSync(distRoot, path.join(appRoot, "dist"), { recursive: true });
 writeAppPackageJson();
 restoreTrackedPlaceholders();
+const resourcePatch = await patchExecutableResources();
 
 const report = {
   ok: true,
   winUnpackedRoot,
-  executable: path.join(winUnpackedRoot, "OpenClawPro.exe"),
+  executable: executablePath,
   appDist: path.join(appRoot, "dist"),
+  icon: resourcePatch,
   electronVersion,
   platform: "win32",
   arch: targetArch,

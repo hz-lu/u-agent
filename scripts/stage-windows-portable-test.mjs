@@ -113,7 +113,13 @@ function writeCleanDataTemplates() {
 run("npm", ["run", "package:windows-shell"]);
 run("npm", ["run", "package:windows-runtime"]);
 
-if (!fs.existsSync(runtimeStagingRoot)) fail(`Runtime staging not found: ${runtimeStagingRoot}`);
+if (!fs.existsSync(runtimeStagingRoot)) {
+  fail([
+    `Runtime staging not found: ${runtimeStagingRoot}`,
+    "The Windows app shell was generated successfully, but the portable runtime is still missing.",
+    "Put OpenClawPro-AgentHub-Windows-Runtime-Required.zip in the project root or release/ directory, then run npm run stage:windows-portable again."
+  ].join("\n"));
+}
 
 fs.rmSync(stagingRoot, { recursive: true, force: true });
 fs.mkdirSync(stagingRoot, { recursive: true });
