@@ -66,6 +66,14 @@ async function extractElectronZip(zipPath) {
   }
 }
 
+function assertElectronExtracted() {
+  const electronExe = path.join(winUnpackedRoot, "electron.exe");
+  if (!fs.existsSync(electronExe)) {
+    const entries = fs.existsSync(winUnpackedRoot) ? fs.readdirSync(winUnpackedRoot).slice(0, 30).join(", ") : "(missing)";
+    fail(`Electron executable is missing after extract: ${electronExe}\nExtracted entries: ${entries}`);
+  }
+}
+
 function assertBuildOutput() {
   for (const required of [
     path.join(distRoot, "main", "index.js"),
@@ -154,40 +162,49 @@ function countFiles(root) {
   return count;
 }
 
-run("npm", ["run", "build"]);
-assertBuildOutput();
+async function main() {
+  run("npm", ["run", "build"]);
+  assertBuildOutput();
 
-console.log(`[windows-shell] downloading Electron ${electronVersion} win32-${targetArch}`);
-const zipPath = await downloadArtifact({
-  version: electronVersion,
-  platform: "win32",
-  arch: targetArch,
-  artifactName: "electron"
+  console.log(`[windows-shell] downloading Electron ${electronVersion} win32-${targetArch}`);
+  const zipPath = await downloadArtifact({
+    version: electronVersion,
+    platform: "win32",
+    arch: targetArch,
+    artifactName: "electron"
+  });
+  console.log(`[windows-shell] Electron zip: ${zipPath}`);
+
+  fs.rmSync(winUnpackedRoot, { recursive: true, force: true });
+  fs.mkdirSync(winUnpackedRoot, { recursive: true });
+  await extractElectronZip(zipPath);
+  assertElectronExtracted();
+  renameElectronExe();
+
+  fs.rmSync(appRoot, { recursive: true, force: true });
+  fs.mkdirSync(appRoot, { recursive: true });
+  fs.cpSync(distRoot, path.join(appRoot, "dist"), { recursive: true });
+  writeAppPackageJson();
+  restoreTrackedPlaceholders();
+  const resourcePatch = await patchExecutableResources();
+
+  const report = {
+    ok: true,
+    winUnpackedRoot,
+    executable: executablePath,
+    appDist: path.join(appRoot, "dist"),
+    icon: resourcePatch,
+    electronVersion,
+    platform: "win32",
+    arch: targetArch,
+    fileCount: countFiles(winUnpackedRoot)
+  };
+
+  fs.writeFileSync(path.join(winUnpackedRoot, "BUILD-MANIFEST.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  console.log(JSON.stringify(report, null, 2));
+}
+
+main().catch((err) => {
+  console.error("[windows-shell] failed:", err?.stack || err?.message || err);
+  process.exit(1);
 });
-
-fs.rmSync(winUnpackedRoot, { recursive: true, force: true });
-fs.mkdirSync(winUnpackedRoot, { recursive: true });
-await extractElectronZip(zipPath);
-renameElectronExe();
-
-fs.rmSync(appRoot, { recursive: true, force: true });
-fs.mkdirSync(appRoot, { recursive: true });
-fs.cpSync(distRoot, path.join(appRoot, "dist"), { recursive: true });
-writeAppPackageJson();
-restoreTrackedPlaceholders();
-const resourcePatch = await patchExecutableResources();
-
-const report = {
-  ok: true,
-  winUnpackedRoot,
-  executable: executablePath,
-  appDist: path.join(appRoot, "dist"),
-  icon: resourcePatch,
-  electronVersion,
-  platform: "win32",
-  arch: targetArch,
-  fileCount: countFiles(winUnpackedRoot)
-};
-
-fs.writeFileSync(path.join(winUnpackedRoot, "BUILD-MANIFEST.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
-console.log(JSON.stringify(report, null, 2));
