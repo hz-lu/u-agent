@@ -1584,6 +1584,44 @@ function patchGatewayRestartStatus(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchNonBlockingGatewayStartupCleanup(filePath) {
+  const marker = "skipping blocking openclaw gateway stop during startup cleanup";
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (source.includes(marker)) return;
+  const blockingStop = [
+    "        try {",
+    "          const cliPath = getOpenClawPath();",
+    "          const stopEnv = getGatewayEnv();",
+    "          child_process.execSync(`\"${cliPath}\" gateway stop`, { env: stopEnv, stdio: \"ignore\", timeout: 8e3, cwd: getAppRoot() });",
+    "          console.log('[gateway] graceful stop via \"openclaw gateway stop\" succeeded');",
+    "          child_process.execSync(\"ping 127.0.0.1 -n 3 -w 1000 >nul\", { stdio: \"ignore\" });",
+    "        } catch (e) {",
+    "          console.log(\"[gateway] graceful stop failed or timed out, proceeding with force kill\");",
+    "        }"
+  ].join("\n");
+  source = source.replace(blockingStop, `        console.log("[gateway] ${marker}");`);
+  const wmicCleanup = [
+    "        try {",
+    "          child_process.execSync(`wmic process where \"ExecutablePath like '%${APP_NAME}%runtime%node.exe'\" call terminate 2>nul`, { stdio: \"ignore\", timeout: 5e3 });",
+    "          console.log(\"[gateway] cleaned up stray OpenClaw node processes\");",
+    "        } catch {",
+    "        }"
+  ].join("\n");
+  source = source.replace(wmicCleanup, "");
+  source = source.replace(
+    "          if (line.includes(\"[gateway] listening on\")) {\n            safeSend(\"gateway-ready\", true);\n          }",
+    "          if (line.includes(\"[gateway] listening on\") || line.includes(\"gateway ready\") || line.includes(\"http server listening\")) {\n            gatewayRunning = true;\n            sendGatewayStatus(true);\n            safeSend(\"gateway-ready\", true);\n          }"
+  );
+  source = source.replace(
+    "    try {\n      console.log(`finding ${APP_NAME} start`);\n      const result1 = child_process.execSync(`taskkill /f /im node.exe /fi \"WINDOWTITLE eq ${APP_NAME}*\" 2>nul`, { stdio: \"ignore\" });\n      console.log(`finding ${APP_NAME} end`, result1);\n    } catch (e) {\n      console.log(`finding ${APP_NAME} error`, e);\n    }",
+    "    console.log(\"[startup] skipping global node.exe cleanup\");"
+  );
+  if (!source.includes(marker)) {
+    throw new Error("Could not patch non-blocking Gateway startup cleanup.");
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchGatewayRestartRecoveryUi(filePath) {
   const marker = "codex-gateway-restart-ui-recovery";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -4055,6 +4093,7 @@ copyDir(path.join(backupRoot, "assets"), path.join(targetApp, "assets"));
 const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
+patchNonBlockingGatewayStartupCleanup(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);

@@ -2952,15 +2952,7 @@ function createGatewayManager() {
       if (platform2 === "darwin") {
         command = `lsof -ti:${port} | xargs -I {} sh -c 'ps -p {} -o comm= 2>/dev/null | grep -q "${APP_NAME}" && kill -9 {}' 2>/dev/null || true`;
       } else if (isWin()) {
-        try {
-          const cliPath = getOpenClawPath();
-          const stopEnv = getGatewayEnv();
-          child_process.execSync(`"${cliPath}" gateway stop`, { env: stopEnv, stdio: "ignore", timeout: 8e3, cwd: getAppRoot() });
-          console.log('[gateway] graceful stop via "openclaw gateway stop" succeeded');
-          child_process.execSync("ping 127.0.0.1 -n 3 -w 1000 >nul", { stdio: "ignore" });
-        } catch (e) {
-          console.log("[gateway] graceful stop failed or timed out, proceeding with force kill");
-        }
+        console.log("[gateway] skipping blocking openclaw gateway stop during startup cleanup");
         try {
           const netstat = child_process.execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8", timeout: 3e3 });
           const lines = netstat.trim().split("\n");
@@ -2975,11 +2967,6 @@ function createGatewayManager() {
               sendBootPhase("cleanup", "清理残留进程", `已终止占用端口的进程 (PID ${pid})`, 10);
             }
           }
-        } catch {
-        }
-        try {
-          child_process.execSync(`wmic process where "ExecutablePath like '%${APP_NAME}%runtime%node.exe'" call terminate 2>nul`, { stdio: "ignore", timeout: 5e3 });
-          console.log("[gateway] cleaned up stray OpenClaw node processes");
         } catch {
         }
         for (let i = 0; i < 5; i++) {
@@ -3060,7 +3047,9 @@ function createGatewayManager() {
         console.log(`[gateway:out] ${text}`);
         text.split("\n").forEach((line) => {
           if (line.trim()) sendGatewayLog("stdout", line.trim());
-          if (line.includes("[gateway] listening on")) {
+          if (line.includes("[gateway] listening on") || line.includes("gateway ready") || line.includes("http server listening")) {
+            gatewayRunning = true;
+            sendGatewayStatus(true);
             safeSend("gateway-ready", true);
           }
         });
@@ -23353,13 +23342,7 @@ electron.app.whenReady().then(async () => {
     }
   });
   if (isWin()) {
-    try {
-      console.log(`finding ${APP_NAME} start`);
-      const result1 = child_process.execSync(`taskkill /f /im node.exe /fi "WINDOWTITLE eq ${APP_NAME}*" 2>nul`, { stdio: "ignore" });
-      console.log(`finding ${APP_NAME} end`, result1);
-    } catch (e) {
-      console.log(`finding ${APP_NAME} error`, e);
-    }
+    console.log("[startup] skipping global node.exe cleanup");
     try {
       console.log("finding port start");
       const netstat = child_process.execSync(`netstat -ano | findstr :${GATEWAY_DEFAULT_PORT} | findstr LISTENING`, { encoding: "utf-8", shell: true });
