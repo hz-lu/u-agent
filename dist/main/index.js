@@ -134,11 +134,6 @@ class WechatManager extends EventEmitter {
         let dirty = false;
         if (!config.plugins) config.plugins = {};
         if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
-        if (!config.plugins.allow.includes("openclaw-weixin")) {
-          config.plugins.allow.push("openclaw-weixin");
-          dirty = true;
-          console.log("[wechat] Added openclaw-weixin to plugins.allow");
-        }
         if (!config.plugins.entries) config.plugins.entries = {};
         if (!config.plugins.entries["openclaw-weixin"]) {
           config.plugins.entries["openclaw-weixin"] = { enabled: true, config: {} };
@@ -441,7 +436,7 @@ class WechatManager extends EventEmitter {
       }
       if (code === 0 || this.status === "connected") {
         const restart = this.restartGateway();
-        this.emit("log", restart.success ? "[weixin] Gateway 已刷新，微信账号配置已加载" : `[weixin] Gateway 刷新失败: ${restart.error}`);
+        this.emit("log", restart.success ? "[weixin] account credentials saved; Gateway keeps running." : `[weixin] account save notice failed: ${restart.error}`);
       }
       this.emit("login-exit", code);
     });
@@ -477,7 +472,7 @@ class WechatManager extends EventEmitter {
   }
   /** Restart gateway to pick up new channel config */
   restartGateway() {
-    this.emit("log", "[weixin] login process requested Gateway refresh; desktop supervisor will restart Gateway once.");
+    this.emit("log", "[weixin] login process completed without restarting Gateway.");
     return { success: true, skipped: true };
   }
   destroy() {
@@ -1587,7 +1582,9 @@ class HermesManager {
     const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};
     try {
       if (!this.proc && !(await this.checkTcpPort(17520))) {
-        await this.start({ open: false });
+        this.start({ open: false }).catch((err) => {
+          safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
+        });
       }
     } catch (err) {
       safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
@@ -2891,7 +2888,7 @@ function rewritePortableOpenClawConfigPaths() {
     const defaultPluginIds = ["qwen", "memory-core", "browser", "canvas", "device-pair", "file-transfer", "phone-control", "talk-voice"];
     config.plugins ||= {};
     if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
-    const allowSet = new Set(config.plugins.allow.filter((id) => id !== "openclaw-weixin"));
+    const allowSet = new Set(config.plugins.allow);
     for (const id of defaultPluginIds) allowSet.add(id);
     const nextAllow = Array.from(allowSet);
     if (JSON.stringify(nextAllow) !== JSON.stringify(config.plugins.allow)) {
@@ -2904,10 +2901,6 @@ function rewritePortableOpenClawConfigPaths() {
         config.plugins.entries[id] = { enabled: true };
         changed = true;
       }
-    }
-    if (config.plugins.entries["openclaw-weixin"] && !config.channels?.["openclaw-weixin"]) {
-      delete config.plugins.entries["openclaw-weixin"];
-      changed = true;
     }
     if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
   } catch (err) {
@@ -22653,7 +22646,17 @@ function registerIPCHandlers({ gateway }) {
     return await getHermesManager().openApiServer();
   });
   electron.ipcMain.handle("hermes:chat", async (_, options) => {
-    return await getHermesManager().chat(options || {});
+    const chatOptions = options || {};
+    if (!chatOptions.background) {
+      return await getHermesManager().chat(chatOptions);
+    }
+    const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    Promise.resolve().then(() => getHermesManager().chat({ ...chatOptions, taskId })).then((result) => {
+      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result });
+    }).catch((err) => {
+      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) } });
+    });
+    return { ok: true, pending: true, taskId };
   });
   electron.ipcMain.handle("hermes:openInternal", async (_, targetUrl) => {
     const url2 = typeof targetUrl === "string" && targetUrl.startsWith("http") ? targetUrl : "http://127.0.0.1:17520";
@@ -23195,9 +23198,8 @@ function registerWechatIPCHandler({ gateway }) {
   wechatManagerForGateway?.on("login-exit", async (code) => {
     try {
       if (code === 0 || wechatManagerForGateway.getStatus() === "connected") {
-        wechatManagerForGateway.emit("log", "[weixin] login complete, restarting desktop Gateway... /* wechat-login-gateway-restart */");
-        await gateway.restartGateway();
-        wechatManagerForGateway.emit("log", "[weixin] Gateway 已重启，微信账号配置已加载");
+        wechatManagerForGateway.emit("log", "[weixin] login complete; Gateway will keep running.");
+        safeSend("wechat-status", { status: "connected", diagnostics: getWeChatDiagnostics() });
       }
     } catch (err) {
       wechatManagerForGateway?.emit("log", "[weixin] Gateway 重启失败: " + (err instanceof Error ? err.message : String(err)));

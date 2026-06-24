@@ -4577,6 +4577,128 @@ function patchWeChatGatewayStability(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchWindowsResponsiveChatAndWechat(mainFile, preloadFile, rendererFile) {
+  let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
+  mainSource = mainSource.replace(
+    /        if \(!config\.plugins\.allow\.includes\("openclaw-weixin"\)\) \{\n          config\.plugins\.allow\.push\("openclaw-weixin"\);\n          dirty = true;\n          console\.log\("\[wechat\] Added openclaw-weixin to plugins\.allow"\);\n        \}\n/g,
+    ""
+  );
+  mainSource = mainSource.replace(
+    'const allowSet = new Set(config.plugins.allow.filter((id) => id !== "openclaw-weixin"));',
+    'const allowSet = new Set(config.plugins.allow);'
+  );
+  mainSource = mainSource.replace(
+    /    if \(config\.plugins\.entries\["openclaw-weixin"\] && !config\.channels\?\.\["openclaw-weixin"\]\) \{\n      delete config\.plugins\.entries\["openclaw-weixin"\];\n      changed = true;\n    \}\n/g,
+    ""
+  );
+  mainSource = mainSource.replace(
+    "        await this.start({ open: false });",
+    [
+      "        this.start({ open: false }).catch((err) => {",
+      "          safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[hermes-chat] background start failed: \" + (err instanceof Error ? err.message : String(err)) });",
+      "        });"
+    ].join("\n")
+  );
+  mainSource = mainSource.replace(
+    "        wechatManagerForGateway.emit(\"log\", \"[weixin] login complete, restarting desktop Gateway... /* wechat-login-gateway-restart */\");\n        await gateway.restartGateway();",
+    "        wechatManagerForGateway.emit(\"log\", \"[weixin] login complete; Gateway will keep running.\");\n        safeSend(\"wechat-status\", { status: \"connected\", diagnostics: getWeChatDiagnostics() });"
+  );
+  mainSource = mainSource.replace(
+    "        wechatManagerForGateway.emit(\"log\", \"[weixin] Gateway 已重启，微信账号配置已加载\");\n",
+    ""
+  );
+  mainSource = mainSource.replace(
+    "        this.emit(\"log\", restart.success ? \"[weixin] Gateway 已刷新，微信账号配置已加载\" : `[weixin] Gateway 刷新失败: ${restart.error}`);",
+    "        this.emit(\"log\", restart.success ? \"[weixin] account credentials saved; Gateway keeps running.\" : `[weixin] account save notice failed: ${restart.error}`);"
+  );
+  mainSource = mainSource.replace(
+    "    this.emit(\"log\", \"[weixin] login process requested Gateway refresh; desktop supervisor will restart Gateway once.\");",
+    "    this.emit(\"log\", \"[weixin] login process completed without restarting Gateway.\");"
+  );
+  mainSource = mainSource.replace(
+    "    } else {\n      wechatManager2._ensurePluginsAllow?.();\n    }\n    const result = wechatManager2.startLogin();",
+    "    }\n    const result = wechatManager2.startLogin();"
+  );
+  mainSource = mainSource.replace(
+    '  electron.ipcMain.handle("hermes:chat", async (_, options) => {\n    return await getHermesManager().chat(options || {});\n  });',
+    [
+      '  electron.ipcMain.handle("hermes:chat", async (_, options) => {',
+      '    const chatOptions = options || {};',
+      '    if (!chatOptions.background) {',
+      '      return await getHermesManager().chat(chatOptions);',
+      '    }',
+      '    const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);',
+      '    Promise.resolve().then(() => getHermesManager().chat({ ...chatOptions, taskId })).then((result) => {',
+      '      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result });',
+      '    }).catch((err) => {',
+      '      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) } });',
+      '    });',
+      '    return { ok: true, pending: true, taskId };',
+      '  });'
+    ].join("\n")
+  );
+  fs.writeFileSync(mainFile, mainSource, "utf8");
+
+  let preloadSource = fs.readFileSync(preloadFile, "utf8").replace(/\r\n/g, "\n");
+  if (!preloadSource.includes("ipcOnHermesChatResult")) {
+    preloadSource = preloadSource.replace(
+      '  ipcOffHermesChatProgress: (callback) => electron.ipcRenderer.removeListener("hermes-chat-progress", callback),',
+      [
+        '  ipcOffHermesChatProgress: (callback) => electron.ipcRenderer.removeListener("hermes-chat-progress", callback),',
+        '  ipcOnHermesChatResult: (callback) => electron.ipcRenderer.on("hermes-chat-result", (_, payload) => callback(payload)),',
+        '  ipcOffHermesChatResult: (callback) => electron.ipcRenderer.removeListener("hermes-chat-result", callback),'
+      ].join("\n")
+    );
+  }
+  fs.writeFileSync(preloadFile, preloadSource, "utf8");
+
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+  if (!rendererSource.includes("function waitForHermesChatResult(taskId")) {
+    rendererSource = rendererSource.replace(
+      "    function upsertHermesProgress(content, stage = \"\", status = \"running\") {",
+      [
+        "    function waitForHermesChatResult(taskId, timeoutMs = 18e5) {",
+        "      return new Promise((resolve) => {",
+        "        let done = false;",
+        "        const cleanup = () => {",
+        "          if (window.uclaw?.ipcOffHermesChatResult) window.uclaw.ipcOffHermesChatResult(handler);",
+        "          window.clearTimeout(timer);",
+        "        };",
+        "        const handler = (payload) => {",
+        "          if (!payload || payload.taskId !== taskId) return;",
+        "          done = true;",
+        "          cleanup();",
+        "          resolve(payload.result || { ok: false, error: \"Hermes returned an empty result.\" });",
+        "        };",
+        "        const timer = window.setTimeout(() => {",
+        "          if (done) return;",
+        "          cleanup();",
+        "          resolve({ ok: false, error: \"Hermes task is still running in the background after the UI wait window. Check Hermes logs later or retry.\" });",
+        "        }, timeoutMs);",
+        "        if (window.uclaw?.ipcOnHermesChatResult) {",
+        "          window.uclaw.ipcOnHermesChatResult(handler);",
+        "        } else {",
+        "          cleanup();",
+        "          resolve({ ok: false, error: \"The desktop shell is missing the Hermes background result channel. Please rebuild the app.\" });",
+        "        }",
+        "      });",
+        "    }",
+        "    async function runHermesChatBackground(payload) {",
+        "      const started = await window.uclaw.ipcHermesChat({ ...payload, background: true });",
+        "      if (!started?.pending || !started.taskId) return started;",
+        "      return await waitForHermesChatResult(started.taskId);",
+        "    }",
+        "    function upsertHermesProgress(content, stage = \"\", status = \"running\") {"
+      ].join("\n")
+    );
+  }
+  rendererSource = rendererSource.replaceAll(
+    "const result = await window.uclaw.ipcHermesChat({",
+    "const result = await runHermesChatBackground({"
+  );
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -4638,6 +4760,7 @@ patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
 patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
+patchWindowsResponsiveChatAndWechat(mainProcessTarget, preloadTarget, rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);

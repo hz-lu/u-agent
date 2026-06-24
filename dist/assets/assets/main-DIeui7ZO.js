@@ -25669,6 +25669,37 @@ const _sfc_main$9 = {
       }
       saveHermesSession();
     }
+    function waitForHermesChatResult(taskId, timeoutMs = 18e5) {
+      return new Promise((resolve) => {
+        let done = false;
+        const cleanup = () => {
+          if (window.uclaw?.ipcOffHermesChatResult) window.uclaw.ipcOffHermesChatResult(handler);
+          window.clearTimeout(timer);
+        };
+        const handler = (payload) => {
+          if (!payload || payload.taskId !== taskId) return;
+          done = true;
+          cleanup();
+          resolve(payload.result || { ok: false, error: "Hermes 返回了空结果。" });
+        };
+        const timer = window.setTimeout(() => {
+          if (done) return;
+          cleanup();
+          resolve({ ok: false, error: "Hermes 本轮任务仍在后台运行，已超过界面等待时间。请稍后查看 Hermes 日志或重新发送。" });
+        }, timeoutMs);
+        if (window.uclaw?.ipcOnHermesChatResult) {
+          window.uclaw.ipcOnHermesChatResult(handler);
+        } else {
+          cleanup();
+          resolve({ ok: false, error: "当前桌面壳缺少 Hermes 后台结果通道，请重新构建应用。" });
+        }
+      });
+    }
+    async function runHermesChatBackground(payload) {
+      const started = await window.uclaw.ipcHermesChat({ ...payload, background: true });
+      if (!started?.pending || !started.taskId) return started;
+      return await waitForHermesChatResult(started.taskId);
+    }
     function upsertHermesProgress(content, stage = "", status = "running") {
       const now = Date.now();
       const last = window.__uclawHermesProgressMessage || {};
@@ -25823,7 +25854,7 @@ const _sfc_main$9 = {
           appendHermesAssistant("Hermes 未在首页手动启动，本次发送已自动启动后台服务；首页状态会在刷新后同步。", "Hermes 系统", "done");
           hermesRunState.value = "Hermes 已按需自动启动，正在生成回复。";
         }
-        const result = await window.uclaw.ipcHermesChat({
+        const result = await runHermesChatBackground({
           message: content,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
           sessionId: "hermes-ai-chat",
@@ -25901,7 +25932,7 @@ const _sfc_main$9 = {
           "OpenClaw 草案：",
           draftText
         ].join("\n");
-        const result = await window.uclaw.ipcHermesChat({
+        const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
           sessionId: "openclaw-hermes-collab",
@@ -25965,7 +25996,7 @@ const _sfc_main$9 = {
           "OpenClaw 内部草案：",
           draftText
         ].join("\n");
-        const result = await window.uclaw.ipcHermesChat({
+        const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
           sessionId: "openclaw-hermes-collab",
