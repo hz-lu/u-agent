@@ -1427,6 +1427,12 @@ function patchMainProcessStability(filePath) {
       "    }",
       "  } catch {}",
       "  try {",
+      "    if (fs.existsSync(target) && fs.lstatSync(target).isDirectory()) {",
+      "      fs.rmSync(linkPath, { recursive: true, force: true });",
+      "      return true;",
+      "    }",
+      "  } catch {}",
+      "  try {",
       "    fs.rmSync(linkPath, { recursive: true, force: true });",
       "    createSymlink(target, linkPath);",
       "    return true;",
@@ -1862,6 +1868,87 @@ function patchGatewayStatusAndPluginDefaults(filePath) {
         "      wechatManager2._ensurePluginsAllow?.();",
         "    }",
         "    const result = wechatManager2.startLogin();"
+      ].join("\n")
+    );
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchResponsiveGatewayStartup(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("[startup] renderer ready timeout; showing main window")) {
+    const windowReadyBlock = [
+      "  electron.ipcMain.on(\"window-ready\", () => {",
+      "    console.log(`Window ready from renderer, closing splash and showing`);",
+      "    closeSplash();",
+      "    mainWindow$1.show();",
+      "  });"
+    ].join("\n");
+    const windowReadyReplacement = [
+      windowReadyBlock,
+      "  setTimeout(() => {",
+      "    if (mainWindow$1 && !mainWindow$1.isDestroyed() && !mainWindow$1.isVisible()) {",
+      "      console.log(\"[startup] renderer ready timeout; showing main window and continuing startup in background\");",
+      "      closeSplash();",
+      "      mainWindow$1.show();",
+      "    }",
+      "  }, 8e3);"
+    ].join("\n");
+    if (!source.includes(windowReadyBlock)) {
+      throw new Error("Could not find window-ready block for responsive startup patch.");
+    }
+    source = source.replace(windowReadyBlock, windowReadyReplacement);
+  }
+  const blockingStart = [
+    "      await gateway.startGateway();",
+    "      return { ok: true };"
+  ].join("\n");
+  const backgroundStart = [
+    "      if (gateway.isGatewayRunning?.() || gateway.isGatewayReady?.()) {",
+    "        return { ok: true, already: true };",
+    "      }",
+    "      gateway.startGateway().then((result) => {",
+    "        if (!result?.success) {",
+    "          console.error(\"[gateway] background start failed:\", result);",
+    "        }",
+    "      }).catch((err2) => {",
+    "        console.error(\"[gateway] background start error:\", err2);",
+    "      });",
+    "      return { ok: true, starting: true };"
+  ].join("\n");
+  if (source.includes(blockingStart) && !source.includes("[gateway] background start failed")) {
+    source = source.replace(blockingStart, backgroundStart);
+  }
+  if (source.includes("[gateway] skipping blocking openclaw gateway stop during startup cleanup") && !source.includes("const findCommand = `netstat -ano | findstr :${port} | findstr LISTENING`;")) {
+    source = source.replace(
+      "        console.log(\"[gateway] skipping blocking openclaw gateway stop during startup cleanup\");",
+      [
+        "        console.log(\"[gateway] skipping blocking openclaw gateway stop during startup cleanup\");",
+        "        const findCommand = `netstat -ano | findstr :${port} | findstr LISTENING`;",
+        "        child_process.exec(findCommand, { encoding: \"utf-8\", timeout: 3e3, windowsHide: true }, (err, stdout = \"\") => {",
+        "          if (err || !stdout.trim()) {",
+        "            console.log(`[gateway] port ${port} is free`);",
+        "            resolve(true);",
+        "            return;",
+        "          }",
+        "          const pids = Array.from(new Set(stdout.trim().split(/\\r?\\n/).map((line) => line.trim().split(/\\s+/).pop()).filter((pid) => pid && pid !== \"0\" && /^\\d+$/.test(pid))));",
+        "          if (!pids.length) {",
+        "            resolve(true);",
+        "            return;",
+        "          }",
+        "          let remaining = pids.length;",
+        "          for (const pid of pids) {",
+        "            child_process.exec(`taskkill /f /pid ${pid}`, { timeout: 3e3, windowsHide: true }, () => {",
+        "              console.log(`[gateway] killed process on port ${port} (pid ${pid})`);",
+        "              sendBootPhase(\"cleanup\", \"cleanup\", `Stopped process on port ${port} (PID ${pid})`, 10);",
+        "              remaining--;",
+        "              if (remaining === 0) {",
+        "                setTimeout(() => resolve(true), 500);",
+        "              }",
+        "            });",
+        "          }",
+        "        });",
+        "        return;"
       ].join("\n")
     );
   }
@@ -4360,10 +4447,8 @@ function patchInstalledWeixinPlugin(usbRootPath) {
     return;
   }
   let source = fs.readFileSync(apiPath, "utf8").replace(/\r\n/g, "\n");
-  source = source.replace(
-    "    \"Content-Length\": String(Buffer.byteLength(opts.body, \"utf-8\")),\n",
-    ""
-  );
+  source = source.replace(/^\s*["']Content-Length["']:\s*String\(Buffer\.byteLength\(opts\.body,\s*["']utf-8["']\)\),?\n/gm, "");
+  source = source.replace(/^\s*["']content-length["']:\s*String\(Buffer\.byteLength\(opts\.body,\s*["']utf-8["']\)\),?\n/gm, "");
   if (!source.includes("import https from \"node:https\";")) {
     source = source.replace(
       "import fs from \"node:fs\";\n",
@@ -4443,6 +4528,15 @@ function patchInstalledWeixinPlugin(usbRootPath) {
   if (source.includes(oldCatch) && !source.includes("retrying with node:https")) {
     source = source.replace(oldCatch, newCatch);
   }
+  const headerLine = "  const hdrs = buildHeaders({ token: params.token, body: params.body });";
+  const stripLines = [
+    headerLine,
+    "  delete hdrs[\"Content-Length\"];",
+    "  delete hdrs[\"content-length\"];"
+  ].join("\n");
+  if (source.includes(headerLine) && !source.includes("delete hdrs[\"Content-Length\"]")) {
+    source = source.replace(headerLine, stripLines);
+  }
   fs.writeFileSync(apiPath, source, "utf8");
   console.log(`Patched Weixin plugin fetch fallback: ${apiPath}`);
 }
@@ -4521,6 +4615,7 @@ copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
 patchNonBlockingGatewayStartupCleanup(mainProcessTarget);
 patchGatewayStatusAndPluginDefaults(mainProcessTarget);
+patchResponsiveGatewayStartup(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);

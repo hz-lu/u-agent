@@ -2056,6 +2056,13 @@ function createWindow(gateway) {
     closeSplash();
     mainWindow$1.show();
   });
+  setTimeout(() => {
+    if (mainWindow$1 && !mainWindow$1.isDestroyed() && !mainWindow$1.isVisible()) {
+      console.log("[startup] renderer ready timeout; showing main window and continuing startup in background");
+      closeSplash();
+      mainWindow$1.show();
+    }
+  }, 8e3);
   mainWindow$1.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
     console.error(`Page failed to load: ${errorDesc} (code=${errorCode})`);
     mainWindow$1.show();
@@ -2797,6 +2804,12 @@ function toleratePluginSkillLinkError(target, pathLike, err, createSymlink) {
     }
   } catch {}
   try {
+    if (fs.existsSync(target) && fs.lstatSync(target).isDirectory()) {
+      fs.rmSync(linkPath, { recursive: true, force: true });
+      return true;
+    }
+  } catch {}
+  try {
     fs.rmSync(linkPath, { recursive: true, force: true });
     createSymlink(target, linkPath);
     return true;
@@ -3114,6 +3127,31 @@ function createGatewayManager() {
         command = `lsof -ti:${port} | xargs -I {} sh -c 'ps -p {} -o comm= 2>/dev/null | grep -q "${APP_NAME}" && kill -9 {}' 2>/dev/null || true`;
       } else if (isWin()) {
         console.log("[gateway] skipping blocking openclaw gateway stop during startup cleanup");
+        const findCommand = `netstat -ano | findstr :${port} | findstr LISTENING`;
+        child_process.exec(findCommand, { encoding: "utf-8", timeout: 3e3, windowsHide: true }, (err, stdout = "") => {
+          if (err || !stdout.trim()) {
+            console.log(`[gateway] port ${port} is free`);
+            resolve(true);
+            return;
+          }
+          const pids = Array.from(new Set(stdout.trim().split(/\r?\n/).map((line) => line.trim().split(/\s+/).pop()).filter((pid) => pid && pid !== "0" && /^\d+$/.test(pid))));
+          if (!pids.length) {
+            resolve(true);
+            return;
+          }
+          let remaining = pids.length;
+          for (const pid of pids) {
+            child_process.exec(`taskkill /f /pid ${pid}`, { timeout: 3e3, windowsHide: true }, () => {
+              console.log(`[gateway] killed process on port ${port} (pid ${pid})`);
+              sendBootPhase("cleanup", "cleanup", `Stopped process on port ${port} (PID ${pid})`, 10);
+              remaining--;
+              if (remaining === 0) {
+                setTimeout(() => resolve(true), 500);
+              }
+            });
+          }
+        });
+        return;
         try {
           const netstat = child_process.execSync(`netstat -ano | findstr :${port} | findstr LISTENING`, { encoding: "utf-8", timeout: 3e3 });
           const lines = netstat.trim().split("\n");
@@ -22632,8 +22670,17 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("start-gateway", async () => {
     try {
-      await gateway.startGateway();
-      return { ok: true };
+      if (gateway.isGatewayRunning?.() || gateway.isGatewayReady?.()) {
+        return { ok: true, already: true };
+      }
+      gateway.startGateway().then((result) => {
+        if (!result?.success) {
+          console.error("[gateway] background start failed:", result);
+        }
+      }).catch((err2) => {
+        console.error("[gateway] background start error:", err2);
+      });
+      return { ok: true, starting: true };
     } catch (err) {
       console.error(`启动 Gateway 失败:`, err);
       return { ok: false, error: err.message };

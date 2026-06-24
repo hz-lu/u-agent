@@ -83,7 +83,6 @@ function buildHeaders(opts: { token?: string; body: string }): Record<string, st
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     AuthorizationType: "ilink_bot_token",
-    "Content-Length": String(Buffer.byteLength(opts.body, "utf-8")),
     "X-WECHAT-UIN": randomWechatUin(),
   };
   if (opts.token?.trim()) {
@@ -114,6 +113,8 @@ async function apiFetch(params: {
   const base = ensureTrailingSlash(params.baseUrl);
   const url = new URL(params.endpoint, base);
   const hdrs = buildHeaders({ token: params.token, body: params.body });
+  delete hdrs["Content-Length"];
+  delete hdrs["content-length"];
   logger.debug(`POST ${redactUrl(url.toString())} body=${redactBody(params.body)}`);
 
   const controller = new AbortController();
