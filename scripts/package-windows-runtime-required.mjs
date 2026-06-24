@@ -129,30 +129,40 @@ async function repairOpenClawPackageFromOfflineZip(forbiddenRuntimePaths) {
 
 function repairOpenClawRuntimeTemplates(runtimeRoot) {
   const packageRoot = path.join(runtimeRoot, "node_modules", "openclaw");
-  const target = path.join(packageRoot, "src", "agents", "templates", "AGENTS.md");
-  if (fs.existsSync(target)) return { ok: true, repaired: false, target };
-  const candidates = [
-    path.join(packageRoot, "docs", "reference", "templates", "AGENTS.md"),
-    path.join(packageRoot, "docs", "AGENTS.md")
-  ];
-  const source = candidates.find((file) => fs.existsSync(file));
-  if (!source) {
-    const zip = path.join(runtimeRoot, "openclaw.zip");
+  const targetRoot = path.join(packageRoot, "src", "agents", "templates");
+  const templateNames = ["AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"];
+  const zip = path.join(runtimeRoot, "openclaw.zip");
+  const tarExe = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+  const repaired = [];
+  const missing = [];
+  for (const name of templateNames) {
+    const target = path.join(targetRoot, name);
+    if (fs.existsSync(target)) continue;
+    const candidates = [
+      path.join(packageRoot, "docs", "reference", "templates", name),
+      path.join(packageRoot, "docs", name)
+    ];
+    const source = candidates.find((file) => fs.existsSync(file));
+    if (source) {
+      mkdirp(path.dirname(target));
+      fs.copyFileSync(source, target);
+      repaired.push(name);
+      continue;
+    }
     if (fs.existsSync(zip)) {
-      const tarExe = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
-      const entryName = "node_modules/openclaw/docs/reference/templates/AGENTS.md";
+      const entryName = `node_modules/openclaw/docs/reference/templates/${name}`;
       const extracted = spawnSync(tarExe, ["-xOf", zip, entryName], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
       if (extracted.status === 0 && extracted.stdout) {
         mkdirp(path.dirname(target));
         fs.writeFileSync(target, extracted.stdout, "utf8");
-        return { ok: true, repaired: true, source: `${zip}#${entryName}`, target };
+        repaired.push(name);
+        continue;
       }
     }
-    return { ok: false, repaired: false, target, error: "AGENTS.md template source missing" };
+    missing.push(name);
   }
-  mkdirp(path.dirname(target));
-  fs.copyFileSync(source, target);
-  return { ok: true, repaired: true, source, target };
+  if (missing.length) return { ok: false, repaired: repaired.length > 0, missing, targetRoot, error: `OpenClaw workspace templates missing: ${missing.join(", ")}` };
+  return { ok: true, repaired: repaired.length > 0, targetRoot };
 }
 
 function hasUsableSourceRuntimePath(sourceRoot, runtimeRelPath) {

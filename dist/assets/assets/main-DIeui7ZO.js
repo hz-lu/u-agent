@@ -25581,11 +25581,12 @@ const _sfc_main$9 = {
         const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value };
         window.__uclawHermesChatState = state;
         clearTimeout(window.__uclawHermesChatSaveTimer);
-        localStorage.setItem("uclaw_hermes_chat_state", JSON.stringify(state));
         window.__uclawHermesChatSaveTimer = setTimeout(() => {
-          try { localStorage.setItem("uclaw_hermes_chat_state", JSON.stringify(window.__uclawHermesChatState || state)); } catch {}
-        }, 180);
-        window.dispatchEvent(new CustomEvent("uclaw-hermes-chat-state"));
+          try {
+            localStorage.setItem("uclaw_hermes_chat_state", JSON.stringify(window.__uclawHermesChatState || state));
+            window.dispatchEvent(new CustomEvent("uclaw-hermes-chat-state"));
+          } catch {}
+        }, 450);
       } catch {
       }
     }
@@ -25627,6 +25628,11 @@ const _sfc_main$9 = {
       nextTick(() => scrollToBottom(0));
     }
     function handleHermesChatProgress(payload) {
+      const now = Date.now();
+      const lastPayload = window.__uclawHermesProgressLast || {};
+      const key = `${payload?.mode || ""}:${payload?.sessionId || ""}:${payload?.stage || ""}:${payload?.detail || ""}`;
+      if (lastPayload.key === key && now - (lastPayload.at || 0) < 1500) return;
+      window.__uclawHermesProgressLast = { key, at: now };
       const text = payload?.detail || "";
       if (!text) return;
       if (payload?.mode === "collab" || payload?.sessionId === "openclaw-hermes-collab") {

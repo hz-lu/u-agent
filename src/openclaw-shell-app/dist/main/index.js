@@ -1609,7 +1609,14 @@ class HermesManager {
         mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",
         startedAt: Date.now()
       };
+      let lastProgressKey = "";
+      let lastProgressAt = 0;
       const emitProgress = (stage, detail = "") => {
+        const now = Date.now();
+        const key = stage + "\n" + detail;
+        if (key === lastProgressKey && now - lastProgressAt < 3000) return;
+        lastProgressKey = key;
+        lastProgressAt = now;
         safeSend("hermes-chat-progress", { ...progressBase, stage, detail, at: Date.now() });
       };
       emitProgress("starting", "Hermes 正在准备本地运行环境...");
@@ -2480,32 +2487,41 @@ function copyDirSync(src2, dest) {
 function repairOpenClawRuntimeTemplates(runtimeRoot = RUNTIME_DIR) {
   try {
     const packageRoot = path$1.join(runtimeRoot, "node_modules", "openclaw");
-    const target = path$1.join(packageRoot, "src", "agents", "templates", "AGENTS.md");
-    if (fs$1.existsSync(target)) return { ok: true, repaired: false, target };
-    const candidates = [
-      path$1.join(packageRoot, "docs", "reference", "templates", "AGENTS.md"),
-      path$1.join(packageRoot, "docs", "AGENTS.md")
-    ];
-    const source = candidates.find((file) => fs$1.existsSync(file));
-    if (!source) {
-      const zip = path$1.join(runtimeRoot, "openclaw.zip");
+    const targetRoot = path$1.join(packageRoot, "src", "agents", "templates");
+    const templateNames = ["AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"];
+    const zip = path$1.join(runtimeRoot, "openclaw.zip");
+    const tarExe = process.platform === "win32" ? path$1.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+    const repaired = [];
+    const missing = [];
+    for (const name of templateNames) {
+      const target = path$1.join(targetRoot, name);
+      if (fs$1.existsSync(target)) continue;
+      const candidates = [
+        path$1.join(packageRoot, "docs", "reference", "templates", name),
+        path$1.join(packageRoot, "docs", name)
+      ];
+      const source = candidates.find((file) => fs$1.existsSync(file));
+      if (source) {
+        fs$1.mkdirSync(path$1.dirname(target), { recursive: true });
+        fs$1.copyFileSync(source, target);
+        repaired.push(name);
+        continue;
+      }
       if (fs$1.existsSync(zip)) {
-        const tarExe = process.platform === "win32" ? path$1.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
-        const entryName = "node_modules/openclaw/docs/reference/templates/AGENTS.md";
+        const entryName = "node_modules/openclaw/docs/reference/templates/" + name;
         const extracted = child_process.spawnSync(tarExe, ["-xOf", zip, entryName], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
         if (extracted.status === 0 && extracted.stdout) {
           fs$1.mkdirSync(path$1.dirname(target), { recursive: true });
           fs$1.writeFileSync(target, extracted.stdout, "utf8");
-          console.log("[runtime] Repaired OpenClaw AGENTS template from zip:", target);
-          return { ok: true, repaired: true, source: zip + "#" + entryName, target };
+          repaired.push(name);
+          continue;
         }
       }
-      return { ok: false, repaired: false, target, error: "AGENTS.md template source missing" };
+      missing.push(name);
     }
-    fs$1.mkdirSync(path$1.dirname(target), { recursive: true });
-    fs$1.copyFileSync(source, target);
-    console.log("[runtime] Repaired OpenClaw AGENTS template:", target);
-    return { ok: true, repaired: true, source, target };
+    if (repaired.length) console.log("[runtime] Repaired OpenClaw templates:", repaired.join(", "));
+    if (missing.length) return { ok: false, repaired: repaired.length > 0, missing, targetRoot, error: "OpenClaw workspace templates missing: " + missing.join(", ") };
+    return { ok: true, repaired: repaired.length > 0, targetRoot };
   } catch (err) {
     return { ok: false, repaired: false, error: err instanceof Error ? err.message : String(err) };
   }
