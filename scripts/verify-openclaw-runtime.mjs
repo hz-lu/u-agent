@@ -158,6 +158,7 @@ const missingDistReferences = findMissingDistReferences();
 const missingPackageImports = findMissingPackageImports();
 const cliSmoke = runOpenClawCliSmoke();
 const runtimeErrors = [];
+const runtimeWarnings = [];
 
 if (!openclawCmd) runtimeErrors.push(`Missing OpenClaw command: ${openclawCommandCandidates.join(" or ")}`);
 if (!nodeRuntime) runtimeErrors.push(`Missing bundled Node runtime: ${nodeRuntimeCandidates.join(" or ")}`);
@@ -171,6 +172,16 @@ for (const item of missingDistReferences.slice(0, 20)) {
 }
 if (missingDistReferences.length > 20) {
   runtimeErrors.push(`${missingDistReferences.length - 20} additional missing OpenClaw dist asset references.`);
+}
+for (const item of missingPackageImports.slice(0, 20)) {
+  const examples = item.imports
+    .slice(0, 3)
+    .map((entry) => `${path.relative(runtimeRoot, entry.from)} imports ${entry.specifier}`)
+    .join("; ");
+  runtimeWarnings.push(`OpenClaw optional/static package import "${item.packageName}" is not present under node_modules/openclaw/node_modules (${examples}).`);
+}
+if (missingPackageImports.length > 20) {
+  runtimeWarnings.push(`${missingPackageImports.length - 20} additional OpenClaw static package imports are not present.`);
 }
 if (!cliSmoke.ok) {
   runtimeErrors.push(`OpenClaw Gateway CLI smoke test failed: ${cliSmoke.stderr || cliSmoke.stdout || `exit ${cliSmoke.status}`}`);
@@ -200,7 +211,8 @@ const report = {
     missingDistReferences,
     missingPackageImports,
     cliSmoke,
-    errors: runtimeErrors
+    errors: runtimeErrors,
+    warnings: runtimeWarnings
   },
   gateway: {
     port: config?.gateway?.port || 18789,

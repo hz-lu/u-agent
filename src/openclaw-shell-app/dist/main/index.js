@@ -527,6 +527,12 @@ class HermesManager {
     }
     return path$1.join(root, "venv", "bin", "hermes");
   }
+  getHermesCommand(args = []) {
+    if (process.platform === "win32") {
+      return { command: this.getPortablePython(), args: ["-m", "hermes_cli.main", ...args] };
+    }
+    return { command: this.getHermesBin(), args };
+  }
   getPortablePython() {
     const root = this.getPortableRoot();
     const exact = path$1.join(root, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
@@ -550,6 +556,8 @@ class HermesManager {
     const data = this.getHermesDataRoot();
     const home = path$1.join(data, "home");
     const venvScripts = path$1.join(root, "venv", "Scripts");
+    const venvSitePackages = path$1.join(root, "venv", "Lib", "site-packages");
+    const sourceRoot = path$1.join(root, "hermes-agent");
     const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : path$1.join(root, "node");
     const pythonDir = path$1.dirname(this.getPortablePython());
     for (const dir of [data, home, path$1.join(data, "config"), path$1.join(data, "cache"), path$1.join(data, "logs"), path$1.join(data, "memories"), path$1.join(data, "skills"), path$1.join(data, "tmp")]) {
@@ -571,6 +579,7 @@ class HermesManager {
       HERMES_BROWSER_OPENED: "1",
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
+      PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path$1.delimiter),
       [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path$1.delimiter)
     };
   }
@@ -1193,7 +1202,7 @@ class HermesManager {
     this.model = typeof options.model === "string" && options.model.trim() ? options.model.trim() : this.model;
     this.lastError = "";
     this.stopping = false;
-    const launchPython = fs$1.existsSync(python) ? python : this.getPortablePython();
+    const launchPython = this.getPortablePython();
     try {
       if (!(await this.checkTcpPort(17520))) {
         this.emitLog("system", "[hermes-portable] config server launch request\nroot=" + root + "\ncwd=" + root + "\npython=" + launchPython + "\nscript=" + configServer + "\nlogs=" + this.getHermesLogsRoot());
@@ -1314,16 +1323,16 @@ class HermesManager {
   spawnHermes(args, label, envPatch = {}) {
     const root = this.getPortableRoot();
     const defaultEnvPatch = label === "dashboard" ? { HERMES_WEB_DIST: path$1.join(root, "hermes-agent", "hermes_cli", "web_dist") } : {};
-    const hermesBin = this.getHermesBin();
-    if (!fs$1.existsSync(hermesBin)) {
+    const hermesCommand = this.getHermesCommand(args);
+    if (!fs$1.existsSync(hermesCommand.command)) {
       this.status = "error";
-      this.lastError = "Hermes CLI not found: " + hermesBin;
+      this.lastError = "Hermes CLI runtime not found: " + hermesCommand.command;
       this.emitLog("error", "[hermes-portable] " + this.lastError + "\nroot=" + root);
       this.emitStatus();
       return null;
     }
-    this.emitLog("system", "[hermes-portable] " + label + " launch request\nroot=" + root + "\ncwd=" + root + "\ncommand=" + hermesBin + " " + args.join(" ") + "\nlogs=" + this.getHermesLogsRoot());
-    const proc = child_process.spawn(hermesBin, args, {
+    this.emitLog("system", "[hermes-portable] " + label + " launch request\nroot=" + root + "\ncwd=" + root + "\ncommand=" + hermesCommand.command + " " + hermesCommand.args.join(" ") + "\nlogs=" + this.getHermesLogsRoot());
+    const proc = child_process.spawn(hermesCommand.command, hermesCommand.args, {
       cwd: root,
       env: { ...this.getHermesEnv(), ...defaultEnvPatch, ...envPatch },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1367,10 +1376,10 @@ class HermesManager {
     });
   }
   async stopHermesDashboard() {
-    const hermesBin = this.getHermesBin();
-    if (!fs$1.existsSync(hermesBin)) return;
+    const hermesCommand = this.getHermesCommand(["dashboard", "--stop"]);
+    if (!fs$1.existsSync(hermesCommand.command)) return;
     try {
-      child_process.execFileSync(hermesBin, ["dashboard", "--stop"], {
+      child_process.execFileSync(hermesCommand.command, hermesCommand.args, {
         cwd: this.getPortableRoot(),
         env: { ...this.getHermesEnv(), HERMES_WEB_DIST: path$1.join(this.getPortableRoot(), "hermes-agent", "hermes_cli", "web_dist") },
         encoding: "utf8",
@@ -1498,9 +1507,9 @@ class HermesManager {
       }
       return { ok: false, error: "Skill 安装失败：" + (result.error || "未知错误") };
     }
-    const hermesBin = this.getHermesBin();
-    if (!fs$1.existsSync(hermesBin)) {
-      return { ok: false, error: "Hermes CLI not found: " + hermesBin };
+    const hermesCommand = this.getHermesCommand([]);
+    if (!fs$1.existsSync(hermesCommand.command)) {
+      return { ok: false, error: "Hermes CLI runtime not found: " + hermesCommand.command };
     }
     function readJsonSafe(filePath) {
       try {
@@ -1582,9 +1591,10 @@ class HermesManager {
       env2.DEEPSEEK_BASE_URL = baseUrl;
       env2.KIMI_CN_BASE_URL = baseUrl;
     }
-    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + hermesBin + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
+    const chatCommand = this.getHermesCommand(args);
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " " + chatCommand.args.join(" ") + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
     return await new Promise((resolve) => {
-      const child = child_process.spawn(hermesBin, args, {
+      const child = child_process.spawn(chatCommand.command, chatCommand.args, {
         cwd: path$1.join(getAppRoot(), "data", ".hermes"),
         env: env2,
         stdio: ["ignore", "pipe", "pipe"],

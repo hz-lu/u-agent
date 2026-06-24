@@ -1065,6 +1065,84 @@ function patchHermesRuntimeEnv(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesPortablePythonLaunch(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  const commandMethod = [
+    "  getHermesCommand(args = []) {",
+    "    if (process.platform === \"win32\") {",
+    "      return { command: this.getPortablePython(), args: [\"-m\", \"hermes_cli.main\", ...args] };",
+    "    }",
+    "    return { command: this.getHermesBin(), args };",
+    "  }",
+    ""
+  ].join("\n");
+  if (!source.includes("getHermesCommand(args = [])")) {
+    const anchor = "  getPortablePython() {\n";
+    if (!source.includes(anchor)) throw new Error("Could not find Hermes getPortablePython insertion point.");
+    source = source.replace(anchor, commandMethod + anchor);
+  }
+
+  source = source.replace(
+    "    const venvScripts = path$1.join(root, \"venv\", \"Scripts\");\n    const nodeDir = fs$1.existsSync(path$1.join(root, \"node-windows-x64\")) ? path$1.join(root, \"node-windows-x64\") : path$1.join(root, \"node\");",
+    "    const venvScripts = path$1.join(root, \"venv\", \"Scripts\");\n    const venvSitePackages = path$1.join(root, \"venv\", \"Lib\", \"site-packages\");\n    const sourceRoot = path$1.join(root, \"hermes-agent\");\n    const nodeDir = fs$1.existsSync(path$1.join(root, \"node-windows-x64\")) ? path$1.join(root, \"node-windows-x64\") : path$1.join(root, \"node\");"
+  );
+  source = source.replace(
+    "      PYTHONUTF8: \"1\",\n      [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || \"\"].filter(Boolean).join(path$1.delimiter)",
+    "      PYTHONUTF8: \"1\",\n      PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || \"\"].filter(Boolean).join(path$1.delimiter),\n      [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || \"\"].filter(Boolean).join(path$1.delimiter)"
+  );
+  source = source.replace(
+    "    const launchPython = fs$1.existsSync(python) ? python : this.getPortablePython();",
+    "    const launchPython = this.getPortablePython();"
+  );
+
+  const spawnAnchor = [
+    "  spawnHermes(args, label, envPatch = {}) {",
+    "    const root = this.getPortableRoot();",
+    "    const defaultEnvPatch = label === \"dashboard\" ? { HERMES_WEB_DIST: path$1.join(root, \"hermes-agent\", \"hermes_cli\", \"web_dist\") } : {};",
+    "    const hermesBin = this.getHermesBin();",
+    "    if (!fs$1.existsSync(hermesBin)) {",
+    "      this.status = \"error\";",
+    "      this.lastError = \"Hermes CLI not found: \" + hermesBin;",
+    "      this.emitLog(\"error\", \"[hermes-portable] \" + this.lastError + \"\\nroot=\" + root);",
+    "      this.emitStatus();",
+    "      return null;",
+    "    }",
+    "    this.emitLog(\"system\", \"[hermes-portable] \" + label + \" launch request\\nroot=\" + root + \"\\ncwd=\" + root + \"\\ncommand=\" + hermesBin + \" \" + args.join(\" \") + \"\\nlogs=\" + this.getHermesLogsRoot());",
+    "    const proc = child_process.spawn(hermesBin, args, {"
+  ].join("\n");
+  const spawnReplacement = [
+    "  spawnHermes(args, label, envPatch = {}) {",
+    "    const root = this.getPortableRoot();",
+    "    const defaultEnvPatch = label === \"dashboard\" ? { HERMES_WEB_DIST: path$1.join(root, \"hermes-agent\", \"hermes_cli\", \"web_dist\") } : {};",
+    "    const hermesCommand = this.getHermesCommand(args);",
+    "    if (!fs$1.existsSync(hermesCommand.command)) {",
+    "      this.status = \"error\";",
+    "      this.lastError = \"Hermes CLI runtime not found: \" + hermesCommand.command;",
+    "      this.emitLog(\"error\", \"[hermes-portable] \" + this.lastError + \"\\nroot=\" + root);",
+    "      this.emitStatus();",
+    "      return null;",
+    "    }",
+    "    this.emitLog(\"system\", \"[hermes-portable] \" + label + \" launch request\\nroot=\" + root + \"\\ncwd=\" + root + \"\\ncommand=\" + hermesCommand.command + \" \" + hermesCommand.args.join(\" \") + \"\\nlogs=\" + this.getHermesLogsRoot());",
+    "    const proc = child_process.spawn(hermesCommand.command, hermesCommand.args, {"
+  ].join("\n");
+  if (source.includes(spawnAnchor)) source = source.replace(spawnAnchor, spawnReplacement);
+
+  source = source.replace(
+    "    const hermesBin = this.getHermesBin();\n    if (!fs$1.existsSync(hermesBin)) return;\n    try {\n      child_process.execFileSync(hermesBin, [\"dashboard\", \"--stop\"], {",
+    "    const hermesCommand = this.getHermesCommand([\"dashboard\", \"--stop\"]);\n    if (!fs$1.existsSync(hermesCommand.command)) return;\n    try {\n      child_process.execFileSync(hermesCommand.command, hermesCommand.args, {"
+  );
+  source = source.replace(
+    "    const hermesBin = this.getHermesBin();\n    if (!fs$1.existsSync(hermesBin)) {\n      return { ok: false, error: \"Hermes CLI not found: \" + hermesBin };\n    }",
+    "    const hermesCommand = this.getHermesCommand([]);\n    if (!fs$1.existsSync(hermesCommand.command)) {\n      return { ok: false, error: \"Hermes CLI runtime not found: \" + hermesCommand.command };\n    }"
+  );
+  source = source.replace(
+    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(hermesBin, args, {",
+    "    const chatCommand = this.getHermesCommand(args);\n    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + chatCommand.command + \" \" + chatCommand.args.join(\" \") + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(chatCommand.command, chatCommand.args, {"
+  );
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchMainProcessStability(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
 
@@ -3977,6 +4055,7 @@ const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
+patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);

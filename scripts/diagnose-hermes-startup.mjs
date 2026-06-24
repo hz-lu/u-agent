@@ -13,6 +13,25 @@ const hermesExe = path.join(hermesRoot, "venv", "Scripts", "hermes.exe");
 const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
 const configServer = path.join(hermesRoot, "lib", "config_server.py");
 
+function findPortablePython() {
+  const exact = path.join(hermesRoot, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
+  if (fs.existsSync(exact)) return exact;
+  const pyRoot = path.join(hermesRoot, "python");
+  const stack = [pyRoot];
+  while (stack.length) {
+    const dir = stack.pop();
+    if (!dir || !fs.existsSync(dir)) continue;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
+    }
+  }
+  return pythonExe;
+}
+
+const portablePython = findPortablePython();
+
 fs.mkdirSync(logsRoot, { recursive: true });
 
 function appendLog(line) {
@@ -28,6 +47,8 @@ function buildHermesEnv() {
     fs.mkdirSync(dir, { recursive: true });
   }
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
+  const venvSitePackages = path.join(hermesRoot, "venv", "Lib", "site-packages");
+  const sourceRoot = path.join(hermesRoot, "hermes-agent");
   return {
     ...process.env,
     HOME: home,
@@ -41,12 +62,13 @@ function buildHermesEnv() {
     HERMES_BROWSER_OPENED: "1",
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
+    PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     TMP: temp,
     TEMP: temp,
     [pathKey]: [
       path.join(hermesRoot, "venv", "Scripts"),
       path.join(hermesRoot, "node"),
-      path.dirname(pythonExe),
+      path.dirname(portablePython),
       process.env[pathKey] || ""
     ].filter(Boolean).join(path.delimiter)
   };
@@ -73,12 +95,12 @@ function runShort(command, args, cwd = hermesRoot) {
 }
 
 function startConfigProbe() {
-  if (!fs.existsSync(pythonExe) || !fs.existsSync(configServer)) {
+  if (!fs.existsSync(portablePython) || !fs.existsSync(configServer)) {
     return Promise.resolve({ ok: false, error: "missing python.exe or config_server.py" });
   }
-  appendLog(`spawn config server ${pythonExe} ${configServer}`);
+  appendLog(`spawn config server ${portablePython} ${configServer}`);
   return new Promise((resolve) => {
-    const child = spawn(pythonExe, [configServer], {
+    const child = spawn(portablePython, [configServer], {
       cwd: hermesRoot,
       env: buildHermesEnv(),
       stdio: ["ignore", "pipe", "pipe"],
@@ -127,11 +149,12 @@ const report = {
   files: {
     hermesExe: fs.existsSync(hermesExe),
     pythonExe: fs.existsSync(pythonExe),
+    portablePython: fs.existsSync(portablePython),
     configServer: fs.existsSync(configServer)
   },
   versions: {
-    python: runShort(pythonExe, ["--version"]),
-    hermes: runShort(hermesExe, ["--version"])
+    python: runShort(portablePython, ["--version"]),
+    hermes: runShort(portablePython, ["-m", "hermes_cli.main", "--version"])
   },
   configProbe: await startConfigProbe()
 };
@@ -141,6 +164,6 @@ console.log(JSON.stringify(report, null, 2));
 console.log(`Hermes startup diagnose report: ${reportPath}`);
 console.log(`Hermes startup diagnose log: ${launcherLog}`);
 
-if (!report.files.hermesExe || !report.files.pythonExe || !report.files.configServer || !report.versions.python.ok || !report.versions.hermes.ok || !report.configProbe.ok) {
+if (!report.files.portablePython || !report.files.configServer || !report.versions.python.ok || !report.versions.hermes.ok || !report.configProbe.ok) {
   process.exitCode = 1;
 }
