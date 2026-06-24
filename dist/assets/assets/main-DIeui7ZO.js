@@ -24175,7 +24175,10 @@ const _sfc_main$f = {
   },
   setup(__props) {
     const props = __props;
-    const expanded = /* @__PURE__ */ ref(false);
+    const expanded = /* @__PURE__ */ ref(props.tool.status === "running" || props.tool.status === "pending");
+    watch(() => props.tool.status, (status) => {
+      expanded.value = status === "running" || status === "pending";
+    }, { immediate: true });
     const statusText = computed(() => {
       switch (props.tool.status) {
         case "error":
@@ -25638,42 +25641,58 @@ const _sfc_main$9 = {
       if (!text) return;
       if (payload?.mode === "collab" || payload?.sessionId === "openclaw-hermes-collab") {
         collabRunState.value = text;
-        appendCollabProgress(text, payload?.stage);
       } else {
         hermesRunState.value = text;
-        appendHermesProgress(text, payload?.stage);
+        upsertHermesProgress(text, payload?.stage, "running");
       }
       saveHermesSession();
     }
-    function appendHermesProgress(content, stage = "") {
+    function upsertHermesProgress(content, stage = "", status = "running") {
       const now = Date.now();
       const last = window.__uclawHermesProgressMessage || {};
       const key = `${stage}:${content}`;
       if (last.key === key && now - (last.at || 0) < 6e3) return;
       window.__uclawHermesProgressMessage = { key, at: now };
-      hermesMessages.value = [...hermesMessages.value, {
-        id: `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,
+      const id = window.__uclawHermesActiveProgressId || `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;
+      window.__uclawHermesActiveProgressId = id;
+      const lines = Array.isArray(window.__uclawHermesProgressLines) ? window.__uclawHermesProgressLines : [];
+      if (content && lines[lines.length - 1] !== content) lines.push(content);
+      window.__uclawHermesProgressLines = lines.slice(-20);
+      const output = window.__uclawHermesProgressLines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
+      const progressMessage = {
+        id,
         role: "assistant",
-        content,
-        model: "Hermes 执行过程",
+        content: "",
+        model: "Hermes Agent",
         timestamp: now,
-        status: "done"
-      }];
+        status,
+        tools: [{
+          id: `${id}-tool`,
+          name: "Hermes 执行过程",
+          input: stage ? { stage } : null,
+          output,
+          status: status === "error" ? "error" : status === "done" ? "ok" : "running",
+          time: now
+        }]
+      };
+      const existingIndex = hermesMessages.value.findIndex((m) => m.id === id);
+      if (existingIndex >= 0) {
+        const next = hermesMessages.value.slice();
+        next[existingIndex] = { ...next[existingIndex], ...progressMessage };
+        hermesMessages.value = next;
+      } else {
+        hermesMessages.value = [...hermesMessages.value, progressMessage];
+      }
     }
-    function appendCollabProgress(content, stage = "") {
-      const now = Date.now();
-      const last = window.__uclawCollabProgressMessage || {};
-      const key = `${stage}:${content}`;
-      if (last.key === key && now - (last.at || 0) < 6e3) return;
-      window.__uclawCollabProgressMessage = { key, at: now };
-      collabMessages.value = [...collabMessages.value, {
-        id: `collab-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,
-        role: "assistant",
-        content,
-        model: "协同执行过程",
-        timestamp: now,
-        status: "done"
-      }];
+    function finishHermesProgress(status = "done") {
+      const id = window.__uclawHermesActiveProgressId;
+      if (!id) return;
+      const existing = hermesMessages.value.find((m) => m.id === id);
+      if (existing?.tools?.length) {
+        upsertHermesProgress(status === "error" ? "Hermes 执行结束：失败。" : "Hermes 执行结束：完成。", "finished", status);
+      }
+      window.__uclawHermesActiveProgressId = null;
+      window.__uclawHermesProgressLines = [];
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
@@ -25765,6 +25784,8 @@ const _sfc_main$9 = {
       };
       hermesMessages.value = [...hermesMessages.value, userMessage];
       hermesSending.value = true;
+      window.__uclawHermesActiveProgressId = `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;
+      window.__uclawHermesProgressLines = [];
       hermesRunState.value = "Hermes 正在调用模型，切换页面不会中断显示记录。";
       saveHermesSession();
       scrollToBottom();
@@ -25787,6 +25808,7 @@ const _sfc_main$9 = {
           ...getSelectedHermesModel()
         });
         const ok = result?.ok !== false;
+        finishHermesProgress(ok ? "done" : "error");
         hermesMessages.value = [...hermesMessages.value, {
           id: `hermes-assistant-${Date.now()}`,
           role: "assistant",
@@ -25797,6 +25819,7 @@ const _sfc_main$9 = {
         }];
         hermesRunState.value = ok ? "Hermes 已完成回复。" : "Hermes 暂时无法完成请求。";
       } catch (e) {
+        finishHermesProgress("error");
         hermesMessages.value = [...hermesMessages.value, {
           id: `hermes-error-${Date.now()}`,
           role: "assistant",

@@ -245,6 +245,20 @@ class WechatManager extends EventEmitter {
       else fs$1.copyFileSync(s, d);
     }
   }
+  _cleanupOnlineInstallProject() {
+    try {
+      const projectsRoot = path$1.join(this.dataDir, ".openclaw", "npm", "projects");
+      if (!fs$1.existsSync(projectsRoot)) return;
+      for (const entry of fs$1.readdirSync(projectsRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !entry.name.includes("tencent-weixin-openclaw-weixin")) continue;
+        const full = path$1.join(projectsRoot, entry.name);
+        this.emit("log", `[repair] 清理旧微信插件安装缓存: ${full}`);
+        fs$1.rmSync(full, { recursive: true, force: true });
+      }
+    } catch (err) {
+      this.emit("log", `[warn] 清理微信插件安装缓存失败: ${err?.message || err}`);
+    }
+  }
   /** Online install via `openclaw plugins install` */
   _installOnline(extDir, isUpdate) {
     return new Promise((resolve) => {
@@ -267,15 +281,16 @@ class WechatManager extends EventEmitter {
           }
         }
       }
+      this._cleanupOnlineInstallProject();
       let proc;
       if (isWin2) {
-        proc = child_process.spawn(`"${bin}" plugins install "${PLUGIN_SPEC$1}@latest"`, [], {
+        proc = child_process.spawn(`"${bin}" plugins install "${PLUGIN_SPEC$1}@latest" --force`, [], {
           env: this._getEnv(),
           stdio: ["ignore", "pipe", "pipe"],
           shell: true
         });
       } else {
-        proc = child_process.spawn(bin, ["plugins", "install", `${PLUGIN_SPEC$1}@latest`], {
+        proc = child_process.spawn(bin, ["plugins", "install", `${PLUGIN_SPEC$1}@latest`, "--force"], {
           env: this._getEnv(),
           stdio: ["ignore", "pipe", "pipe"],
           shell: true

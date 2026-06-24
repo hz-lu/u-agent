@@ -175,6 +175,41 @@ function patchHermesRuntimeEnv(filePath) {
     "      OPENCLAW_HOME: this.dataDir,\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`",
     "      OPENCLAW_HOME: this.dataDir,\n      OPENCLAW_STATE_DIR: path$1.join(this.dataDir, \".openclaw\"),\n      OPENCLAW_CONFIG: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      OPENCLAW_CONFIG_PATH: path$1.join(this.dataDir, \".openclaw\", \"openclaw.json\"),\n      PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`"
   );
+  if (!source.includes("  _cleanupOnlineInstallProject() {")) {
+    source = source.replace(
+      "  /** Online install via `openclaw plugins install` */\n  _installOnline(extDir, isUpdate) {",
+      [
+        "  _cleanupOnlineInstallProject() {",
+        "    try {",
+        "      const projectsRoot = path$1.join(this.dataDir, \".openclaw\", \"npm\", \"projects\");",
+        "      if (!fs$1.existsSync(projectsRoot)) return;",
+        "      for (const entry of fs$1.readdirSync(projectsRoot, { withFileTypes: true })) {",
+        "        if (!entry.isDirectory() || !entry.name.includes(\"tencent-weixin-openclaw-weixin\")) continue;",
+        "        const full = path$1.join(projectsRoot, entry.name);",
+        "        this.emit(\"log\", `[repair] 清理旧微信插件安装缓存: ${full}`);",
+        "        fs$1.rmSync(full, { recursive: true, force: true });",
+        "      }",
+        "    } catch (err) {",
+        "      this.emit(\"log\", `[warn] 清理微信插件安装缓存失败: ${err?.message || err}`);",
+        "    }",
+        "  }",
+        "  /** Online install via `openclaw plugins install` */",
+        "  _installOnline(extDir, isUpdate) {"
+      ].join("\n")
+    );
+  }
+  source = source.replace(
+    "      let proc;\n      if (isWin2) {",
+    "      this._cleanupOnlineInstallProject?.();\n      let proc;\n      if (isWin2) {"
+  );
+  source = source.replace(
+    'child_process.spawn(`"${bin}" plugins install "${PLUGIN_SPEC$1}@latest"`, [], {',
+    'child_process.spawn(`"${bin}" plugins install "${PLUGIN_SPEC$1}@latest" --force`, [], {'
+  );
+  source = source.replace(
+    'child_process.spawn(bin, ["plugins", "install", `${PLUGIN_SPEC$1}@latest`], {',
+    'child_process.spawn(bin, ["plugins", "install", `${PLUGIN_SPEC$1}@latest`, "--force"], {'
+  );
   source = source.replace(
     "      const accountsFile = path$1.join(this.dataDir, \"openclaw-weixin\", \"accounts.json\");",
     "      const accountsFile = path$1.join(this.dataDir, \".openclaw\", \"openclaw-weixin\", \"accounts.json\");"
@@ -2484,7 +2519,14 @@ function patchHermesSkillManagement(filePath) {
 
 function patchHermesAiChat(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
-  if (source.includes("agent-mode-switch")) return;
+  source = source.replace(
+    "    const expanded = /* @__PURE__ */ ref(false);\n    const statusText = computed(() => {",
+    "    const expanded = /* @__PURE__ */ ref(props.tool.status === \"running\" || props.tool.status === \"pending\");\n    watch(() => props.tool.status, (status) => {\n      expanded.value = status === \"running\" || status === \"pending\";\n    }, { immediate: true });\n    const statusText = computed(() => {"
+  );
+  if (source.includes("agent-mode-switch")) {
+    fs.writeFileSync(filePath, source, "utf8");
+    return;
+  }
 
   const refsAnchor = [
     "    const chatInputRef = /* @__PURE__ */ ref(null);",
@@ -3257,51 +3299,79 @@ function patchHermesAiChat(filePath) {
     'agentMode.value === "collab" ? store.isReady ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"',
     'agentMode.value === "collab" ? gatewayAvailable.value ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"'
   );
-  if (!source.includes("function appendHermesProgress(content")) {
+  if (!source.includes("function upsertHermesProgress(content")) {
     source = source.replace(
       "        collabRunState.value = text;\n      } else {\n        hermesRunState.value = text;\n      }\n      saveHermesSession();\n    }",
       [
         "        collabRunState.value = text;",
-        "        appendCollabProgress(text, payload?.stage);",
         "      } else {",
         "        hermesRunState.value = text;",
-        "        appendHermesProgress(text, payload?.stage);",
+        "        upsertHermesProgress(text, payload?.stage, \"running\");",
         "      }",
         "      saveHermesSession();",
         "    }",
-        "    function appendHermesProgress(content, stage = \"\") {",
+        "    function upsertHermesProgress(content, stage = \"\", status = \"running\") {",
         "      const now = Date.now();",
         "      const last = window.__uclawHermesProgressMessage || {};",
         "      const key = `${stage}:${content}`;",
         "      if (last.key === key && now - (last.at || 0) < 6e3) return;",
         "      window.__uclawHermesProgressMessage = { key, at: now };",
-        "      hermesMessages.value = [...hermesMessages.value, {",
-        "        id: `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,",
+        "      const id = window.__uclawHermesActiveProgressId || `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;",
+        "      window.__uclawHermesActiveProgressId = id;",
+        "      const lines = Array.isArray(window.__uclawHermesProgressLines) ? window.__uclawHermesProgressLines : [];",
+        "      if (content && lines[lines.length - 1] !== content) lines.push(content);",
+        "      window.__uclawHermesProgressLines = lines.slice(-20);",
+        "      const output = window.__uclawHermesProgressLines.map((line, idx) => `${idx + 1}. ${line}`).join(\"\\n\");",
+        "      const progressMessage = {",
+        "        id,",
         "        role: \"assistant\",",
-        "        content,",
-        "        model: \"Hermes 执行过程\",",
+        "        content: \"\",",
+        "        model: \"Hermes Agent\",",
         "        timestamp: now,",
-        "        status: \"done\"",
-        "      }];",
+        "        status,",
+        "        tools: [{",
+        "          id: `${id}-tool`,",
+        "          name: \"Hermes 执行过程\",",
+        "          input: stage ? { stage } : null,",
+        "          output,",
+        "          status: status === \"error\" ? \"error\" : status === \"done\" ? \"ok\" : \"running\",",
+        "          time: now",
+        "        }]",
+        "      };",
+        "      const existingIndex = hermesMessages.value.findIndex((m) => m.id === id);",
+        "      if (existingIndex >= 0) {",
+        "        const next = hermesMessages.value.slice();",
+        "        next[existingIndex] = { ...next[existingIndex], ...progressMessage };",
+        "        hermesMessages.value = next;",
+        "      } else {",
+        "        hermesMessages.value = [...hermesMessages.value, progressMessage];",
+        "      }",
         "    }",
-        "    function appendCollabProgress(content, stage = \"\") {",
-        "      const now = Date.now();",
-        "      const last = window.__uclawCollabProgressMessage || {};",
-        "      const key = `${stage}:${content}`;",
-        "      if (last.key === key && now - (last.at || 0) < 6e3) return;",
-        "      window.__uclawCollabProgressMessage = { key, at: now };",
-        "      collabMessages.value = [...collabMessages.value, {",
-        "        id: `collab-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,",
-        "        role: \"assistant\",",
-        "        content,",
-        "        model: \"协同执行过程\",",
-        "        timestamp: now,",
-        "        status: \"done\"",
-        "      }];",
+        "    function finishHermesProgress(status = \"done\") {",
+        "      const id = window.__uclawHermesActiveProgressId;",
+        "      if (!id) return;",
+        "      const existing = hermesMessages.value.find((m) => m.id === id);",
+        "      if (existing?.tools?.length) {",
+        "        upsertHermesProgress(status === \"error\" ? \"Hermes 执行结束：失败。\" : \"Hermes 执行结束：完成。\", \"finished\", status);",
+        "      }",
+        "      window.__uclawHermesActiveProgressId = null;",
+        "      window.__uclawHermesProgressLines = [];",
         "    }"
       ].join("\n")
     );
   }
+  source = source.replace(
+    "      hermesSending.value = true;\n      hermesRunState.value = \"Hermes 正在调用模型，切换页面不会中断显示记录。\";",
+    "      hermesSending.value = true;\n      window.__uclawHermesActiveProgressId = `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;\n      window.__uclawHermesProgressLines = [];\n      hermesRunState.value = \"Hermes 正在调用模型，切换页面不会中断显示记录。\";"
+  );
+  source = source.replace(
+    "        const ok = result?.ok !== false;\n        hermesMessages.value = [...hermesMessages.value, {",
+    "        const ok = result?.ok !== false;\n        finishHermesProgress(ok ? \"done\" : \"error\");\n        hermesMessages.value = [...hermesMessages.value, {"
+  );
+  source = source.replace(
+    "      } catch (e) {\n        hermesMessages.value = [...hermesMessages.value, {",
+    "      } catch (e) {\n        finishHermesProgress(\"error\");\n        hermesMessages.value = [...hermesMessages.value, {"
+  );
 
   fs.writeFileSync(filePath, source, "utf8");
 }
