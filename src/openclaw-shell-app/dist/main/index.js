@@ -2771,20 +2771,60 @@ dns.lookup = function(hostname, options, cb) {
   }
   origLookup.apply(this, arguments);
 };
+function toleratePluginSkillLinkError(target, pathLike, err, createSymlink) {
+  const linkPath = String(pathLike || '');
+  if (process.platform !== 'win32' || !err || !['EISDIR', 'EEXIST', 'EPERM'].includes(err.code) || !linkPath.includes('plugin-skills')) return false;
+  try {
+    if (fs.existsSync(linkPath) && fs.realpathSync(target) === fs.realpathSync(linkPath)) return true;
+  } catch {}
+  try {
+    fs.rmSync(linkPath, { recursive: true, force: true });
+    createSymlink(target, linkPath);
+    return true;
+  } catch {}
+  try {
+    fs.mkdirSync(linkPath, { recursive: true });
+  } catch {}
+  return true;
+}
 const origSymlinkSync = fs.symlinkSync;
 fs.symlinkSync = function(target, pathLike, type) {
   try {
     return origSymlinkSync.apply(this, arguments);
   } catch (err) {
-    const linkPath = String(pathLike || '');
-    if (process.platform === 'win32' && err && err.code === 'EISDIR' && linkPath.includes('plugin-skills')) {
-      try {
-        if (fs.realpathSync(target) === fs.realpathSync(linkPath)) return undefined;
-      } catch {}
-    }
+    if (toleratePluginSkillLinkError(target, pathLike, err, (t, p) => origSymlinkSync.call(fs, t, p, 'junction'))) return undefined;
     throw err;
   }
 };
+const origSymlink = fs.symlink;
+fs.symlink = function(target, pathLike, type, cb) {
+  if (typeof type === 'function') {
+    cb = type;
+    type = undefined;
+  }
+  return origSymlink.call(this, target, pathLike, type, (err) => {
+    if (err) {
+      if (toleratePluginSkillLinkError(target, pathLike, err, (t, p) => origSymlinkSync.call(fs, t, p, 'junction'))) {
+        if (typeof cb === 'function') cb(null);
+        return;
+      }
+      if (typeof cb === 'function') cb(err);
+      return;
+    }
+    if (typeof cb === 'function') cb(null);
+  });
+};
+const origSymlinkPromise = fs.promises && fs.promises.symlink;
+if (origSymlinkPromise) {
+  fs.promises.symlink = async function(target, pathLike, type) {
+    try {
+      return await origSymlinkPromise.call(this, target, pathLike, type);
+    } catch (err) {
+      if (toleratePluginSkillLinkError(target, pathLike, err, (t, p) => origSymlinkSync.call(fs, t, p, 'junction'))) return undefined;
+      throw err;
+    }
+  };
+}
 `;
   try {
     if (!fs$1.existsSync(hookPath) || fs$1.readFileSync(hookPath, "utf8") !== content) {
@@ -2841,8 +2881,14 @@ function normalizeOpenClawPluginSkillLinks() {
       if (shouldCreate) fs$1.rmSync(browserSkill, { recursive: true, force: true });
     }
     if (shouldCreate) {
-      fs$1.symlinkSync(browserSkillTarget, browserSkill, process.platform === "win32" ? "junction" : "dir");
-      console.log("[portable] prepared plugin skill link: " + browserSkill + " -> " + browserSkillTarget);
+      try {
+        fs$1.symlinkSync(browserSkillTarget, browserSkill, process.platform === "win32" ? "junction" : "dir");
+        console.log("[portable] prepared plugin skill link: " + browserSkill + " -> " + browserSkillTarget);
+      } catch (linkErr) {
+        fs$1.rmSync(browserSkill, { recursive: true, force: true });
+        fs$1.cpSync(browserSkillTarget, browserSkill, { recursive: true, force: true });
+        console.log("[portable] copied plugin skill for non-NTFS USB: " + browserSkill);
+      }
     }
   } catch (err) {
     console.warn("[portable] failed to normalize OpenClaw plugin skill links:", err instanceof Error ? err.message : String(err));

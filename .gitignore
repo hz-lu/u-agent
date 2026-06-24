@@ -31,6 +31,10 @@ src/runtime/
 !/skills/.gitkeep
 /extensions/*
 !/extensions/.gitkeep
+!/extensions/openclaw-weixin/
+!/extensions/openclaw-weixin/**
+!/extensions/openclaw-weixin/node_modules/
+!/extensions/openclaw-weixin/node_modules/**
 /release/
 /backups/
 
