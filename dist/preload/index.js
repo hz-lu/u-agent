@@ -22,6 +22,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcStartGateway: () => electron.ipcRenderer.invoke("start-gateway"),
   ipcStopGateway: () => electron.ipcRenderer.invoke("stop-gateway"),
   ipcRestartGateway: () => electron.ipcRenderer.invoke("restart-gateway"),
+  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke("gateway-status-read"),
   // Gateway boot phase listener
   onGatewayBootPhase: (callback) => electron.ipcRenderer.on("gateway-boot-phase", (_, data) => callback(data)),
   offGatewayBootPhase: (callback) => electron.ipcRenderer.removeListener("gateway-boot-phase", callback),

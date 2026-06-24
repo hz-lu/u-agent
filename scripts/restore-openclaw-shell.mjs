@@ -1686,6 +1686,14 @@ function patchHermesPreload(filePath) {
     "  ipcOnWeChatQrUrl: (callback) => electron.ipcRenderer.on(\"wechat-qr-url\", (_, url) => callback(url)),\n  ipcOnWeChatQrText: (callback) => electron.ipcRenderer.on(\"wechat-qr-text\", (_, text) => callback(text)),"
   );
   source = source.replace(
+    "  ipcRestartGateway: () => electron.ipcRenderer.invoke(\"restart-gateway\"),",
+    "  ipcRestartGateway: () => electron.ipcRenderer.invoke(\"restart-gateway\"),\n  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke(\"gateway-status-read\"),"
+  );
+  source = source.replace(
+    "  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke(\"gateway-status-read\"),\n  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke(\"gateway-status-read\"),",
+    "  ipcGetGatewayStatus: () => electron.ipcRenderer.invoke(\"gateway-status-read\"),"
+  );
+  source = source.replace(
     "  offGatewayReady: (callback) => electron.ipcRenderer.removeListener(\"gateway-ready\", callback),",
     "  offGatewayReady: (callback) => electron.ipcRenderer.removeListener(\"gateway-ready\", callback),\n  onGatewayRestarted: (callback) => electron.ipcRenderer.on(\"gateway-restarted\", (_, data) => callback(data)),\n  offGatewayRestarted: (callback) => electron.ipcRenderer.removeListener(\"gateway-restarted\", callback),"
   );
@@ -1767,6 +1775,92 @@ function patchNonBlockingGatewayStartupCleanup(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchGatewayStatusAndPluginDefaults(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("gateway-status-read")) {
+    source = source.replace(
+      "  electron.ipcMain.handle(\"stop-gateway\", async () => {",
+      [
+        "  electron.ipcMain.handle(\"gateway-status-read\", async () => {",
+        "    let ready = !!gateway.isGatewayReady();",
+        "    if (!ready) {",
+        "      ready = await new Promise((resolve) => {",
+        "        try {",
+        "          const req = http.get(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/health`, { timeout: 1200 }, (res) => {",
+        "            res.resume();",
+        "            resolve(res.statusCode === 200);",
+        "          });",
+        "          req.on(\"error\", () => resolve(false));",
+        "          req.on(\"timeout\", () => {",
+        "            req.destroy();",
+        "            resolve(false);",
+        "          });",
+        "        } catch {",
+        "          resolve(false);",
+        "        }",
+        "      });",
+        "    }",
+        "    return { running: ready, gatewayReady: ready, port: GATEWAY_DEFAULT_PORT };",
+        "  });",
+        "  electron.ipcMain.handle(\"stop-gateway\", async () => {"
+      ].join("\n")
+    );
+  }
+  if (!source.includes("const defaultPluginIds = [\"qwen\", \"memory-core\", \"browser\"")) {
+    source = source.replace(
+      "    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + \"\\n\", \"utf8\");",
+      [
+        "    const defaultPluginIds = [\"qwen\", \"memory-core\", \"browser\", \"canvas\", \"device-pair\", \"file-transfer\", \"phone-control\", \"talk-voice\"];",
+        "    config.plugins ||= {};",
+        "    if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];",
+        "    const allowSet = new Set(config.plugins.allow.filter((id) => id !== \"openclaw-weixin\"));",
+        "    for (const id of defaultPluginIds) allowSet.add(id);",
+        "    const nextAllow = Array.from(allowSet);",
+        "    if (JSON.stringify(nextAllow) !== JSON.stringify(config.plugins.allow)) {",
+        "      config.plugins.allow = nextAllow;",
+        "      changed = true;",
+        "    }",
+        "    config.plugins.entries ||= {};",
+        "    for (const id of defaultPluginIds) {",
+        "      if (!config.plugins.entries[id]) {",
+        "        config.plugins.entries[id] = { enabled: true };",
+        "        changed = true;",
+        "      }",
+        "    }",
+        "    if (config.plugins.entries[\"openclaw-weixin\"] && !config.channels?.[\"openclaw-weixin\"]) {",
+        "      delete config.plugins.entries[\"openclaw-weixin\"];",
+        "      changed = true;",
+        "    }",
+        "    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + \"\\n\", \"utf8\");"
+      ].join("\n")
+    );
+  }
+  if (!source.includes("本地微信插件未安装，正在从 U 盘内置插件安装")) {
+    source = source.replace(
+      "  electron.ipcMain.handle(\"wechat-start-login\", () => {\n    const wechatManager2 = getWechatManagerInstance();\n    console.log(\"[wechat] start-login called, manager exists:\", !!wechatManager2);\n    if (!wechatManager2) return { success: false, error: \"no manager\" };\n    const result = wechatManager2.startLogin();",
+      [
+        "  electron.ipcMain.handle(\"wechat-start-login\", async () => {",
+        "    const wechatManager2 = getWechatManagerInstance();",
+        "    console.log(\"[wechat] start-login called, manager exists:\", !!wechatManager2);",
+        "    if (!wechatManager2) return { success: false, error: \"no manager\" };",
+        "    if (!wechatManager2.isPluginInstalled()) {",
+        "      wechatManager2.emit(\"log\", \"[weixin] 本地微信插件未安装，正在从 U 盘内置插件安装...\");",
+        "      const installResult = await wechatManager2.installPlugin({ usbRoot: getAppRoot() });",
+        "      if (!installResult?.success) {",
+        "        const message = installResult?.error || \"微信插件安装失败，请检查 extensions/openclaw-weixin 是否存在。\";",
+        "        wechatManager2.emit(\"log\", \"[weixin] \" + message);",
+        "        return { success: false, error: message, diagnostics: getWeChatDiagnostics() };",
+        "      }",
+        "    } else {",
+        "      wechatManager2._ensurePluginsAllow?.();",
+        "    }",
+        "    const result = wechatManager2.startLogin();"
+      ].join("\n")
+    );
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchGatewayRestartRecoveryUi(filePath) {
   const marker = "codex-gateway-restart-ui-recovery";
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
@@ -1785,6 +1879,58 @@ function patchGatewayRestartRecoveryUi(filePath) {
   );
   if (!source.includes(marker)) {
     throw new Error("Could not patch Gateway restart UI recovery.");
+  }
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchGatewayChatReadinessUi(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  source = source.replaceAll("127.0.0.1:4444", "127.0.0.1:18789");
+  source = source.replaceAll("gw.port || 4444", "gw.port || 18789");
+  source = source.replaceAll("config?.port || 4444", "config?.port || 18789");
+  if (!source.includes("ipcGetGatewayStatus?.().then((status)")) {
+    source = source.replace(
+      "        _storeInitDone = true;\n        store.init();\n      }",
+      [
+        "        _storeInitDone = true;",
+        "        store.init();",
+        "      }",
+        "      window.uclaw?.ipcGetGatewayStatus?.().then((status) => {",
+        "        if (!status) return;",
+        "        gatewayStore.setRunning(!!status.running);",
+        "        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.running);",
+        "        if (status.port) gatewayStore.setPort(status.port);",
+        "        if ((status.running || status.gatewayReady) && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\") {",
+        "          store.connectToGateway();",
+        "        }",
+        "      }).catch(() => {});"
+      ].join("\n")
+    );
+  }
+  if (!source.includes("refreshGatewayStatus()")) {
+    source = source.replace(
+      "  setupBootPhaseListener();\n  setupStatusListener();\n  setupReadyListener();\n  setupRestartedListener();\n  async function startGatewayHook() {",
+      [
+        "  setupBootPhaseListener();",
+        "  setupStatusListener();",
+        "  setupReadyListener();",
+        "  setupRestartedListener();",
+        "  async function refreshGatewayStatus() {",
+        "    try {",
+        "      const status = await window.uclaw.ipcGetGatewayStatus?.();",
+        "      if (status) {",
+        "        store.setRunning(!!status.running);",
+        "        store.setGatewayReady(!!status.gatewayReady || !!status.running);",
+        "        if (status.port) store.setPort(status.port);",
+        "      }",
+        "    } catch (e) {",
+        "      console.warn(\"[gateway] refresh status failed:\", e);",
+        "    }",
+        "  }",
+        "  refreshGatewayStatus();",
+        "  async function startGatewayHook() {"
+      ].join("\n")
+    );
   }
   fs.writeFileSync(filePath, source, "utf8");
 }
@@ -4331,6 +4477,7 @@ const mainProcessTarget = path.join(targetApp, "dist", "main", "index.js");
 copyFile(path.join(backupRoot, "dist", "main", "index.js"), mainProcessTarget);
 patchGatewayRestartStatus(mainProcessTarget);
 patchNonBlockingGatewayStartupCleanup(mainProcessTarget);
+patchGatewayStatusAndPluginDefaults(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
 patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
@@ -4346,6 +4493,7 @@ patchHermesEnvCheck(rendererTarget);
 patchHermesMemoryEnvCheck(rendererTarget);
 patchHermesSkillGrowthEnvCheck(rendererTarget);
 patchGatewayRestartRecoveryUi(rendererTarget);
+patchGatewayChatReadinessUi(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);

@@ -9903,6 +9903,19 @@ function useGateway() {
   setupStatusListener();
   setupReadyListener();
   setupRestartedListener();
+  async function refreshGatewayStatus() {
+    try {
+      const status = await window.uclaw.ipcGetGatewayStatus?.();
+      if (status) {
+        store.setRunning(!!status.running);
+        store.setGatewayReady(!!status.gatewayReady || !!status.running);
+        if (status.port) store.setPort(status.port);
+      }
+    } catch (e) {
+      console.warn("[gateway] refresh status failed:", e);
+    }
+  }
+  refreshGatewayStatus();
   async function startGatewayHook() {
     loading.value = true;
     try {
@@ -19200,7 +19213,7 @@ function useChatWs() {
     intentionalClose = false;
     autoPairAttempts = 0;
     const proto = opts.secure ? "wss" : "ws";
-    const host = hostPort || "127.0.0.1:4444";
+    const host = hostPort || "127.0.0.1:18789";
     const newUrl = `${proto}://${host}/ws?token=${encodeURIComponent(token)}`;
     if ((connecting || handshaking || gatewayReady.value) && url === newUrl) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) && url === newUrl) return;
@@ -19536,7 +19549,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       console.log("[aiChat] 准备连接 Gateway, config keys:", Object.keys(config));
       const gw = config?.gateway || {};
       const host = gw.host || "127.0.0.1";
-      const port = gw.port || 4444;
+      const port = gw.port || 18789;
       const token = gw?.auth?.token || gw.authToken || "";
       const password = gw?.auth?.password || "";
       setupWsConnection({ host, port, token, password });
@@ -19620,7 +19633,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       }
     }));
     const host = config?.host || "127.0.0.1";
-    const port = config?.port || 4444;
+    const port = config?.port || 18789;
     const tkn = config?.token || "";
     ws.setApi(window.uclaw || null);
     ws.connect(`${host}:${port}`, tkn, { password: config?.password || "" });
@@ -25522,6 +25535,15 @@ const _sfc_main$9 = {
         _storeInitDone = true;
         store.init();
       }
+      window.uclaw?.ipcGetGatewayStatus?.().then((status) => {
+        if (!status) return;
+        gatewayStore.setRunning(!!status.running);
+        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.running);
+        if (status.port) gatewayStore.setPort(status.port);
+        if ((status.running || status.gatewayReady) && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
+          store.connectToGateway();
+        }
+      }).catch(() => {});
       if (gatewayStore.running && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
         console.log("[AiChat] onMounted 兜底：Gateway 已运行但 WS 未连接，触发自动连接");
         store.connectToGateway();

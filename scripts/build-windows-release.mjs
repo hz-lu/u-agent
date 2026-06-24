@@ -178,17 +178,19 @@ function createCleanOpenClawConfig() {
       }
     },
     plugins: {
-      allow: ["openclaw-weixin", "qwen", "memory-core"],
+      allow: ["qwen", "memory-core", "browser", "canvas", "device-pair", "file-transfer", "phone-control", "talk-voice"],
       entries: {
-        "openclaw-weixin": { enabled: true, config: {} },
-        qwen: { enabled: true }
+        qwen: { enabled: true },
+        "memory-core": { enabled: true },
+        browser: { enabled: true },
+        canvas: { enabled: true },
+        "device-pair": { enabled: true },
+        "file-transfer": { enabled: true },
+        "phone-control": { enabled: true },
+        "talk-voice": { enabled: true }
       }
     },
-    channels: {
-      "openclaw-weixin": {
-        accounts: {}
-      }
-    },
+    channels: {},
     meta: {
       release: "windows-portable-initial",
       initializedAt: new Date().toISOString()

@@ -2863,6 +2863,27 @@ function rewritePortableOpenClawConfigPaths() {
         changed = true;
       }
     }
+    const defaultPluginIds = ["qwen", "memory-core", "browser", "canvas", "device-pair", "file-transfer", "phone-control", "talk-voice"];
+    config.plugins ||= {};
+    if (!Array.isArray(config.plugins.allow)) config.plugins.allow = [];
+    const allowSet = new Set(config.plugins.allow.filter((id) => id !== "openclaw-weixin"));
+    for (const id of defaultPluginIds) allowSet.add(id);
+    const nextAllow = Array.from(allowSet);
+    if (JSON.stringify(nextAllow) !== JSON.stringify(config.plugins.allow)) {
+      config.plugins.allow = nextAllow;
+      changed = true;
+    }
+    config.plugins.entries ||= {};
+    for (const id of defaultPluginIds) {
+      if (!config.plugins.entries[id]) {
+        config.plugins.entries[id] = { enabled: true };
+        changed = true;
+      }
+    }
+    if (config.plugins.entries["openclaw-weixin"] && !config.channels?.["openclaw-weixin"]) {
+      delete config.plugins.entries["openclaw-weixin"];
+      changed = true;
+    }
     if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
   } catch (err) {
     console.warn("[portable] failed to rewrite OpenClaw config paths:", err instanceof Error ? err.message : String(err));
@@ -22606,6 +22627,27 @@ function registerIPCHandlers({ gateway }) {
       return { ok: false, error: err.message };
     }
   });
+  electron.ipcMain.handle("gateway-status-read", async () => {
+    let ready = !!gateway.isGatewayReady();
+    if (!ready) {
+      ready = await new Promise((resolve) => {
+        try {
+          const req = http.get(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/health`, { timeout: 1200 }, (res) => {
+            res.resume();
+            resolve(res.statusCode === 200);
+          });
+          req.on("error", () => resolve(false));
+          req.on("timeout", () => {
+            req.destroy();
+            resolve(false);
+          });
+        } catch {
+          resolve(false);
+        }
+      });
+    }
+    return { running: ready, gatewayReady: ready, port: GATEWAY_DEFAULT_PORT };
+  });
   electron.ipcMain.handle("stop-gateway", async () => {
     await gateway.stopGateway();
     return { ok: true };
@@ -23102,10 +23144,21 @@ function registerWechatIPCHandler({ gateway }) {
       wechatManagerForGateway?.emit("log", "[weixin] Gateway 重启失败: " + (err instanceof Error ? err.message : String(err)));
     }
   });
-  electron.ipcMain.handle("wechat-start-login", () => {
+  electron.ipcMain.handle("wechat-start-login", async () => {
     const wechatManager2 = getWechatManagerInstance();
     console.log("[wechat] start-login called, manager exists:", !!wechatManager2);
     if (!wechatManager2) return { success: false, error: "no manager" };
+    if (!wechatManager2.isPluginInstalled()) {
+      wechatManager2.emit("log", "[weixin] 本地微信插件未安装，正在从 U 盘内置插件安装...");
+      const installResult = await wechatManager2.installPlugin({ usbRoot: getAppRoot() });
+      if (!installResult?.success) {
+        const message = installResult?.error || "微信插件安装失败，请检查 extensions/openclaw-weixin 是否存在。";
+        wechatManager2.emit("log", "[weixin] " + message);
+        return { success: false, error: message, diagnostics: getWeChatDiagnostics() };
+      }
+    } else {
+      wechatManager2._ensurePluginsAllow?.();
+    }
     const result = wechatManager2.startLogin();
     console.log("[wechat] startLogin result:", result);
     return result;

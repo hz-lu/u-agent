@@ -30,7 +30,7 @@ function checkPort(port) {
 function readConfig() {
   if (!fs.existsSync(configFile)) return null;
   try {
-    return JSON.parse(fs.readFileSync(configFile, "utf8"));
+    return JSON.parse(fs.readFileSync(configFile, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return null;
   }
