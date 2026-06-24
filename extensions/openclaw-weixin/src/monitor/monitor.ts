@@ -1,7 +1,7 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 
-import { getUpdates } from "../api/api.js";
+import { WEIXIN_SESSION_EXPIRED_ERRCODE, describeApiFetchError, getUpdates } from "../api/api.js";
 import { WeixinConfigManager } from "../api/config-cache.js";
 import { SESSION_EXPIRED_ERRCODE, pauseSession, getRemainingPauseMs } from "../api/session-guard.js";
 import { processOneMessage } from "../messaging/process-message.js";
@@ -15,6 +15,7 @@ const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
+const SESSION_EXPIRED_BACKOFF_MS = 10 * 60_000;
 
 export type MonitorWeixinOpts = {
   baseUrl: string;
@@ -109,13 +110,17 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         (resp.errcode !== undefined && resp.errcode !== 0);
       if (isApiError) {
         const isSessionExpired =
-          resp.errcode === SESSION_EXPIRED_ERRCODE || resp.ret === SESSION_EXPIRED_ERRCODE;
+          resp.errcode === SESSION_EXPIRED_ERRCODE ||
+          resp.ret === SESSION_EXPIRED_ERRCODE ||
+          resp.errcode === WEIXIN_SESSION_EXPIRED_ERRCODE ||
+          resp.ret === WEIXIN_SESSION_EXPIRED_ERRCODE;
 
         if (isSessionExpired) {
           pauseSession(accountId);
-          const pauseMs = getRemainingPauseMs(accountId);
+          const pauseMs = Math.max(getRemainingPauseMs(accountId), SESSION_EXPIRED_BACKOFF_MS);
+          setStatus?.({ accountId, error: "微信登录已过期，请重新扫码连接。", lastEventAt: Date.now() });
           errLog(
-            `weixin getUpdates: session expired (errcode ${SESSION_EXPIRED_ERRCODE}), pausing bot for ${Math.ceil(pauseMs / 60_000)} min`,
+            `weixin getUpdates: session expired, please rescan QR code; pausing bot for ${Math.ceil(pauseMs / 60_000)} min`,
           );
           aLog.error(
             `getUpdates: session expired (errcode=${resp.errcode} ret=${resp.ret}), pausing all requests for ${Math.ceil(pauseMs / 60_000)} min`,
@@ -187,9 +192,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
       }
       consecutiveFailures += 1;
       errLog(
-        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${String(err)}`,
+        `weixin getUpdates error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${describeApiFetchError(err)}`,
       );
-      aLog.error(`getUpdates error: ${String(err)}, stack=${(err as Error).stack}`);
+      aLog.error(`getUpdates error: ${describeApiFetchError(err)}, stack=${(err as Error).stack}`);
       if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
         errLog(
           `weixin getUpdates: ${MAX_CONSECUTIVE_FAILURES} consecutive failures, backing off 30s`,

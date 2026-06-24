@@ -55,8 +55,22 @@ const DEFAULT_API_TIMEOUT_MS = 15_000;
 /** Default timeout for lightweight API requests (getConfig, sendTyping). */
 const DEFAULT_CONFIG_TIMEOUT_MS = 10_000;
 
+export const WEIXIN_SESSION_EXPIRED_ERRCODE = -14;
+
 function ensureTrailingSlash(url: string): string {
   return url.endsWith("/") ? url : `${url}/`;
+}
+
+export function describeApiFetchError(err: unknown): string {
+  const anyErr = err as {
+    name?: string;
+    message?: string;
+    cause?: { code?: string; name?: string; message?: string };
+  };
+  const main = [anyErr?.name, anyErr?.message].filter(Boolean).join(": ") || String(err);
+  const cause = anyErr?.cause;
+  if (!cause) return main;
+  return `${main}; cause=${[cause.name, cause.code, cause.message].filter(Boolean).join("/")}`;
 }
 
 /** X-WECHAT-UIN header: random uint32 -> decimal string -> base64. */
@@ -120,6 +134,7 @@ async function apiFetch(params: {
     return rawText;
   } catch (err) {
     clearTimeout(t);
+    logger.warn(`${params.label} fetch failed: ${describeApiFetchError(err)}`);
     throw err;
   }
 }

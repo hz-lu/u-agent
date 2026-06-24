@@ -151,6 +151,15 @@ class WechatManager extends EventEmitter {
           dirty = true;
           console.log("[wechat] Added openclaw-weixin to channels");
         }
+        if (config.plugins.entries["openclaw-weixin"]?.enabled !== true) {
+          config.plugins.entries["openclaw-weixin"] = {
+            ...(config.plugins.entries["openclaw-weixin"] || {}),
+            enabled: true,
+            config: config.plugins.entries["openclaw-weixin"]?.config || {}
+          };
+          dirty = true;
+          console.log("[wechat] Enabled openclaw-weixin plugin entry");
+        }
         if (dirty) {
           atomicWriteFileSync(configFile, JSON.stringify(config, null, 2), "utf-8");
         }
@@ -468,12 +477,8 @@ class WechatManager extends EventEmitter {
   }
   /** Restart gateway to pick up new channel config */
   restartGateway() {
-    try {
-      this._exec("gateway restart");
-      return { success: true };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
+    this.emit("log", "[weixin] login process requested Gateway refresh; desktop supervisor will restart Gateway once.");
+    return { success: true, skipped: true };
   }
   destroy() {
     if (this.loginProcess) {
@@ -2776,6 +2781,13 @@ function toleratePluginSkillLinkError(target, pathLike, err, createSymlink) {
   if (process.platform !== 'win32' || !err || !['EISDIR', 'EEXIST', 'EPERM'].includes(err.code) || !linkPath.includes('plugin-skills')) return false;
   try {
     if (fs.existsSync(linkPath) && fs.realpathSync(target) === fs.realpathSync(linkPath)) return true;
+  } catch {}
+  try {
+    if (fs.existsSync(linkPath)) {
+      const stat = fs.lstatSync(linkPath);
+      const skillFile = require('path').join(linkPath, 'SKILL.md');
+      if (stat.isDirectory() && fs.existsSync(skillFile)) return true;
+    }
   } catch {}
   try {
     fs.rmSync(linkPath, { recursive: true, force: true });

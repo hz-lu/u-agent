@@ -1420,6 +1420,13 @@ function patchMainProcessStability(filePath) {
       "    if (fs.existsSync(linkPath) && fs.realpathSync(target) === fs.realpathSync(linkPath)) return true;",
       "  } catch {}",
       "  try {",
+      "    if (fs.existsSync(linkPath)) {",
+      "      const stat = fs.lstatSync(linkPath);",
+      "      const skillFile = require('path').join(linkPath, 'SKILL.md');",
+      "      if (stat.isDirectory() && fs.existsSync(skillFile)) return true;",
+      "    }",
+      "  } catch {}",
+      "  try {",
       "    fs.rmSync(linkPath, { recursive: true, force: true });",
       "    createSymlink(target, linkPath);",
       "    return true;",
@@ -4440,6 +4447,42 @@ function patchInstalledWeixinPlugin(usbRootPath) {
   console.log(`Patched Weixin plugin fetch fallback: ${apiPath}`);
 }
 
+function patchWeChatGatewayStability(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  const restartBlock = /  restartGateway\(\) \{\n    try \{\n      this\._exec\("gateway restart"\);\n      return \{ success: true \};\n    \} catch \(e\) \{\n      return \{ success: false, error: e\.message \};\n    \}\n  \}/;
+  source = source.replace(
+    restartBlock,
+    "  restartGateway() {\n    this.emit(\"log\", \"[weixin] login process requested Gateway refresh; desktop supervisor will restart Gateway once.\");\n    return { success: true, skipped: true };\n  }"
+  );
+
+  if (!source.includes("Enabled openclaw-weixin plugin entry")) {
+    const channelBlock = [
+      "        if (!config.channels[\"openclaw-weixin\"]) {",
+      "          config.channels[\"openclaw-weixin\"] = {};",
+      "          dirty = true;",
+      "          console.log(\"[wechat] Added openclaw-weixin to channels\");",
+      "        }"
+    ].join("\n");
+    const channelReplacement = [
+      channelBlock,
+      "        if (config.plugins.entries[\"openclaw-weixin\"]?.enabled !== true) {",
+      "          config.plugins.entries[\"openclaw-weixin\"] = {",
+      "            ...(config.plugins.entries[\"openclaw-weixin\"] || {}),",
+      "            enabled: true,",
+      "            config: config.plugins.entries[\"openclaw-weixin\"]?.config || {}",
+      "          };",
+      "          dirty = true;",
+      "          console.log(\"[wechat] Enabled openclaw-weixin plugin entry\");",
+      "        }"
+    ].join("\n");
+    if (source.includes(channelBlock)) {
+      source = source.replace(channelBlock, channelReplacement);
+    }
+  }
+
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -4483,6 +4526,7 @@ patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
+patchWeChatGatewayStability(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
 const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");
 copyFile(path.join(backupRoot, "dist", "preload", "index.js"), preloadTarget);
