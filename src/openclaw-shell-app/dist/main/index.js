@@ -1124,6 +1124,7 @@ class HermesManager {
     const memoryReport = readJsonSafe(path$1.join(data, "reports", "memory", "persistence-last.json"));
     const skillReport = readJsonSafe(path$1.join(data, "reports", "skills", "visibility-last.json"));
     const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));
+    const skillGrowthReady = !!skillGrowthReport?.ok || !!(skillReport?.ok && (skillReport?.visibleCount || 0) > 0 && (skillReport?.commandCount || 0) > 0);
     const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);
     const skillCount = reportedSkillCount || (this._skillCountCache && Date.now() - this._skillCountCache.checkedAt < 60000 ? this._skillCountCache.count : (() => {
       const count = countHermesSkills(skillsRoot);
@@ -1168,7 +1169,7 @@ class HermesManager {
       skillReportPath: skillReport?.reportPath || path$1.join(data, "reports", "skills", "visibility-last.json"),
       skillsUsageTracked: !!skillReport?.usageTracked,
       skillsReport: skillReport,
-      skillGrowthReady: !!skillGrowthReport?.ok,
+      skillGrowthReady,
       skillGrowthReportPath: skillGrowthReport?.reportPath || path$1.join(data, "reports", "skills", "growth-last.json"),
       skillGrowthReport,
       modelBridgeReady: !!primaryModel,
@@ -1609,15 +1610,22 @@ class HermesManager {
         mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",
         startedAt: Date.now()
       };
+      const startedAtMs = progressBase.startedAt;
       let lastProgressKey = "";
       let lastProgressAt = 0;
+      const formatElapsed = () => {
+        const seconds = Math.max(0, Math.round((Date.now() - startedAtMs) / 1000));
+        if (seconds < 60) return seconds + " 秒";
+        return Math.floor(seconds / 60) + " 分 " + String(seconds % 60).padStart(2, "0") + " 秒";
+      };
       const emitProgress = (stage, detail = "") => {
         const now = Date.now();
-        const key = stage + "\n" + detail;
+        const displayDetail = detail + " 已等待 " + formatElapsed();
+        const key = stage + "\n" + displayDetail;
         if (key === lastProgressKey && now - lastProgressAt < 3000) return;
         lastProgressKey = key;
         lastProgressAt = now;
-        safeSend("hermes-chat-progress", { ...progressBase, stage, detail, at: Date.now() });
+        safeSend("hermes-chat-progress", { ...progressBase, stage, detail: displayDetail, elapsedMs: now - startedAtMs, elapsedText: formatElapsed(), at: Date.now() });
       };
       emitProgress("starting", "Hermes 正在准备本地运行环境...");
       const child = child_process.spawn(chatCommand.command, chatCommand.args, {
@@ -2776,8 +2784,26 @@ function rewritePortableOpenClawConfigPaths() {
     console.warn("[portable] failed to rewrite OpenClaw config paths:", err instanceof Error ? err.message : String(err));
   }
 }
+function normalizeOpenClawPluginSkillLinks() {
+  /* codex-openclaw-plugin-skill-link-normalize */
+  try {
+    const stateRoot = path$1.resolve(getDataRoot(), ".openclaw");
+    const pluginSkillsRoot = path$1.resolve(stateRoot, "plugin-skills");
+    const browserSkill = path$1.resolve(pluginSkillsRoot, "browser-automation");
+    if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;
+    fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });
+    if (!fs$1.existsSync(browserSkill)) return;
+    const stat = fs$1.lstatSync(browserSkill);
+    if (stat.isSymbolicLink()) return;
+    fs$1.rmSync(browserSkill, { recursive: true, force: true });
+    console.log("[portable] normalized stale plugin skill directory: " + browserSkill);
+  } catch (err) {
+    console.warn("[portable] failed to normalize OpenClaw plugin skill links:", err instanceof Error ? err.message : String(err));
+  }
+}
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
+  normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");
   const paths = [];
   if (fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd")) || fs$1.existsSync(path$1.join(RUNTIME_DIR, "node_modules"))) {

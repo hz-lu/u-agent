@@ -25488,7 +25488,8 @@ const _sfc_main$9 = {
       aiColor: "#4edea3"
     });
     const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
-    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && store.isReady : !hermesSending.value);
+    const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady || gatewayStore.running);
+    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
@@ -25703,6 +25704,20 @@ const _sfc_main$9 = {
         }, 600);
       });
     }
+    async function ensureOpenClawChatReady(timeoutMs = 25000) {
+      if (store.isReady) return true;
+      if (!gatewayAvailable.value) return false;
+      try {
+        if (store.wsStatus !== "ready" && store.wsStatus !== "connecting") store.connectToGateway();
+      } catch {
+      }
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (store.isReady) return true;
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+      }
+      return !!store.isReady;
+    }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || hermesSending.value) return;
@@ -25768,7 +25783,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
-      if (!store.isReady) {
+      if (!gatewayAvailable.value) {
         appendHermesAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
       }
@@ -25787,6 +25802,11 @@ const _sfc_main$9 = {
       scrollToBottom();
       const beforeLength = store.currentMessages.length;
       try {
+        if (!store.isReady) {
+          appendHermesAssistant("Gateway 已启动，正在连接 OpenClaw 会话...", "协同编排", "done");
+          const ready = await ensureOpenClawChatReady();
+          if (!ready) throw new Error("OpenClaw 会话连接超时，请稍后重试或回到首页重启 Gateway。");
+        }
         appendHermesAssistant("阶段 1/2：OpenClaw 正在生成执行草案...", "协同编排", "done");
         await store.sendMessage(content, attachments);
         const draft = await waitForOpenClawDraft(beforeLength);
@@ -25825,7 +25845,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessageV2(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
-      if (!store.isReady) {
+      if (!gatewayAvailable.value) {
         appendCollabAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
       }
@@ -25844,6 +25864,12 @@ const _sfc_main$9 = {
       scrollToBottom();
       const beforeLength = store.currentMessages.length;
       try {
+        if (!store.isReady) {
+          collabRunState.value = "Gateway 已启动，正在连接 OpenClaw 会话...";
+          appendCollabAssistant("Gateway 已启动，正在连接 OpenClaw 会话...", "协同编排", "done");
+          const ready = await ensureOpenClawChatReady();
+          if (!ready) throw new Error("OpenClaw 会话连接超时，请稍后重试或回到首页重启 Gateway。");
+        }
         appendCollabAssistant("阶段 1/2：OpenClaw 正在生成内部草案。", "协同编排", "done");
         await store.sendMessage(content, attachments);
         const draft = await waitForOpenClawDraft(beforeLength);
@@ -26147,7 +26173,7 @@ const _sfc_main$9 = {
                   key: 0,
                   models: sessionModels.value,
                   currentModel: sessionCurrentModelId.value,
-                  isReady: agentMode.value === "collab" ? unref(store).isReady : true,
+                  isReady: agentMode.value === "collab" ? gatewayAvailable.value : true,
                   loadingModels: loadingModels.value,
                   onSelect: handleModelSelect,
                   onRefresh: handleRefreshModels
