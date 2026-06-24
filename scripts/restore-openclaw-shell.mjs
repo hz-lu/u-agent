@@ -1330,6 +1330,51 @@ function patchMainProcessStability(filePath) {
     }
     source = source.replace(safeSendAnchor, safeSendReplacement);
   }
+  if (!source.includes("prepared plugin skill link")) {
+    source = source.replace(
+      "    const browserSkill = path$1.resolve(pluginSkillsRoot, \"browser-automation\");\n    if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;\n    fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });\n    if (!fs$1.existsSync(browserSkill)) return;\n    const stat = fs$1.lstatSync(browserSkill);\n    if (stat.isSymbolicLink()) return;\n    fs$1.rmSync(browserSkill, { recursive: true, force: true });\n    console.log(\"[portable] normalized stale plugin skill directory: \" + browserSkill);",
+      [
+        "    const browserSkill = path$1.resolve(pluginSkillsRoot, \"browser-automation\");",
+        "    const browserSkillTarget = path$1.resolve(RUNTIME_DIR, \"node_modules\", \"openclaw\", \"dist\", \"extensions\", \"browser\", \"skills\", \"browser-automation\");",
+        "    if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;",
+        "    fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });",
+        "    if (!fs$1.existsSync(browserSkillTarget)) return;",
+        "    let shouldCreate = true;",
+        "    if (fs$1.existsSync(browserSkill)) {",
+        "      const stat = fs$1.lstatSync(browserSkill);",
+        "      if (stat.isSymbolicLink()) {",
+        "        const currentTarget = path$1.resolve(pluginSkillsRoot, fs$1.readlinkSync(browserSkill));",
+        "        shouldCreate = currentTarget !== browserSkillTarget;",
+        "      }",
+        "      if (shouldCreate) fs$1.rmSync(browserSkill, { recursive: true, force: true });",
+        "    }",
+        "    if (shouldCreate) {",
+        "      fs$1.symlinkSync(browserSkillTarget, browserSkill, process.platform === \"win32\" ? \"junction\" : \"dir\");",
+        "      console.log(\"[portable] prepared plugin skill link: \" + browserSkill + \" -> \" + browserSkillTarget);",
+        "    }"
+      ].join("\n")
+    );
+  }
+  source = source.replace(
+    "  rewritePortableOpenClawConfigPaths();\n  normalizeOpenClawPluginSkillLinks();",
+    "  rewritePortableOpenClawConfigPaths();\n  const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);\n  if (!repair.ok) console.warn(\"[runtime] OpenClaw template repair pending before gateway start:\", repair.error || repair.targetRoot);\n  normalizeOpenClawPluginSkillLinks();"
+  );
+  if (!source.includes("Portable OpenClaw hook: fast-fail pricing DNS")) {
+    source = source.replace(
+      "  if (fs$1.existsSync(hookPath)) return hookPath;\n  const content = `// DNS Hook: redirect openrouter.ai → 127.0.0.1 for fast-fail on pricing bootstrap\nconst dns = require('dns');\nconst origLookup = dns.lookup;",
+      "  const content = `// Portable OpenClaw hook: fast-fail pricing DNS and tolerate Windows plugin skill junction races.\nconst dns = require('dns');\nconst fs = require('fs');\nconst origLookup = dns.lookup;"
+    );
+    source = source.replace(
+      "  origLookup.apply(this, arguments);\n};\n`;\n  try {\n    fs$1.writeFileSync(hookPath, content, \"utf-8\");",
+      "  origLookup.apply(this, arguments);\n};\nconst origSymlinkSync = fs.symlinkSync;\nfs.symlinkSync = function(target, pathLike, type) {\n  try {\n    return origSymlinkSync.apply(this, arguments);\n  } catch (err) {\n    const linkPath = String(pathLike || '');\n    if (process.platform === 'win32' && err && err.code === 'EISDIR' && linkPath.includes('plugin-skills')) {\n      try {\n        if (fs.realpathSync(target) === fs.realpathSync(linkPath)) return undefined;\n      } catch {}\n    }\n    throw err;\n  }\n};\n`;\n  try {\n    if (!fs$1.existsSync(hookPath) || fs$1.readFileSync(hookPath, \"utf8\") !== content) {\n      fs$1.writeFileSync(hookPath, content, \"utf-8\");\n    }"
+    );
+  }
+  if (!source.includes("window-unresponsive")) {
+    source = source.replace(
+      "  mainWindow$1.on(\"close\", (event) => {\n    if (!electron.app.isQuitting) {\n      event.preventDefault();\n      mainWindow$1.hide();\n    }\n  });",
+      "  mainWindow$1.on(\"close\", (event) => {\n    if (!electron.app.isQuitting) {\n      event.preventDefault();\n      mainWindow$1.hide();\n    }\n  });\n  mainWindow$1.on(\"unresponsive\", () => {\n    appendDesktopCrashLog(\"window-unresponsive\", { url: mainWindow$1?.webContents?.getURL?.() || \"\", time: new Date().toISOString() });\n  });\n  mainWindow$1.on(\"responsive\", () => {\n    appendDesktopCrashLog(\"window-responsive\", { url: mainWindow$1?.webContents?.getURL?.() || \"\", time: new Date().toISOString() });\n  });"
+    );
+  }
 
   fs.writeFileSync(filePath, source, "utf8");
 }
@@ -3200,6 +3245,63 @@ function patchHermesAiChat(filePath) {
     throw new Error("Could not find AiChat input binding block.");
   }
   source = source.replace(inputAnchor, inputReplacement);
+  source = source.replace(
+    '        collabMessages.value = collabMessages.value.filter((m) => !(m.model === "协同编排" && String(m.content || "").startsWith("阶段 1/2")));',
+    ""
+  );
+  source = source.replace(
+    '        collabMessages.value = collabMessages.value.filter((m) => !(m.model === "协同编排" && String(m.content || "").startsWith("阶段 2/2")));',
+    ""
+  );
+  source = source.replace(
+    'agentMode.value === "collab" ? store.isReady ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"',
+    'agentMode.value === "collab" ? gatewayAvailable.value ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"'
+  );
+  if (!source.includes("function appendHermesProgress(content")) {
+    source = source.replace(
+      "        collabRunState.value = text;\n      } else {\n        hermesRunState.value = text;\n      }\n      saveHermesSession();\n    }",
+      [
+        "        collabRunState.value = text;",
+        "        appendCollabProgress(text, payload?.stage);",
+        "      } else {",
+        "        hermesRunState.value = text;",
+        "        appendHermesProgress(text, payload?.stage);",
+        "      }",
+        "      saveHermesSession();",
+        "    }",
+        "    function appendHermesProgress(content, stage = \"\") {",
+        "      const now = Date.now();",
+        "      const last = window.__uclawHermesProgressMessage || {};",
+        "      const key = `${stage}:${content}`;",
+        "      if (last.key === key && now - (last.at || 0) < 6e3) return;",
+        "      window.__uclawHermesProgressMessage = { key, at: now };",
+        "      hermesMessages.value = [...hermesMessages.value, {",
+        "        id: `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,",
+        "        role: \"assistant\",",
+        "        content,",
+        "        model: \"Hermes 执行过程\",",
+        "        timestamp: now,",
+        "        status: \"done\"",
+        "      }];",
+        "    }",
+        "    function appendCollabProgress(content, stage = \"\") {",
+        "      const now = Date.now();",
+        "      const last = window.__uclawCollabProgressMessage || {};",
+        "      const key = `${stage}:${content}`;",
+        "      if (last.key === key && now - (last.at || 0) < 6e3) return;",
+        "      window.__uclawCollabProgressMessage = { key, at: now };",
+        "      collabMessages.value = [...collabMessages.value, {",
+        "        id: `collab-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,",
+        "        role: \"assistant\",",
+        "        content,",
+        "        model: \"协同执行过程\",",
+        "        timestamp: now,",
+        "        status: \"done\"",
+        "      }];",
+        "    }"
+      ].join("\n")
+    );
+  }
 
   fs.writeFileSync(filePath, source, "utf8");
 }

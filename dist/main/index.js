@@ -2020,6 +2020,12 @@ function createWindow(gateway) {
       mainWindow$1.hide();
     }
   });
+  mainWindow$1.on("unresponsive", () => {
+    appendDesktopCrashLog("window-unresponsive", { url: mainWindow$1?.webContents?.getURL?.() || "", time: new Date().toISOString() });
+  });
+  mainWindow$1.on("responsive", () => {
+    appendDesktopCrashLog("window-responsive", { url: mainWindow$1?.webContents?.getURL?.() || "", time: new Date().toISOString() });
+  });
   mainWindow$1.webContents.on("did-start-loading", () => {
   });
   mainWindow$1.webContents.on("did-finish-load", () => {
@@ -2745,9 +2751,9 @@ function formatOpenClawRuntimeDiagnosis(diag) {
 }
 function writeDnsHook() {
   const hookPath = path$1.join(RUNTIME_DIR, "dns-hook.cjs");
-  if (fs$1.existsSync(hookPath)) return hookPath;
-  const content = `// DNS Hook: redirect openrouter.ai → 127.0.0.1 for fast-fail on pricing bootstrap
+  const content = `// Portable OpenClaw hook: fast-fail pricing DNS and tolerate Windows plugin skill junction races.
 const dns = require('dns');
+const fs = require('fs');
 const origLookup = dns.lookup;
 dns.lookup = function(hostname, options, cb) {
   if (typeof hostname === 'string' && (hostname === 'openrouter.ai' || hostname.endsWith('.openrouter.ai'))) {
@@ -2757,9 +2763,25 @@ dns.lookup = function(hostname, options, cb) {
   }
   origLookup.apply(this, arguments);
 };
+const origSymlinkSync = fs.symlinkSync;
+fs.symlinkSync = function(target, pathLike, type) {
+  try {
+    return origSymlinkSync.apply(this, arguments);
+  } catch (err) {
+    const linkPath = String(pathLike || '');
+    if (process.platform === 'win32' && err && err.code === 'EISDIR' && linkPath.includes('plugin-skills')) {
+      try {
+        if (fs.realpathSync(target) === fs.realpathSync(linkPath)) return undefined;
+      } catch {}
+    }
+    throw err;
+  }
+};
 `;
   try {
-    fs$1.writeFileSync(hookPath, content, "utf-8");
+    if (!fs$1.existsSync(hookPath) || fs$1.readFileSync(hookPath, "utf8") !== content) {
+      fs$1.writeFileSync(hookPath, content, "utf-8");
+    }
     return hookPath;
   } catch (e) {
     console.error(`[DNS Hook] 写入失败: ${e.message}`);
@@ -2797,19 +2819,31 @@ function normalizeOpenClawPluginSkillLinks() {
     const stateRoot = path$1.resolve(getDataRoot(), ".openclaw");
     const pluginSkillsRoot = path$1.resolve(stateRoot, "plugin-skills");
     const browserSkill = path$1.resolve(pluginSkillsRoot, "browser-automation");
+    const browserSkillTarget = path$1.resolve(RUNTIME_DIR, "node_modules", "openclaw", "dist", "extensions", "browser", "skills", "browser-automation");
     if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;
     fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });
-    if (!fs$1.existsSync(browserSkill)) return;
-    const stat = fs$1.lstatSync(browserSkill);
-    if (stat.isSymbolicLink()) return;
-    fs$1.rmSync(browserSkill, { recursive: true, force: true });
-    console.log("[portable] normalized stale plugin skill directory: " + browserSkill);
+    if (!fs$1.existsSync(browserSkillTarget)) return;
+    let shouldCreate = true;
+    if (fs$1.existsSync(browserSkill)) {
+      const stat = fs$1.lstatSync(browserSkill);
+      if (stat.isSymbolicLink()) {
+        const currentTarget = path$1.resolve(pluginSkillsRoot, fs$1.readlinkSync(browserSkill));
+        shouldCreate = currentTarget !== browserSkillTarget;
+      }
+      if (shouldCreate) fs$1.rmSync(browserSkill, { recursive: true, force: true });
+    }
+    if (shouldCreate) {
+      fs$1.symlinkSync(browserSkillTarget, browserSkill, process.platform === "win32" ? "junction" : "dir");
+      console.log("[portable] prepared plugin skill link: " + browserSkill + " -> " + browserSkillTarget);
+    }
   } catch (err) {
     console.warn("[portable] failed to normalize OpenClaw plugin skill links:", err instanceof Error ? err.message : String(err));
   }
 }
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
+  const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+  if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");
   const paths = [];

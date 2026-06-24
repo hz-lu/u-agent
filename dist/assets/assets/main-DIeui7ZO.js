@@ -25638,10 +25638,42 @@ const _sfc_main$9 = {
       if (!text) return;
       if (payload?.mode === "collab" || payload?.sessionId === "openclaw-hermes-collab") {
         collabRunState.value = text;
+        appendCollabProgress(text, payload?.stage);
       } else {
         hermesRunState.value = text;
+        appendHermesProgress(text, payload?.stage);
       }
       saveHermesSession();
+    }
+    function appendHermesProgress(content, stage = "") {
+      const now = Date.now();
+      const last = window.__uclawHermesProgressMessage || {};
+      const key = `${stage}:${content}`;
+      if (last.key === key && now - (last.at || 0) < 6e3) return;
+      window.__uclawHermesProgressMessage = { key, at: now };
+      hermesMessages.value = [...hermesMessages.value, {
+        id: `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,
+        role: "assistant",
+        content,
+        model: "Hermes 执行过程",
+        timestamp: now,
+        status: "done"
+      }];
+    }
+    function appendCollabProgress(content, stage = "") {
+      const now = Date.now();
+      const last = window.__uclawCollabProgressMessage || {};
+      const key = `${stage}:${content}`;
+      if (last.key === key && now - (last.at || 0) < 6e3) return;
+      window.__uclawCollabProgressMessage = { key, at: now };
+      collabMessages.value = [...collabMessages.value, {
+        id: `collab-progress-${now}-${Math.random().toString(36).slice(2, 7)}`,
+        role: "assistant",
+        content,
+        model: "协同执行过程",
+        timestamp: now,
+        status: "done"
+      }];
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
@@ -25874,7 +25906,6 @@ const _sfc_main$9 = {
         await store.sendMessage(content, attachments);
         const draft = await waitForOpenClawDraft(beforeLength);
         const draftText = draft?.content || "OpenClaw 未返回可用草案。";
-        collabMessages.value = collabMessages.value.filter((m) => !(m.model === "协同编排" && String(m.content || "").startsWith("阶段 1/2")));
         appendCollabAssistant("阶段 2/2：Hermes 正在复核内部草案并整理最终答复。", "协同编排", "done", { internalDraft: draftText });
         const hermesPrompt = [
           "你是 OpenClaw + Hermes 协同助手的最终整理者。",
@@ -25896,7 +25927,6 @@ const _sfc_main$9 = {
           ...getSelectedHermesModel()
         });
         const ok = result?.ok !== false;
-        collabMessages.value = collabMessages.value.filter((m) => !(m.model === "协同编排" && String(m.content || "").startsWith("阶段 2/2")));
         appendCollabAssistant(ok ? getHermesReply(result) : (result?.error || "Hermes 暂时无法完成协同整理，请到模型配置页测试当前模型连接后重试。"), "协同结果", ok ? "done" : "error");
         collabRunState.value = ok ? "协同流程已完成。" : "协同流程失败。";
       } catch (e) {
@@ -26178,7 +26208,7 @@ const _sfc_main$9 = {
                   onSelect: handleModelSelect,
                   onRefresh: handleRefreshModels
                 }, null, 8, ["models", "currentModel", "isReady", "loadingModels"]),
-                agentMode.value !== "openclaw" ? (openBlock(), createElementBlock("div", { key: 1, class: "hermes-chat-status" }, toDisplayString(agentMode.value === "collab" ? store.isReady ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"), 1)) : createCommentVNode("", true),
+                agentMode.value !== "openclaw" ? (openBlock(), createElementBlock("div", { key: 1, class: "hermes-chat-status" }, toDisplayString(agentMode.value === "collab" ? gatewayAvailable.value ? collabRunState.value || "协同已就绪" : "协同需先启动 Gateway" : hermesRunState.value || "Hermes 会话就绪"), 1)) : createCommentVNode("", true),
                 agentMode.value !== "openclaw" ? (openBlock(), createElementBlock("button", {
                   key: 2,
                   class: "icon-btn hermes-open-btn",
