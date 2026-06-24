@@ -4699,6 +4699,167 @@ function patchWindowsResponsiveChatAndWechat(mainFile, preloadFile, rendererFile
   fs.writeFileSync(rendererFile, rendererSource, "utf8");
 }
 
+function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
+  let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
+
+  if (!mainSource.includes("function checkTcpPortOpen(port")) {
+    mainSource = mainSource.replace(
+      "function sendGatewayLog(type2, msg) {",
+      [
+        "function checkTcpPortOpen(port, timeoutMs = 500) {",
+        "  return new Promise((resolve) => {",
+        "    const socket = net.createConnection({ host: \"127.0.0.1\", port });",
+        "    let settled = false;",
+        "    const finish = (ok) => {",
+        "      if (settled) return;",
+        "      settled = true;",
+        "      socket.destroy();",
+        "      resolve(ok);",
+        "    };",
+        "    socket.setTimeout(timeoutMs);",
+        "    socket.once(\"connect\", () => finish(true));",
+        "    socket.once(\"timeout\", () => finish(false));",
+        "    socket.once(\"error\", () => finish(false));",
+        "  });",
+        "}",
+        "function sendGatewayLog(type2, msg) {"
+      ].join("\n")
+    );
+  }
+
+  if (!mainSource.includes("gatewayDiskLogBuffer")) {
+    mainSource = mainSource.replace(
+      "const gatewayUiLogThrottle = new Map();",
+      [
+        "const gatewayUiLogThrottle = new Map();",
+        "const gatewayDiskLogBuffer = [];",
+        "let gatewayDiskLogFlushTimer = null;"
+      ].join("\n")
+    );
+    mainSource = mainSource.replace(
+      /function sendGatewayLog\(type2, msg\) \{\n  try \{\n    const logDir = path\$1\.join\(getDataRoot\(\), "\.openclaw", "logs"\);\n    fs\$1\.mkdirSync\(logDir, \{ recursive: true \}\);\n    fs\$1\.appendFileSync\(path\$1\.join\(logDir, "gateway-launcher\.log"\), JSON\.stringify\(\{\n      time: new Date\(\)\.toISOString\(\),\n      type: type2,\n      msg: String\(msg \|\| ""\)\n    \}\) \+ "\\n", "utf8"\);\n  \} catch \{\n  \}\n  if \(shouldSendGatewayLogToUi\(type2, msg\)\) \{\n    safeSend\("gateway-log", \{ type: type2, msg \}\);\n  \}\n\}/,
+      [
+        "function flushGatewayDiskLogs() {",
+        "  gatewayDiskLogFlushTimer = null;",
+        "  if (!gatewayDiskLogBuffer.length) return;",
+        "  const lines = gatewayDiskLogBuffer.splice(0, gatewayDiskLogBuffer.length).join(\"\");",
+        "  try {",
+        "    const logDir = path$1.join(getDataRoot(), \".openclaw\", \"logs\");",
+        "    fs$1.mkdirSync(logDir, { recursive: true });",
+        "    fs$1.appendFile(path$1.join(logDir, \"gateway-launcher.log\"), lines, \"utf8\", () => {});",
+        "  } catch {",
+        "  }",
+        "}",
+        "function queueGatewayDiskLog(type2, msg) {",
+        "  gatewayDiskLogBuffer.push(JSON.stringify({ time: new Date().toISOString(), type: type2, msg: String(msg || \"\") }) + \"\\n\");",
+        "  if (gatewayDiskLogBuffer.length > 500) gatewayDiskLogBuffer.splice(0, gatewayDiskLogBuffer.length - 500);",
+        "  if (!gatewayDiskLogFlushTimer) gatewayDiskLogFlushTimer = setTimeout(flushGatewayDiskLogs, 1e3);",
+        "}",
+        "function sendGatewayLog(type2, msg) {",
+        "  queueGatewayDiskLog(type2, msg);",
+        "  if (shouldSendGatewayLogToUi(type2, msg)) safeSend(\"gateway-log\", { type: type2, msg });",
+        "}"
+      ].join("\n")
+    );
+  }
+
+  mainSource = mainSource.replace(
+    /  if \(lower\.includes\("\[model-pricing\]"\) && lower\.includes\("fetch failed"\)\) \{\n    const key = "model-pricing-fetch-failed";\n    const now = Date\.now\(\);\n    const last = gatewayUiLogThrottle\.get\(key\) \|\| 0;\n    gatewayUiLogThrottle\.set\(key, now\);\n    return now - last > 6e4;\n  \}/,
+    "  if (lower.includes(\"[model-pricing]\") && lower.includes(\"fetch failed\")) {\n    return false;\n  }"
+  );
+
+  mainSource = mainSource.replace(
+    "    return { running: ready, gatewayReady: ready, port: GATEWAY_DEFAULT_PORT };",
+    [
+      "    const portOpen = ready ? true : await checkTcpPortOpen(GATEWAY_DEFAULT_PORT, 500);",
+      "    return { running: ready || portOpen, gatewayReady: ready || portOpen, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };"
+    ].join("\n")
+  );
+
+  if (!mainSource.includes("flushGatewayDiskLogs();")) {
+    mainSource = mainSource.replace(
+      "    electron.app.isQuitting = true;\n    if (hermesManager) {",
+      "    electron.app.isQuitting = true;\n    flushGatewayDiskLogs();\n    if (hermesManager) {"
+    );
+  }
+
+  fs.writeFileSync(mainFile, mainSource, "utf8");
+
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+  if (!rendererSource.includes("const CHAT_DEBUG = false;")) {
+    rendererSource = rendererSource.replace(
+      "  const _listeners = /* @__PURE__ */ new Map();",
+      "  const _listeners = /* @__PURE__ */ new Map();\n  const CHAT_DEBUG = false;"
+    );
+  }
+  const noisyCalls = [
+    "console.log(\"_handleMessage==>\", data);",
+    "console.log(\"[DEDUP-DEBUG] handleChatMessage 入口 |\", JSON.stringify(dedupInfo));",
+    "console.log(\"[DEDUP-DEBUG] existingIdx=\", existingIdx, \"| 当前msgs数量=\", msgs.length, \"| 最后一条role=\", msgs[msgs.length - 1]?.role);",
+    "console.warn(\"[DEDUP-DEBUG] handleAgentEvent 创建新消息 | runId=\", payload.runId, \"| phase=\", phase, \"| dataName=\", data.name);",
+    "console.log(\"[DEDUP-DEBUG] loadSessionMessages 开始 | sessionKey=\", sessionKey);",
+    "console.log(\"[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=\", msgs.length);",
+    "console.log(\"发送了什么===>\", text2, attachments);",
+    "console.log(\"[DEDUP-DEBUG] sendMessage 调用 | sending=\", sending.value, \"| sessionKey=\", sk, \"| text前30字=\", text2?.trim()?.slice(0, 30));",
+    "console.warn(\"[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:\", new Error().stack);",
+    "console.log(\"[DEDUP-DEBUG] chat.send 响应 | result.runId=\", result?.runId, \"| result=\", JSON.stringify(result)?.slice(0, 200));"
+  ];
+  for (const call of noisyCalls) {
+    rendererSource = rendererSource.replaceAll(call, "if (CHAT_DEBUG) " + call);
+  }
+
+  if (!rendererSource.includes("refreshGatewayReadinessForChat")) {
+    rendererSource = rendererSource.replace(
+      "    let _storeInitDone = false;\n    onMounted(() => {",
+      [
+        "    let _storeInitDone = false;",
+        "    let _gatewayStatusPollTimer = null;",
+        "    let _lastGatewayConnectKickAt = 0;",
+        "    async function refreshGatewayReadinessForChat() {",
+        "      try {",
+        "        const status = await window.uclaw?.ipcGetGatewayStatus?.();",
+        "        if (!status) return;",
+        "        const available = !!status.running || !!status.gatewayReady || !!status.portOpen;",
+        "        gatewayStore.setRunning(available);",
+        "        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.portOpen || available);",
+        "        if (status.port) gatewayStore.setPort(status.port);",
+        "        const now = Date.now();",
+        "        if (available && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\" && now - _lastGatewayConnectKickAt > 2500) {",
+        "          _lastGatewayConnectKickAt = now;",
+        "          store.connectToGateway();",
+        "        }",
+        "      } catch {",
+        "      }",
+        "    }",
+        "    function startGatewayReadinessPoll() {",
+        "      if (_gatewayStatusPollTimer) window.clearInterval(_gatewayStatusPollTimer);",
+        "      refreshGatewayReadinessForChat();",
+        "      _gatewayStatusPollTimer = window.setInterval(() => {",
+        "        if (agentMode.value === \"openclaw\" || agentMode.value === \"collab\" || store.wsStatus !== \"ready\") refreshGatewayReadinessForChat();",
+        "      }, 4e3);",
+        "    }",
+        "    onMounted(() => {"
+      ].join("\n")
+    );
+    rendererSource = rendererSource.replace(
+      "      window.uclaw?.ipcGetGatewayStatus?.().then((status) => {\n        if (!status) return;\n        gatewayStore.setRunning(!!status.running);\n        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.running);\n        if (status.port) gatewayStore.setPort(status.port);\n        if ((status.running || status.gatewayReady) && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\") {\n          store.connectToGateway();\n        }\n      }).catch(() => {});",
+      "      startGatewayReadinessPoll();"
+    );
+    rendererSource = rendererSource.replace(
+      "      if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);\n    });",
+      [
+        "      if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);",
+        "      if (_gatewayStatusPollTimer) {",
+        "        window.clearInterval(_gatewayStatusPollTimer);",
+        "        _gatewayStatusPollTimer = null;",
+        "      }",
+        "    });"
+      ].join("\n")
+    );
+  }
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -4761,6 +4922,7 @@ patchHermesAiChat(rendererTarget);
 patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 patchWindowsResponsiveChatAndWechat(mainProcessTarget, preloadTarget, rendererTarget);
+patchGatewayReadinessAndPerfStabilizer(mainProcessTarget, rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);

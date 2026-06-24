@@ -1928,18 +1928,67 @@ function sendBootPhase(phase, title, detail, progress) {
 function sendGatewayStatus(running, errorMsg = "") {
   safeSend("gateway-status", { running, errorMsg, port: GATEWAY_DEFAULT_PORT });
 }
-function sendGatewayLog(type2, msg) {
+const gatewayUiLogThrottle = new Map();
+const gatewayDiskLogBuffer = [];
+let gatewayDiskLogFlushTimer = null;
+function shouldSendGatewayLogToUi(type2, msg) {
+  const text = String(msg || "");
+  const lower = text.toLowerCase();
+  if (lower.includes("[model-pricing]") && lower.includes("fetch failed")) {
+    return false;
+  }
+  if (lower.includes("typeerror: fetch failed") && lower.includes("getupdates")) {
+    const key = "wechat-getupdates-fetch-failed";
+    const now = Date.now();
+    const last = gatewayUiLogThrottle.get(key) || 0;
+    gatewayUiLogThrottle.set(key, now);
+    return now - last > 3e4;
+  }
+  return true;
+}
+function flushGatewayDiskLogs() {
+  gatewayDiskLogFlushTimer = null;
+  if (!gatewayDiskLogBuffer.length) return;
+  const lines = gatewayDiskLogBuffer.splice(0, gatewayDiskLogBuffer.length).join("");
   try {
     const logDir = path$1.join(getDataRoot(), ".openclaw", "logs");
     fs$1.mkdirSync(logDir, { recursive: true });
-    fs$1.appendFileSync(path$1.join(logDir, "gateway-launcher.log"), JSON.stringify({
-      time: new Date().toISOString(),
-      type: type2,
-      msg: String(msg || "")
-    }) + "\n", "utf8");
+    fs$1.appendFile(path$1.join(logDir, "gateway-launcher.log"), lines, "utf8", () => {});
   } catch {
   }
-  safeSend("gateway-log", { type: type2, msg });
+}
+function queueGatewayDiskLog(type2, msg) {
+  gatewayDiskLogBuffer.push(JSON.stringify({
+    time: new Date().toISOString(),
+    type: type2,
+    msg: String(msg || "")
+  }) + "\n");
+  if (gatewayDiskLogBuffer.length > 500) gatewayDiskLogBuffer.splice(0, gatewayDiskLogBuffer.length - 500);
+  if (!gatewayDiskLogFlushTimer) {
+    gatewayDiskLogFlushTimer = setTimeout(flushGatewayDiskLogs, 1e3);
+  }
+}
+function sendGatewayLog(type2, msg) {
+  queueGatewayDiskLog(type2, msg);
+  if (shouldSendGatewayLogToUi(type2, msg)) {
+    safeSend("gateway-log", { type: type2, msg });
+  }
+}
+function checkTcpPortOpen(port, timeoutMs = 500) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
 }
 function createWindow(gateway) {
   function createTray() {
@@ -3043,7 +3092,7 @@ function createGatewayManager() {
   function pollGatewayHealth(port, onFirstResult) {
     stopHealthPoll();
     let attempts = 0;
-    const maxAttempts = 200;
+    const maxAttempts = 60;
     let resolved = false;
     sendBootPhase("waiting-ready", "等待就绪", "正在等待 Gateway 响应...", 40);
     const check = async () => {
@@ -3054,8 +3103,17 @@ function createGatewayManager() {
       }
       try {
         const http22 = require("http");
+        const portOpen = await checkTcpPortOpen(port, 350);
+        if (portOpen && !resolved) {
+          gatewayRunning = true;
+          sendBootPhase("done", "启动成功", "Gateway 端口已就绪，正在后台完成健康检查...", 100);
+          sendGatewayStatus(true);
+          safeSend("gateway-ready", true);
+          resolved = true;
+          if (onFirstResult) onFirstResult({ success: true, degraded: true });
+        }
         const result = await new Promise((res, rej) => {
-          const req = http22.get(`http://127.0.0.1:${port}/health`, { timeout: 2e3 }, (resp) => {
+          const req = http22.get(`http://127.0.0.1:${port}/health`, { timeout: 900 }, (resp) => {
             let data = "";
             resp.on("data", (c) => data += c);
             resp.on("end", () => res({ ok: resp.statusCode === 200, data }));
@@ -3072,6 +3130,7 @@ function createGatewayManager() {
           gatewayRunning = true;
           sendBootPhase("done", "启动成功", "Gateway 已就绪！", 100);
           sendGatewayStatus(true);
+          safeSend("gateway-ready", true);
           if (!resolved && onFirstResult) {
             resolved = true;
             onFirstResult({ success: true });
@@ -3097,7 +3156,7 @@ function createGatewayManager() {
         return;
       }
       if (attempts < maxAttempts) {
-        setTimeout(check, 2e3);
+        setTimeout(check, resolved ? 1e4 : 1e3);
       } else {
         console.log(`[gateway] health failed after ${maxAttempts} attempts`);
         gatewayRunning = false;
@@ -3398,6 +3457,7 @@ function setupLifecycle({ getGateway }) {
   electron.app.on("before-quit", async () => {
     console.log(`应用退出前事件触发`);
     electron.app.isQuitting = true;
+    flushGatewayDiskLogs();
     if (hermesManager) {
       await hermesManager.stop();
     }
@@ -22708,7 +22768,8 @@ function registerIPCHandlers({ gateway }) {
         }
       });
     }
-    return { running: ready, gatewayReady: ready, port: GATEWAY_DEFAULT_PORT };
+    const portOpen = ready ? true : await checkTcpPortOpen(GATEWAY_DEFAULT_PORT, 500);
+    return { running: ready || portOpen, gatewayReady: ready || portOpen, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };
   });
   electron.ipcMain.handle("stop-gateway", async () => {
     await gateway.stopGateway();

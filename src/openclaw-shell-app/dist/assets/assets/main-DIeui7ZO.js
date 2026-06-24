@@ -18845,6 +18845,7 @@ function useChatWs() {
   const REQUEST_TIMEOUT = 3e4;
   const CHALLENGE_TIMEOUT = 1e4;
   const _listeners = /* @__PURE__ */ new Map();
+  const CHAT_DEBUG = false;
   const _pending = /* @__PURE__ */ new Map();
   const _readyCallbacks = [];
   const _messageCache = /* @__PURE__ */ new Map();
@@ -19048,7 +19049,7 @@ function useChatWs() {
     _readyCallbacks.length = 0;
   }
   function _handleMessage(data) {
-    console.log("_handleMessage==>", data);
+    if (CHAT_DEBUG) console.log("_handleMessage==>", data);
     lastMessageAt = Date.now();
     missedHeartbeats = 0;
     try {
@@ -19527,9 +19528,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   let _wsSetupDone = false;
   const gatewayStore = useGatewayStore();
   let _connecting = false;
+  let _lastConnectAttemptAt = 0;
   async function connectToGateway() {
+    const now = Date.now();
+    if (now - _lastConnectAttemptAt < 1200) return;
+    _lastConnectAttemptAt = now;
     if (_connecting) {
-      console.log("[aiChat] connectToGateway 已在执行中，跳过重复调用");
       return;
     }
     _connecting = true;
@@ -19546,7 +19550,6 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         } catch {
         }
       }
-      console.log("[aiChat] 准备连接 Gateway, config keys:", Object.keys(config));
       const gw = config?.gateway || {};
       const host = gw.host || "127.0.0.1";
       const port = gw.port || 18789;
@@ -19554,7 +19557,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       const password = gw?.auth?.password || "";
       setupWsConnection({ host, port, token, password });
     } catch (e) {
-      console.error("[aiChat] connectToGateway failed:", e);
+      console.warn("[aiChat] connectToGateway failed:", e?.message || e);
     } finally {
       _connecting = false;
     }
@@ -19567,29 +19570,22 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     return gatewayStore.gatewayReady || gatewayStore.running;
   }
   watch(() => gatewayStore.running, (running) => {
-    console.log("[aiChat] watcher(running):", running, "| wsStatus=", wsStatus.value);
     if (running) {
       if (wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
-        console.log("[aiChat] watcher(running) → 自动连接");
         connectToGateway();
       }
     } else {
-      console.log("[aiChat] watcher(running) → 断开 WS");
       teardownWsConnection();
     }
   });
   watch(() => gatewayStore.gatewayReady, (ready) => {
-    console.log("[aiChat] watcher(gatewayReady):", ready, "| running=", gatewayStore.running, "| wsStatus=", wsStatus.value);
     if (ready && gatewayStore.running) {
       if (wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
-        console.log("[aiChat] watcher(gatewayReady) → 自动连接");
         connectToGateway();
       }
     }
   });
-  console.log("[aiChat] 初始检查 | running=", gatewayStore.running, "| gatewayReady=", gatewayStore.gatewayReady, "| wsStatus=", wsStatus.value);
   if (_isGatewayAvailable() && wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
-    console.log("[aiChat] 初始检查 → 自动连接");
     connectToGateway();
   }
   function setupWsConnection(config) {
@@ -19605,7 +19601,6 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       wsError.value = err || "";
     }));
     _unsubs.push(ws.onReady(async (hello, sk) => {
-      console.warn("[DEDUP-DEBUG] onReady 触发 | hello=", !!hello, "| sessionKey=", sk, "| 当前activeSessionKey=", activeSessionKey.value, "| sending=", sending.value);
       wsStatus.value = "ready";
       await refreshSessions();
       if (!activeSessionKey.value) {
@@ -19621,12 +19616,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }));
     _unsubs.push(ws.onEvent((event) => {
       if ((event.event === "chat" || event.event === "chat.message") && event.payload) {
-        console.log("[DEDUP-DEBUG] onEvent 收到 | eventType=", event.event, "| payload.runId=", event.payload?.runId, "| payload.state=", event.payload?.state, "| hasMessage=", !!event.payload?.message, "| sending=", sending.value);
         handleChatMessage(event.payload);
         const sk = normalizeSessionKey(event.payload.sessionKey);
         if (sk) _scheduleSave(sk);
       } else if (event.event === "agent" && event.payload) {
-        console.log("[DEDUP-DEBUG] onEvent 收到 agent | payload.runId=", event.payload?.runId, "| stream=", event.payload?.stream, "| sending=", sending.value);
         handleAgentEvent(event.payload);
         const sk = normalizeSessionKey(event.payload.sessionKey);
         if (sk) _scheduleSave(sk);
@@ -19712,7 +19705,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       return;
     }
     if (phase === "start") {
-      console.warn("[DEDUP-DEBUG] handleAgentEvent 创建新消息 | runId=", payload.runId, "| phase=", phase, "| dataName=", data.name);
+      if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] handleAgentEvent 创建新消息 | runId=", payload.runId, "| phase=", phase, "| dataName=", data.name);
       const streamId = payload.runId || crypto.randomUUID();
       const msg = {
         id: streamId,
@@ -19750,7 +19743,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       runId: payload.runId,
       sessionKey: payload.sessionKey
     };
-    console.log("[DEDUP-DEBUG] handleChatMessage 入口 |", JSON.stringify(dedupInfo));
+    if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] handleChatMessage 入口 |", JSON.stringify(dedupInfo));
     let sk = normalizeSessionKey(payload.sessionKey);
     if (!sk) {
       console.warn("[aiChat] 事件缺少 sessionKey, payload keys:", Object.keys(payload));
@@ -19758,7 +19751,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
     let msgs = messagesMap.value[sk] || [];
     const existingIdx = msgs.findIndex((m) => m.runId === payload.runId && m.role === "assistant");
-    console.log("[DEDUP-DEBUG] existingIdx=", existingIdx, "| 当前msgs数量=", msgs.length, "| 最后一条role=", msgs[msgs.length - 1]?.role);
+    if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] existingIdx=", existingIdx, "| 当前msgs数量=", msgs.length, "| 最后一条role=", msgs[msgs.length - 1]?.role);
     if (payload.state === "error") {
       sending.value = false;
       currentRunId.value = null;
@@ -19914,7 +19907,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         thinkingContent = typeof payload.thinking === "string" ? payload.thinking : "";
       }
       if (!textContent && !thinkingContent) {
-        console.log(
+        if (CHAT_DEBUG) console.log(
           "[aiChat] 格式A delta 无内容, payload keys:",
           Object.keys(payload),
           "msgContent keys:",
@@ -19928,7 +19921,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         );
         return;
       }
-      console.log(
+      if (CHAT_DEBUG) console.log(
         "[aiChat] 格式A 提取: textContent长度=",
         textContent.length,
         "thinkingContent长度=",
@@ -19943,7 +19936,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         return blocks;
       };
       if (existingIdx >= 0) {
-        console.log("[DEDUP-DEBUG] 格式A 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
+        if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式A 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
         const oldMsg = msgs[existingIdx];
         const updated = { ...oldMsg, status: "streaming" };
         if (textContent) updated.content = textContent;
@@ -19956,7 +19949,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       } else {
         const reuseIdx = _lastStreamingAssistantIndex(msgs);
         if (reuseIdx >= 0) {
-          console.warn("[DEDUP-DEBUG] 格式A 复用已有流式消息 | runId=", payload.runId, "| reuseIdx=", reuseIdx);
+          if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式A 复用已有流式消息 | runId=", payload.runId, "| reuseIdx=", reuseIdx);
           const oldMsg = msgs[reuseIdx];
           const updated = { ...oldMsg, runId: payload.runId || oldMsg.runId, status: "streaming" };
           if (textContent) updated.content = (oldMsg.content || "") + textContent;
@@ -19966,7 +19959,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           newMsgs[reuseIdx] = updated;
           msgs = newMsgs;
         } else {
-          console.warn("[DEDUP-DEBUG] 格式A 创建新消息 | runId=", payload.runId, "| content前30字=", (textContent || "").slice(0, 30));
+          if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式A 创建新消息 | runId=", payload.runId, "| content前30字=", (textContent || "").slice(0, 30));
           const newMsg = {
             id: crypto.randomUUID(),
             role: msgContent.role || "assistant",
@@ -20029,7 +20022,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         return;
       }
       if (existingIdx >= 0) {
-        console.log("[DEDUP-DEBUG] 格式B 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
+        if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式B 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
         const newMsgs = [...msgs];
         const updated = { ...newMsgs[existingIdx] };
         if (payload.delta.content) {
@@ -20062,7 +20055,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         newMsgs[existingIdx] = updated;
         msgs = newMsgs;
       } else if (payload.message?.role === "assistant") {
-        console.warn("[DEDUP-DEBUG] 格式B 创建新消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
+        if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式B 创建新消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
         const newMsg = normalizeMessage(payload.message || payload);
         newMsg.runId = payload.runId;
         newMsg.status = "streaming";
@@ -20075,7 +20068,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       const normalized = normalizeMessage(payload.message);
       normalized.runId = payload.runId;
       if (existingIdx >= 0) {
-        console.log("[DEDUP-DEBUG] 格式C 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
+        if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式C 更新已有消息 | runId=", payload.runId, "| existingIdx=", existingIdx);
         const newMsgs = [...msgs];
         const current = newMsgs[existingIdx];
         newMsgs[existingIdx] = syncMessageBlocks({
@@ -20088,7 +20081,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         });
         msgs = _mergeToolResults(newMsgs);
       } else {
-        console.warn("[DEDUP-DEBUG] 格式C 创建新消息 | runId=", payload.runId, "| sending=", sending.value);
+        if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式C 创建新消息 | runId=", payload.runId, "| sending=", sending.value);
         msgs = _mergeToolResults([...msgs, { ...normalized, status: "done", _streaming: false }]);
       }
       messagesMap.value[sk] = [...msgs];
@@ -20097,7 +20090,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       return;
     }
     if (payload.role) {
-      console.warn("[DEDUP-DEBUG] 格式D | runId=", payload.runId, "| role=", payload.role, "| existingIdx=", existingIdx);
+      if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式D | runId=", payload.runId, "| role=", payload.role, "| existingIdx=", existingIdx);
       const normalized = normalizeMessage(payload);
       normalized.runId = payload.runId;
       const isDone = !payload.stopReason || payload.stopReason !== "toolUse" && payload.stopReason !== "toolResult";
@@ -20124,7 +20117,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       return;
     }
     if (payload.done) {
-      console.log("[DEDUP-DEBUG] 格式E done | runId=", payload.runId, "| existingIdx=", existingIdx);
+      if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式E done | runId=", payload.runId, "| existingIdx=", existingIdx);
       sending.value = false;
       currentRunId.value = null;
       if (existingIdx >= 0) {
@@ -20442,7 +20435,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
   }
   async function loadSessionMessages(sessionKey, limit = 200) {
-    console.log("[DEDUP-DEBUG] loadSessionMessages 开始 | sessionKey=", sessionKey);
+    if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages 开始 | sessionKey=", sessionKey);
     try {
       const remoteResult = await _ws?.chatHistory(sessionKey, limit).catch((e) => {
         console.error("[aiChat] chatHistory WS failed:", e);
@@ -20452,7 +20445,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         const remoteRaw = remoteResult?.messages || remoteResult || [];
         if (remoteRaw.length) {
           const msgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
-          console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
+          if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
           messagesMap.value[sessionKey] = msgs;
           return;
         }
@@ -20466,7 +20459,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         const localMsgs = await api.loadChatMessages(sessionKey, limit);
         if (localMsgs && localMsgs.length) {
           const msgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
-          console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
+          if (CHAT_DEBUG) console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
           messagesMap.value[sessionKey] = msgs;
           return;
         }
@@ -20477,7 +20470,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (!messagesMap.value[sessionKey]?.length) {
       messagesMap.value[sessionKey] = [];
     } else {
-      console.log("[aiChat] loadSessionMessages 无新数据，保留已有缓存 | session:", sessionKey, "消息数:", messagesMap.value[sessionKey].length);
+      if (CHAT_DEBUG) console.log("[aiChat] loadSessionMessages 无新数据，保留已有缓存 | session:", sessionKey, "消息数:", messagesMap.value[sessionKey].length);
     }
   }
   function createSession(initialModelId) {
@@ -20555,11 +20548,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
   }
   async function sendMessage(text2, attachments) {
-    console.log("发送了什么===>", text2, attachments);
+    if (CHAT_DEBUG) console.log("发送了什么===>", text2, attachments);
     const sk = activeSessionKey.value;
-    console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
+    if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
     if (sending.value) {
-      console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
+      if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
       return;
     }
     if (!sk || !text2?.trim() && !attachments?.length) return;
@@ -20617,7 +20610,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     try {
       const result = await _ws?.chatSend(sk, sendText, sendAtts);
       clearTimeout(timeoutId);
-      console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
+      if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
       if (result?.runId) {
         currentRunId.value = result.runId;
       }
@@ -25530,22 +25523,40 @@ const _sfc_main$9 = {
       return modelsStore.currentModel?.value || null;
     });
     let _storeInitDone = false;
+    let _gatewayStatusPollTimer = null;
+    let _lastGatewayConnectKickAt = 0;
+    async function refreshGatewayReadinessForChat() {
+      try {
+        const status = await window.uclaw?.ipcGetGatewayStatus?.();
+        if (!status) return;
+        const available = !!status.running || !!status.gatewayReady || !!status.portOpen;
+        gatewayStore.setRunning(available);
+        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.portOpen || available);
+        if (status.port) gatewayStore.setPort(status.port);
+        const now = Date.now();
+        if (available && store.wsStatus !== "ready" && store.wsStatus !== "connecting" && now - _lastGatewayConnectKickAt > 2500) {
+          _lastGatewayConnectKickAt = now;
+          store.connectToGateway();
+        }
+      } catch {
+      }
+    }
+    function startGatewayReadinessPoll() {
+      if (_gatewayStatusPollTimer) window.clearInterval(_gatewayStatusPollTimer);
+      refreshGatewayReadinessForChat();
+      _gatewayStatusPollTimer = window.setInterval(() => {
+        if (agentMode.value === "openclaw" || agentMode.value === "collab" || store.wsStatus !== "ready") {
+          refreshGatewayReadinessForChat();
+        }
+      }, 4e3);
+    }
     onMounted(() => {
       if (!_storeInitDone) {
         _storeInitDone = true;
         store.init();
       }
-      window.uclaw?.ipcGetGatewayStatus?.().then((status) => {
-        if (!status) return;
-        gatewayStore.setRunning(!!status.running);
-        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.running);
-        if (status.port) gatewayStore.setPort(status.port);
-        if ((status.running || status.gatewayReady) && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
-          store.connectToGateway();
-        }
-      }).catch(() => {});
+      startGatewayReadinessPoll();
       if (gatewayStore.running && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
-        console.log("[AiChat] onMounted 兜底：Gateway 已运行但 WS 未连接，触发自动连接");
         store.connectToGateway();
       }
     });
@@ -26185,6 +26196,10 @@ const _sfc_main$9 = {
     onUnmounted(() => {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
       if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
+      if (_gatewayStatusPollTimer) {
+        window.clearInterval(_gatewayStatusPollTimer);
+        _gatewayStatusPollTimer = null;
+      }
     });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$9, [
