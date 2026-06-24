@@ -127,6 +127,34 @@ async function repairOpenClawPackageFromOfflineZip(forbiddenRuntimePaths) {
   return true;
 }
 
+function repairOpenClawRuntimeTemplates(runtimeRoot) {
+  const packageRoot = path.join(runtimeRoot, "node_modules", "openclaw");
+  const target = path.join(packageRoot, "src", "agents", "templates", "AGENTS.md");
+  if (fs.existsSync(target)) return { ok: true, repaired: false, target };
+  const candidates = [
+    path.join(packageRoot, "docs", "reference", "templates", "AGENTS.md"),
+    path.join(packageRoot, "docs", "AGENTS.md")
+  ];
+  const source = candidates.find((file) => fs.existsSync(file));
+  if (!source) {
+    const zip = path.join(runtimeRoot, "openclaw.zip");
+    if (fs.existsSync(zip)) {
+      const tarExe = process.platform === "win32" ? path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+      const entryName = "node_modules/openclaw/docs/reference/templates/AGENTS.md";
+      const extracted = spawnSync(tarExe, ["-xOf", zip, entryName], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
+      if (extracted.status === 0 && extracted.stdout) {
+        mkdirp(path.dirname(target));
+        fs.writeFileSync(target, extracted.stdout, "utf8");
+        return { ok: true, repaired: true, source: `${zip}#${entryName}`, target };
+      }
+    }
+    return { ok: false, repaired: false, target, error: "AGENTS.md template source missing" };
+  }
+  mkdirp(path.dirname(target));
+  fs.copyFileSync(source, target);
+  return { ok: true, repaired: true, source, target };
+}
+
 function hasUsableSourceRuntimePath(sourceRoot, runtimeRelPath) {
   const relPath = runtimeRelPath.replace(/^runtime[\\/]/, "");
   const fullPath = path.join(sourceRoot, relPath);
@@ -303,6 +331,8 @@ if (!sourceRuntimeRoot) {
   mkdirp(stagingRoot);
   await extractZip(runtimeZip, { dir: stagingRoot });
   await repairOpenClawPackageFromOfflineZip(Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : []);
+  const templateRepair = repairOpenClawRuntimeTemplates(stagingRuntimeRoot);
+  if (!templateRepair.ok) fail(`OpenClaw runtime template repair failed: ${templateRepair.error || templateRepair.target}`);
   if (runtimeProfile === "slim") {
     pruneStagedRuntime(Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : []);
   } else if (path.resolve(runtimeZip) !== path.resolve(zipPath)) {
@@ -356,6 +386,8 @@ for (const [sourceRel, targetRel] of runtimeEntries) {
   copyRuntimeEntry(sourceRel, targetRel, forbiddenRuntimePaths);
 }
 await repairOpenClawPackageFromOfflineZip(forbiddenRuntimePaths);
+const templateRepair = repairOpenClawRuntimeTemplates(stagingRuntimeRoot);
+if (!templateRepair.ok) fail(`OpenClaw runtime template repair failed: ${templateRepair.error || templateRepair.target}`);
 
 const runtimeOnlyRequired = windowsSpec.requiredPaths
   .filter((relPath) => relPath.startsWith("runtime/"))

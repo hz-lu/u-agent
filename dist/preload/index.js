@@ -188,7 +188,8 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcOffHermesEmbeddedOpen: (callback) => electron.ipcRenderer.removeListener("hermes-open-embedded", callback),
   ipcOnHermesStatus: (callback) => electron.ipcRenderer.on("hermes-status", (_, status) => callback(status)),
   ipcOffHermesStatus: (callback) => electron.ipcRenderer.removeListener("hermes-status", callback),
+  ipcOnHermesChatProgress: (callback) => electron.ipcRenderer.on("hermes-chat-progress", (_, payload) => callback(payload)),
+  ipcOffHermesChatProgress: (callback) => electron.ipcRenderer.removeListener("hermes-chat-progress", callback),
   ipcOnHermesLog: (callback) => electron.ipcRenderer.on("hermes-log", (_, log) => callback(log)),
   ipcOffHermesLog: (callback) => electron.ipcRenderer.removeListener("hermes-log", callback)
 });
-

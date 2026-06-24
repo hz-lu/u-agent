@@ -153,6 +153,7 @@ const nodeRuntime = nodeRuntimeCandidates.find((candidate) => fs.existsSync(cand
 const openclawPackage = path.join(runtimeRoot, "node_modules", "openclaw");
 const openclawPackageEntry = path.join(openclawPackage, "openclaw.mjs");
 const openclawPackageJson = path.join(openclawPackage, "package.json");
+const openclawAgentsTemplate = path.join(openclawPackage, "src", "agents", "templates", "AGENTS.md");
 const openclawEntry = entryCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const missingDistReferences = findMissingDistReferences();
 const missingPackageImports = findMissingPackageImports();
@@ -165,6 +166,7 @@ if (!nodeRuntime) runtimeErrors.push(`Missing bundled Node runtime: ${nodeRuntim
 if (!fs.existsSync(openclawPackage)) runtimeErrors.push(`Missing OpenClaw package: ${openclawPackage}`);
 if (fs.existsSync(openclawPackage) && !fs.existsSync(openclawPackageEntry)) runtimeErrors.push(`Missing OpenClaw package entry: ${openclawPackageEntry}`);
 if (fs.existsSync(openclawPackage) && !fs.existsSync(openclawPackageJson)) runtimeErrors.push(`Missing OpenClaw package.json: ${openclawPackageJson}`);
+if (fs.existsSync(openclawPackage) && !fs.existsSync(openclawAgentsTemplate)) runtimeErrors.push(`Missing OpenClaw workspace template: ${openclawAgentsTemplate}`);
 if (fs.existsSync(openclawPackage) && !fs.existsSync(distRoot)) runtimeErrors.push(`Missing OpenClaw dist: ${distRoot}`);
 if (fs.existsSync(distRoot) && !openclawEntry) runtimeErrors.push(`Missing OpenClaw dist/entry.(m)js under: ${distRoot}`);
 for (const item of missingDistReferences.slice(0, 20)) {
@@ -198,6 +200,7 @@ const report = {
     openclawPackage: fs.existsSync(openclawPackage),
     openclawPackageEntry: fs.existsSync(openclawPackageEntry),
     openclawPackageJson: fs.existsSync(openclawPackageJson),
+    openclawAgentsTemplate: fs.existsSync(openclawAgentsTemplate),
     openclawDist: fs.existsSync(distRoot),
     openclawEntry: Boolean(openclawEntry),
     config: fs.existsSync(configFile)

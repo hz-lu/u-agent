@@ -694,11 +694,16 @@ class HermesManager {
       const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: nextManifest.syncedAt }) === JSON.stringify(nextManifest);
       let copied = 0;
       if (!unchanged) {
-        fs$1.rmSync(openClawTargetRoot, { recursive: true, force: true });
         fs$1.mkdirSync(openClawTargetRoot, { recursive: true });
+        const keepNames = new Set(sources.map((item) => item.targetName.toLowerCase()).concat(["description.md", ".openclaw_sync_manifest.json"]));
+        for (const entry of fs$1.readdirSync(openClawTargetRoot, { withFileTypes: true })) {
+          if (keepNames.has(entry.name.toLowerCase())) continue;
+          fs$1.rmSync(path$1.join(openClawTargetRoot, entry.name), { recursive: true, force: true });
+        }
         fs$1.writeFileSync(path$1.join(openClawTargetRoot, "DESCRIPTION.md"), "# OpenClaw Skills\n\nOpenClaw skills synchronized from the portable USB skills directory and verified through Hermes native skill command scanning.\n", "utf8");
         for (const item of sources) {
           const target = path$1.join(openClawTargetRoot, item.targetName);
+          fs$1.rmSync(target, { recursive: true, force: true });
           if (fs$1.statSync(item.source).isDirectory()) {
             fs$1.cpSync(item.source, target, { recursive: true, filter: (sourcePath) => shouldCopySkillPath(item.source, sourcePath) });
           } else {
@@ -1119,7 +1124,12 @@ class HermesManager {
     const memoryReport = readJsonSafe(path$1.join(data, "reports", "memory", "persistence-last.json"));
     const skillReport = readJsonSafe(path$1.join(data, "reports", "skills", "visibility-last.json"));
     const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));
-    const skillCount = countHermesSkills(skillsRoot);
+    const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);
+    const skillCount = reportedSkillCount || (this._skillCountCache && Date.now() - this._skillCountCache.checkedAt < 60000 ? this._skillCountCache.count : (() => {
+      const count = countHermesSkills(skillsRoot);
+      this._skillCountCache = { checkedAt: Date.now(), count };
+      return count;
+    })());
     const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || "";
     return {
       status: this.status,
@@ -1594,6 +1604,15 @@ class HermesManager {
     const chatCommand = this.getHermesCommand(args);
     safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " " + chatCommand.args.join(" ") + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
     return await new Promise((resolve) => {
+      const progressBase = {
+        sessionId: options.sessionId || "hermes-ai-chat",
+        mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",
+        startedAt: Date.now()
+      };
+      const emitProgress = (stage, detail = "") => {
+        safeSend("hermes-chat-progress", { ...progressBase, stage, detail, at: Date.now() });
+      };
+      emitProgress("starting", "Hermes 正在准备本地运行环境...");
       const child = child_process.spawn(chatCommand.command, chatCommand.args, {
         cwd: path$1.join(getAppRoot(), "data", ".hermes"),
         env: env2,
@@ -1628,6 +1647,10 @@ class HermesManager {
       const stderrPath = path$1.join(runDir, "stderr.txt");
       fs$1.mkdirSync(runDir, { recursive: true });
       fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), message, provider, modelName }, null, 2) + "\n", "utf8");
+      emitProgress("model", "Hermes 已启动，正在调用模型：" + (modelName || "当前配置模型"));
+      const heartbeat = setInterval(() => {
+        emitProgress("waiting", "模型仍在处理，本轮任务没有中断；可继续切换其他页面。");
+      }, 8000);
       const maxStdoutBytes = Number(options.maxStdoutBytes) || 1024 * 1024;
       const maxStderrBytes = Number(options.maxStderrBytes) || 256 * 1024;
       function appendLimited(current, text, limit) {
@@ -1638,6 +1661,8 @@ class HermesManager {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        clearInterval(heartbeat);
+        emitProgress(payload?.ok === false ? "error" : "done", payload?.ok === false ? "Hermes 本轮请求未完成，已生成友好错误说明。" : "Hermes 已完成回复。");
         resolve(payload);
       }
       function noteOutputSpill(streamName, bytes, filePath) {
@@ -1704,6 +1729,7 @@ class HermesManager {
         stdoutBytes += chunk.length;
         appendFileQueued(stdoutPath, chunk);
         stdout = appendLimited(stdout, chunk.toString("utf8"), maxStdoutBytes);
+        emitProgress("receiving", "Hermes 已收到模型输出，正在整理回复...");
         if (stdoutBytes === chunk.length || stdoutBytes % (1024 * 1024) < chunk.length) noteOutputSpill("stdout", stdoutBytes, stdoutPath);
       });
       child.stderr?.on("data", (data) => {
@@ -1716,6 +1742,7 @@ class HermesManager {
         if (now - lastStderrLogAt > 1000) {
           lastStderrLogAt = now;
           safeSend("hermes-log", { type: "stderr", msg: "[chat] " + text.slice(-1200) });
+          emitProgress("working", "Hermes 正在执行工具/插件初始化，详细过程已写入日志。");
         }
         if (stderrBytes === chunk.length || stderrBytes % (512 * 1024) < chunk.length) noteOutputSpill("stderr", stderrBytes, stderrPath);
       });
@@ -2450,6 +2477,39 @@ function copyDirSync(src2, dest) {
     else fs$1.copyFileSync(s, d);
   }
 }
+function repairOpenClawRuntimeTemplates(runtimeRoot = RUNTIME_DIR) {
+  try {
+    const packageRoot = path$1.join(runtimeRoot, "node_modules", "openclaw");
+    const target = path$1.join(packageRoot, "src", "agents", "templates", "AGENTS.md");
+    if (fs$1.existsSync(target)) return { ok: true, repaired: false, target };
+    const candidates = [
+      path$1.join(packageRoot, "docs", "reference", "templates", "AGENTS.md"),
+      path$1.join(packageRoot, "docs", "AGENTS.md")
+    ];
+    const source = candidates.find((file) => fs$1.existsSync(file));
+    if (!source) {
+      const zip = path$1.join(runtimeRoot, "openclaw.zip");
+      if (fs$1.existsSync(zip)) {
+        const tarExe = process.platform === "win32" ? path$1.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe") : "tar";
+        const entryName = "node_modules/openclaw/docs/reference/templates/AGENTS.md";
+        const extracted = child_process.spawnSync(tarExe, ["-xOf", zip, entryName], { encoding: "utf8", windowsHide: true, maxBuffer: 1024 * 1024 });
+        if (extracted.status === 0 && extracted.stdout) {
+          fs$1.mkdirSync(path$1.dirname(target), { recursive: true });
+          fs$1.writeFileSync(target, extracted.stdout, "utf8");
+          console.log("[runtime] Repaired OpenClaw AGENTS template from zip:", target);
+          return { ok: true, repaired: true, source: zip + "#" + entryName, target };
+        }
+      }
+      return { ok: false, repaired: false, target, error: "AGENTS.md template source missing" };
+    }
+    fs$1.mkdirSync(path$1.dirname(target), { recursive: true });
+    fs$1.copyFileSync(source, target);
+    console.log("[runtime] Repaired OpenClaw AGENTS template:", target);
+    return { ok: true, repaired: true, source, target };
+  } catch (err) {
+    return { ok: false, repaired: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 function getMediaDir() {
   return path$1.join(getDataRoot(), DIR_OPENCLAW, "media");
 }
@@ -2484,11 +2544,15 @@ async function extractRuntime() {
   const runtimeHasNode = fs$1.existsSync(path$1.join(RUNTIME_DIR, "node.exe"));
   if (runtimeHasCli && runtimeHasNode) {
     /* codex-portable-runtime-ready-skip */
+    const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+    if (!repair.ok) console.log("[runtime] OpenClaw template repair pending:", repair.error || repair.target);
     try { fs$1.writeFileSync(runtimeMarker, Date.now().toString(), "utf8"); } catch {}
     console.log("[runtime] Portable runtime already present, skipping extraction");
     return;
   }
   if (path$1.resolve(RUNTIME_DIR) === path$1.resolve(runtimeSrc)) {
+    const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+    if (!repair.ok) console.log("[runtime] OpenClaw template repair pending:", repair.error || repair.target);
     console.log("[runtime] Runtime source and target are identical; skipping self-extraction");
     return;
   }
@@ -2582,6 +2646,7 @@ async function extractRuntime() {
     }
   }
   const criticalFiles = ["openclaw.cmd", "node.exe"];
+  repairOpenClawRuntimeTemplates(RUNTIME_DIR);
   const missingFiles = criticalFiles.filter((f) => !fs$1.existsSync(path$1.join(RUNTIME_DIR, f)));
   if (missingFiles.length > 0) {
     extractOk = false;

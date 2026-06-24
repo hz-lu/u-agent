@@ -25526,6 +25526,7 @@ const _sfc_main$9 = {
     onMounted(() => {
       loadHermesSession();
       window.addEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
       nextTick(() => scrollToBottom());
     });
     async function handleRefreshModels() {
@@ -25624,6 +25625,16 @@ const _sfc_main$9 = {
     }
     function handleHermesStateEvent() {
       nextTick(() => scrollToBottom(0));
+    }
+    function handleHermesChatProgress(payload) {
+      const text = payload?.detail || "";
+      if (!text) return;
+      if (payload?.mode === "collab" || payload?.sessionId === "openclaw-hermes-collab") {
+        collabRunState.value = text;
+      } else {
+        hermesRunState.value = text;
+      }
+      saveHermesSession();
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
@@ -26035,6 +26046,7 @@ const _sfc_main$9 = {
     }
     onUnmounted(() => {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
     });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$9, [

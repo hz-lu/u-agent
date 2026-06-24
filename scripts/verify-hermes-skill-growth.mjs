@@ -7,7 +7,9 @@ const usbRoot = resolvePortableRoot();
 const hermesRoot = path.join(usbRoot, "runtime", "HermesPortable");
 const dataRoot = path.join(usbRoot, "data", ".hermes");
 const sourceRoot = path.join(hermesRoot, "hermes-agent");
-const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const venvPythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const pythonExe = findPortablePython();
+const venvSitePackages = path.join(hermesRoot, "venv", "Lib", "site-packages");
 const hermesSkillsRoot = path.join(dataRoot, "skills");
 const openClawSkillsRoot = path.join(usbRoot, "skills");
 const reportPath = path.join(dataRoot, "reports", "skills", "growth-last.json");
@@ -19,6 +21,22 @@ function mkdirp(dir) {
 function writeJson(filePath, value) {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function findPortablePython() {
+  const exact = path.join(hermesRoot, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
+  if (fs.existsSync(exact)) return exact;
+  const pyRoot = path.join(hermesRoot, "python");
+  const stack = fs.existsSync(pyRoot) ? [pyRoot] : [];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
+    }
+  }
+  return venvPythonExe;
 }
 
 function safeFileName(value) {
@@ -96,6 +114,7 @@ function buildHermesEnv() {
     HERMES_BROWSER_OPENED: "1",
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
+    PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     PIP_CACHE_DIR: path.join(cache, "pip"),
     npm_config_cache: path.join(cache, "npm"),
     TMP: tmp,

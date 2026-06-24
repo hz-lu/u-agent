@@ -7,10 +7,28 @@ import { resolvePortableRoot } from "./portable-root.mjs";
 const usbRoot = resolvePortableRoot();
 const hermesRoot = path.join(usbRoot, "runtime", "HermesPortable");
 const hermesExe = path.join(hermesRoot, "venv", "Scripts", "hermes.exe");
-const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const venvPythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const pythonExe = findPortablePython();
 const nodeExe = path.join(hermesRoot, "node", "node.exe");
 const configServer = path.join(hermesRoot, "lib", "config_server.py");
 const hermesSource = path.join(hermesRoot, "hermes-agent", "pyproject.toml");
+const venvSitePackages = path.join(hermesRoot, "venv", "Lib", "site-packages");
+
+function findPortablePython() {
+  const exact = path.join(hermesRoot, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
+  if (fs.existsSync(exact)) return exact;
+  const pyRoot = path.join(hermesRoot, "python");
+  const stack = fs.existsSync(pyRoot) ? [pyRoot] : [];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
+    }
+  }
+  return venvPythonExe;
+}
 
 function run(command, args, cwd = hermesRoot) {
   if (!fs.existsSync(command)) return { ok: false, error: `missing: ${command}` };
@@ -70,6 +88,7 @@ function buildHermesEnv() {
     HERMES_BROWSER_OPENED: "1",
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
+    PYTHONPATH: [venvSitePackages, path.join(hermesRoot, "hermes-agent"), process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     PIP_CACHE_DIR: path.join(cache, "pip"),
     npm_config_cache: path.join(cache, "npm"),
     TMP: temp,
@@ -89,12 +108,13 @@ const report = {
   files: {
     hermesExe: fs.existsSync(hermesExe),
     pythonExe: fs.existsSync(pythonExe),
+    venvPythonExe: fs.existsSync(venvPythonExe),
     nodeExe: fs.existsSync(nodeExe),
     configServer: fs.existsSync(configServer),
     source: fs.existsSync(hermesSource)
   },
   versions: {
-    hermes: run(hermesExe, ["--version"]),
+    hermes: run(pythonExe, ["-m", "hermes_cli.main", "--version"]),
     python: run(pythonExe, ["--version"]),
     node: run(nodeExe, ["--version"])
   },

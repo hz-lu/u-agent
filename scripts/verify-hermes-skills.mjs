@@ -7,7 +7,9 @@ const usbRoot = resolvePortableRoot();
 const hermesRoot = path.join(usbRoot, "runtime", "HermesPortable");
 const dataRoot = path.join(usbRoot, "data", ".hermes");
 const sourceRoot = path.join(hermesRoot, "hermes-agent");
-const pythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const venvPythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
+const pythonExe = findPortablePython();
+const venvSitePackages = path.join(hermesRoot, "venv", "Lib", "site-packages");
 const skillsRoot = path.join(usbRoot, "skills");
 const mirrorRoot = path.join(dataRoot, "skills", "openclaw");
 const reportPath = path.join(dataRoot, "reports", "skills", "visibility-last.json");
@@ -28,6 +30,22 @@ function readJsonSafe(filePath) {
 function writeJson(filePath, value) {
   mkdirp(path.dirname(filePath));
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function findPortablePython() {
+  const exact = path.join(hermesRoot, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
+  if (fs.existsSync(exact)) return exact;
+  const pyRoot = path.join(hermesRoot, "python");
+  const stack = fs.existsSync(pyRoot) ? [pyRoot] : [];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
+    }
+  }
+  return venvPythonExe;
 }
 
 function writeHermesConfig() {
@@ -75,6 +93,7 @@ function buildHermesEnv() {
     HERMES_BROWSER_OPENED: "1",
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
+    PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     PIP_CACHE_DIR: path.join(cache, "pip"),
     npm_config_cache: path.join(cache, "npm"),
     TMP: tmp,
@@ -162,15 +181,20 @@ function syncMirror(rows) {
   const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: nextManifest.syncedAt }) === JSON.stringify(nextManifest);
   if (unchanged) return { copied: 0, unchanged: true };
 
-  fs.rmSync(mirrorRoot, { recursive: true, force: true });
   mkdirp(mirrorRoot);
   const used = new Set();
   let copied = 0;
-  for (const row of rows) {
-    const targetName = uniqueName(safeFileName(row.key || row.name), used);
+  const targetRows = rows.map((row) => ({ row, targetName: uniqueName(safeFileName(row.key || row.name), used) }));
+  const keepNames = new Set(targetRows.map(({ targetName }) => targetName.toLowerCase()).concat([".openclaw_sync_manifest.json"]));
+  for (const entry of fs.readdirSync(mirrorRoot, { withFileTypes: true })) {
+    if (keepNames.has(entry.name.toLowerCase())) continue;
+    fs.rmSync(path.join(mirrorRoot, entry.name), { recursive: true, force: true });
+  }
+  for (const { row, targetName } of targetRows) {
     const manifestRow = nextManifest.skills.find((item) => item.source === row.source);
     if (manifestRow) manifestRow.targetName = targetName;
     const target = path.join(mirrorRoot, targetName);
+    fs.rmSync(target, { recursive: true, force: true });
     if (row.isDirectory) {
       fs.cpSync(row.source, target, {
         recursive: true,
