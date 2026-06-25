@@ -20648,7 +20648,13 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       status: "done"
     };
     const msgs = messagesMap.value[sk] || [];
-    msgs.push(userMsg);
+    const lastEchoIdx = msgs.length - 1;
+    const lastEcho = msgs[lastEchoIdx];
+    if (lastEcho?.role === "user" && lastEcho?._uiEchoKey && lastEcho.content === userMsg.content && Date.now() - (lastEcho.timestamp || 0) < 1e4) {
+      msgs[lastEchoIdx] = { ...userMsg, _uiEchoKey: lastEcho._uiEchoKey };
+    } else {
+      msgs.push(userMsg);
+    }
     messagesMap.value[sk] = [...msgs];
     _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
@@ -25567,6 +25573,7 @@ const _sfc_main$9 = {
     const renameInputRef = /* @__PURE__ */ ref(null);
     const chatInputRef = /* @__PURE__ */ ref(null);
     const agentMode = /* @__PURE__ */ ref("openclaw");
+    const openclawUiMessages = /* @__PURE__ */ ref([]);
     const hermesMessages = /* @__PURE__ */ ref([]);
     const collabMessages = /* @__PURE__ */ ref([]);
     const hermesSending = /* @__PURE__ */ ref(false);
@@ -25600,7 +25607,59 @@ const _sfc_main$9 = {
       const s = store.activeSession;
       return s ? store.getSessionName(s) : "AI 会话";
     });
-    const activeMessages = computed(() => agentMode.value === "openclaw" ? store.currentMessages : agentMode.value === "collab" ? collabMessages.value : hermesMessages.value);
+    function mergeOpenClawUiMessages(localItems = [], storeItems = []) {
+      const output = [];
+      const seen = /* @__PURE__ */ new Set();
+      const add = (item) => {
+        if (!item) return;
+        const key = item._uiEchoKey || item.runId || item.id || `${item.role || ""}:${item.content || ""}:${item.timestamp || ""}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        output.push(item);
+      };
+      (Array.isArray(localItems) ? localItems : []).forEach(add);
+      (Array.isArray(storeItems) ? storeItems : []).forEach(add);
+      return output;
+    }
+    function appendOpenClawUiMessage(msg) {
+      openclawUiMessages.value = mergeOpenClawUiMessages(openclawUiMessages.value, [msg]);
+      try {
+        const key = store.activeSessionKey || store.createSession?.()?.key || "main";
+        if (!store.messagesMap[key]) store.messagesMap[key] = [];
+        if (!store.messagesMap[key].some((m) => (m._uiEchoKey || m.id) === (msg._uiEchoKey || msg.id))) {
+          store.messagesMap[key] = [...store.messagesMap[key], msg];
+        }
+      } catch (e) {
+        console.warn("[aiChat] append OpenClaw UI message to store failed:", e?.message || e);
+      }
+    }
+    function appendOpenClawLocalMessage(text2, attachments = []) {
+      const content = text2 || "";
+      if (!content.trim() && !attachments?.length) return;
+      const echoKey = `openclaw-ui-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const msg = {
+        id: echoKey,
+        _uiEchoKey: echoKey,
+        sessionKey: store.activeSessionKey || "main",
+        role: "user",
+        content,
+        images: [],
+        videos: [],
+        audios: [],
+        files: [],
+        tools: [],
+        attachments: attachments || [],
+        timestamp: Date.now(),
+        status: "done"
+      };
+      appendOpenClawUiMessage(msg);
+    }
+    watch(() => store.currentMessages, (messages) => {
+      if (Array.isArray(messages) && messages.length) {
+        openclawUiMessages.value = mergeOpenClawUiMessages(openclawUiMessages.value, messages);
+      }
+    }, { deep: true, immediate: true });
+    const activeMessages = computed(() => agentMode.value === "openclaw" ? openclawUiMessages.value.length ? openclawUiMessages.value : store.currentMessages : agentMode.value === "collab" ? collabMessages.value : hermesMessages.value);
     const activeProfile = computed(() => agentMode.value === "openclaw" ? store.profile : {
       ...store.profile,
       aiName: agentMode.value === "collab" ? "OpenClaw + Hermes" : "Hermes Agent",
@@ -26157,7 +26216,23 @@ const _sfc_main$9 = {
     }
     async function handleSend(text2, attachments) {
       if (agentMode.value === "openclaw") {
-        await store.sendMessage(text2, attachments);
+        appendOpenClawLocalMessage(text2, attachments);
+        scrollToBottom();
+        Promise.resolve(store.sendMessage(text2, attachments)).catch((e) => {
+          openclawUiMessages.value = [...openclawUiMessages.value, {
+            id: `openclaw-ui-error-${Date.now()}`,
+            role: "assistant",
+            content: "OpenClaw 发送失败：" + (e?.message || e || "未知错误"),
+            images: [],
+            videos: [],
+            audios: [],
+            files: [],
+            tools: [],
+            timestamp: Date.now(),
+            status: "error"
+          }];
+          scrollToBottom();
+        });
         scrollToBottom();
         return;
       }
@@ -26171,7 +26246,10 @@ const _sfc_main$9 = {
     function handleCommand(cmd) {
       if (agentMode.value === "openclaw") {
         store.handleCommand(cmd);
-        if (cmd === "/new" || cmd === "/reset") scrollToBottom();
+        if (cmd === "/new" || cmd === "/reset") {
+          openclawUiMessages.value = [];
+          scrollToBottom();
+        }
         return;
       }
       if (cmd === "/new" || cmd === "/reset") {
@@ -26252,6 +26330,7 @@ const _sfc_main$9 = {
       }
       if (store.activeSessionKey) {
         await store.resetSession(store.activeSessionKey);
+        openclawUiMessages.value = [];
         showToast("对话已清空");
       }
       showClearDialog.value = false;
