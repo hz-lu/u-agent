@@ -22306,6 +22306,116 @@ function reloadGateway() {
     return false;
   }
 }
+function readGatewayAuthFromConfig() {
+  try {
+    const configPath2 = path$1.join(getDataRoot(), ".openclaw", "openclaw.json");
+    if (!fs$1.existsSync(configPath2)) return {};
+    const config = JSON.parse(fs$1.readFileSync(configPath2, "utf-8"));
+    const gw = config?.gateway || {};
+    return {
+      port: Number(gw.port || GATEWAY_DEFAULT_PORT),
+      token: gw?.auth?.token || gw.authToken || "",
+      password: gw?.auth?.password || gw.password || ""
+    };
+  } catch (e) {
+    console.warn("[gateway-ipc] read config failed:", e?.message || e);
+    return {};
+  }
+}
+function gatewayRpcViaMain(method, params = {}, options = {}) {
+  return new Promise((resolve, reject) => {
+    const auth = readGatewayAuthFromConfig();
+    const port = Number(options.port || auth.port || GATEWAY_DEFAULT_PORT);
+    const token = options.token ?? auth.token ?? "";
+    const password = options.password ?? auth.password ?? "";
+    const reqTimeoutMs = Number(options.timeoutMs || 45e3);
+    const wsUrl = `ws://127.0.0.1:${port}/ws?token=${encodeURIComponent(token)}`;
+    const id = `ipc-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    let settled = false;
+    let ws;
+    let timer;
+    const finish = (err, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        ws?.close();
+      } catch {
+      }
+      if (err) reject(err);
+      else resolve(value);
+    };
+    timer = setTimeout(() => finish(new Error("Gateway IPC request timed out")), reqTimeoutMs);
+    try {
+      ws = new WebSocket(wsUrl, {
+        headers: {
+          Origin: `http://127.0.0.1:${port}`,
+          "User-Agent": `${APP_NAME}-USB/${electron.app.getVersion()} main-ipc`
+        }
+      });
+    } catch (e) {
+      finish(e);
+      return;
+    }
+    ws.onopen = () => {
+    };
+    ws.onerror = (e) => {
+      finish(new Error(e?.message || "Gateway IPC WebSocket error"));
+    };
+    ws.onclose = (event) => {
+      if (!settled) {
+        finish(new Error(`Gateway IPC WebSocket closed (${event?.code || "unknown"})`));
+      }
+    };
+    ws.onmessage = (event) => {
+      let msg;
+      try {
+        msg = JSON.parse(typeof event.data === "string" ? event.data : Buffer.from(event.data).toString("utf-8"));
+      } catch {
+        return;
+      }
+      if (msg.type === "event" && msg.event === "connect.challenge") {
+        try {
+          ws.send(JSON.stringify(createConnectFrame(msg.payload?.nonce || "", token, password)));
+        } catch (e) {
+          finish(e);
+        }
+        return;
+      }
+      if (msg.type === "res" && msg.id?.startsWith("connect-")) {
+        if (!msg.ok || msg.error) {
+          finish(new Error(msg.error?.message || "Gateway handshake failed"));
+          return;
+        }
+        try {
+          ws.send(JSON.stringify({ type: "req", id, method, params }));
+        } catch (e) {
+          finish(e);
+        }
+        return;
+      }
+      if (msg.type === "res" && msg.id === id) {
+        if (msg.error) {
+          finish(new Error(msg.error.message || "Gateway request failed"));
+        } else {
+          finish(null, msg.result || msg.payload || msg);
+        }
+      }
+    };
+  });
+}
+async function sendGatewayChatViaMain(payload = {}) {
+  const sessionKey = payload.sessionKey || "main";
+  const message = payload.message || "";
+  const params = {
+    sessionKey,
+    message,
+    deliver: false,
+    idempotencyKey: payload.idempotencyKey || `ipc-chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  };
+  if (payload.attachments?.length) params.attachments = payload.attachments;
+  return gatewayRpcViaMain("chat.send", params, payload);
+}
 function parseSkillMeta(skillFilePath) {
   try {
     const content = fs$1.readFileSync(skillFilePath, "utf-8");
@@ -22555,6 +22665,15 @@ function registerIPCHandlers({ gateway }) {
     }
   });
   electron.ipcMain.handle("get-default-port", () => GATEWAY_DEFAULT_PORT);
+  electron.ipcMain.handle("gateway-chat-send", async (_, payload) => {
+    try {
+      const result = await sendGatewayChatViaMain(payload || {});
+      return { ok: true, result };
+    } catch (e) {
+      console.error("[gateway-ipc] chat.send failed:", e?.message || e);
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
   electron.ipcMain.handle("check-step-serial", async () => {
     try {
       const info = await detectUSBStatus();

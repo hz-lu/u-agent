@@ -20613,8 +20613,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sk = ensureActiveSession();
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
     if (sending.value) {
-      if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
-      return;
+      console.warn("[aiChat] sending flag is already true; continuing so user input is not lost.");
     }
     if (!text2?.trim() && !attachments?.length) return;
     if (!sk) {
@@ -20687,11 +20686,28 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     try {
-      if (!_ws) {
-        connectToGateway();
-        throw new Error("Gateway chat channel is connecting. Please retry shortly.");
+      let result;
+      try {
+        if (!_ws || _ws.status?.value !== "ready") {
+          connectToGateway();
+          throw new Error("Gateway WebSocket is not ready");
+        }
+        result = await _ws.chatSend(sk, sendText, sendAtts);
+      } catch (wsError) {
+        const api = getApi();
+        if (!api?.gatewayChatSend) throw wsError;
+        console.warn("[aiChat] renderer websocket send failed, fallback to main IPC:", wsError?.message || wsError);
+        const fallback = await api.gatewayChatSend({
+          sessionKey: sk,
+          message: sendText,
+          attachments: sendAtts,
+          timeoutMs: 6e4
+        });
+        if (!fallback?.ok) {
+          throw new Error(fallback?.error || "\u53d1\u9001\u5230 OpenClaw Gateway \u5931\u8d25\uff0c\u8bf7\u786e\u8ba4\u9996\u9875 Gateway \u5df2\u542f\u52a8\u540e\u91cd\u8bd5\u3002");
+        }
+        result = fallback.result;
       }
-      const result = await _ws.chatSend(sk, sendText, sendAtts);
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
       if (result?.runId) {
@@ -20713,8 +20729,9 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         timestamp: Date.now(),
         status: "error"
       };
-      msgs.push(errMsg);
-      messagesMap.value[sk] = [...msgs];
+      const curMsgs = messagesMap.value[sk] || [];
+      curMsgs.push(errMsg);
+      messagesMap.value[sk] = [...curMsgs];
       _scheduleSave(sk);
     }
   }
@@ -26128,9 +26145,9 @@ const _sfc_main$9 = {
         showToast("Hermes Agent API 启动失败: " + e.message, true);
       }
     }
-    function handleSend(text2, attachments) {
+    async function handleSend(text2, attachments) {
       if (agentMode.value === "openclaw") {
-        store.sendMessage(text2, attachments);
+        await store.sendMessage(text2, attachments);
         scrollToBottom();
         return;
       }
