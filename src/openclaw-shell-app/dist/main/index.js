@@ -1699,7 +1699,7 @@ class HermesManager {
         const now = Date.now();
         const displayDetail = detail + " 已等待 " + formatElapsed();
         const key = stage + "\n" + displayDetail;
-        if (key === lastProgressKey && now - lastProgressAt < 3000) return;
+        if (key === lastProgressKey && now - lastProgressAt < 7000) return;
         lastProgressKey = key;
         lastProgressAt = now;
         safeSend("hermes-chat-progress", { ...progressBase, stage, detail: displayDetail, elapsedMs: now - startedAtMs, elapsedText: formatElapsed(), at: Date.now() });
@@ -1831,7 +1831,7 @@ class HermesManager {
         appendFileQueued(stderrPath, chunk);
         stderr = appendLimited(stderr, text, maxStderrBytes);
         const now = Date.now();
-        if (now - lastStderrLogAt > 1000) {
+        if (now - lastStderrLogAt > 3000) {
           lastStderrLogAt = now;
           safeSend("hermes-log", { type: "stderr", msg: "[chat] " + text.slice(-1200) });
           emitProgress("working", "Hermes 正在执行工具/插件初始化，详细过程已写入日志。");

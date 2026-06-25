@@ -19529,6 +19529,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   const gatewayStore = useGatewayStore();
   let _connecting = false;
   let _lastConnectAttemptAt = 0;
+  let _sessionsInflight = null;
+  let _lastSessionsRefreshAt = 0;
+  const _historyInflight = /* @__PURE__ */ new Set();
+  const _historyLastLoadedAt = {};
   async function connectToGateway() {
     const now = Date.now();
     if (now - _lastConnectAttemptAt < 1200) return;
@@ -20412,6 +20416,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }, 1e3);
   }
   async function refreshSessions() {
+    const now = Date.now();
+    if (_sessionsInflight) return _sessionsInflight;
+    if (now - _lastSessionsRefreshAt < 5e3) return;
+    _lastSessionsRefreshAt = now;
+    _sessionsInflight = (async () => {
     try {
       const result = await _ws?.sessionsList();
       const list2 = (result?.sessions || result || []).filter((s) => s.key);
@@ -20433,8 +20442,20 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     } catch (e) {
       console.error("[aiChat] refreshSessions failed:", e);
     }
+    })();
+    try {
+      return await _sessionsInflight;
+    } finally {
+      _sessionsInflight = null;
+    }
   }
   async function loadSessionMessages(sessionKey, limit = 200) {
+    if (!sessionKey) return;
+    const now = Date.now();
+    if (_historyInflight.has(sessionKey)) return;
+    if (sending.value && messagesMap.value[sessionKey]?.length) return;
+    if (now - (_historyLastLoadedAt[sessionKey] || 0) < 8e3 && messagesMap.value[sessionKey]) return;
+    _historyInflight.add(sessionKey);
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages 开始 | sessionKey=", sessionKey);
     try {
       const remoteResult = await _ws?.chatHistory(sessionKey, limit).catch((e) => {
@@ -20447,6 +20468,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           const msgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
           if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
           messagesMap.value[sessionKey] = msgs;
+          _historyInflight.delete(sessionKey);
+          _historyLastLoadedAt[sessionKey] = Date.now();
           return;
         }
       }
@@ -20461,6 +20484,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           const msgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
           if (CHAT_DEBUG) console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
           messagesMap.value[sessionKey] = msgs;
+          _historyInflight.delete(sessionKey);
+          _historyLastLoadedAt[sessionKey] = Date.now();
           return;
         }
       } catch (e) {
@@ -20472,6 +20497,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     } else {
       if (CHAT_DEBUG) console.log("[aiChat] loadSessionMessages 无新数据，保留已有缓存 | session:", sessionKey, "消息数:", messagesMap.value[sessionKey].length);
     }
+    _historyInflight.delete(sessionKey);
+    _historyLastLoadedAt[sessionKey] = Date.now();
   }
   function createSession(initialModelId) {
     const key = "session:" + crypto.randomUUID().slice(0, 8);
@@ -20489,6 +20516,23 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       });
     }
     return session;
+  }
+  function ensureActiveSession() {
+    let key = activeSessionKey.value;
+    if (key) {
+      if (!messagesMap.value[key]) messagesMap.value[key] = [];
+      return key;
+    }
+    const mainSession = sessions.value.find((s) => s.key === "main") || sessions.value[0];
+    if (mainSession?.key) {
+      key = mainSession.key;
+      activeSessionKey.value = key;
+      if (!messagesMap.value[key]) messagesMap.value[key] = [];
+      _saveSessions();
+      return key;
+    }
+    const created = createSession(currentModel.value || null);
+    return created?.key || null;
   }
   function selectSession(key) {
     if (key !== activeSessionKey.value) {
@@ -20549,13 +20593,30 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function sendMessage(text2, attachments) {
     if (CHAT_DEBUG) console.log("发送了什么===>", text2, attachments);
-    const sk = activeSessionKey.value;
+    const sk = ensureActiveSession();
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
     if (sending.value) {
       if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
       return;
     }
-    if (!sk || !text2?.trim() && !attachments?.length) return;
+    if (!text2?.trim() && !attachments?.length) return;
+    if (!sk) {
+      const errMsg = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "当前还没有可用会话，请稍后重试或点击新建会话。",
+        images: [],
+        videos: [],
+        audios: [],
+        files: [],
+        tools: [],
+        timestamp: Date.now(),
+        status: "error"
+      };
+      const fallbackKey = activeSessionKey.value || "main";
+      messagesMap.value[fallbackKey] = [...messagesMap.value[fallbackKey] || [], errMsg];
+      return;
+    }
     if (text2?.trim() && handleCommand(text2.trim())) return;
     const userMsg = {
       id: crypto.randomUUID(),
@@ -25463,6 +25524,7 @@ const _sfc_main$9 = {
     const hermesInputText = /* @__PURE__ */ ref("");
     const hermesRunState = /* @__PURE__ */ ref("");
     const collabRunState = /* @__PURE__ */ ref("");
+    const hermesProgressLines = /* @__PURE__ */ ref([]);
     const messagesArea = /* @__PURE__ */ ref(null);
     const messagesEnd = /* @__PURE__ */ ref(null);
     const autoScroll = /* @__PURE__ */ ref(true);
@@ -25676,7 +25738,8 @@ const _sfc_main$9 = {
         collabRunState.value = text;
       } else {
         hermesRunState.value = text;
-        upsertHermesProgress(text, payload?.stage, "running");
+        const lines = hermesProgressLines.value.slice(-12);
+        if (lines[lines.length - 1] !== text) hermesProgressLines.value = [...lines, text];
       }
       saveHermesSession();
     }
