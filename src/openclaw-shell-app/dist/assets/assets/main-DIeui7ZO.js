@@ -20669,7 +20669,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     try {
-      const result = await _ws?.chatSend(sk, sendText, sendAtts);
+      if (!_ws) {
+        connectToGateway();
+        throw new Error("Gateway chat channel is connecting. Please retry shortly.");
+      }
+      const result = await _ws.chatSend(sk, sendText, sendAtts);
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
       if (result?.runId) {
@@ -24746,6 +24750,7 @@ const _sfc_main$c = {
       { name: "/stop", desc: "停止生成" }
     ];
     const placeholderText = computed(() => {
+      if (props.sending) return "Waiting for reply...";
       if (!props.isReady) return "等待 Gateway 就绪...";
       return "输入消息... (Enter 发送)";
     });
@@ -25560,7 +25565,7 @@ const _sfc_main$9 = {
     });
     const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
     const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady || gatewayStore.running);
-    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
+    const activeReady = computed(() => agentMode.value === "openclaw" ? gatewayAvailable.value : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
@@ -25889,12 +25894,13 @@ const _sfc_main$9 = {
         if (store.wsStatus !== "ready" && store.wsStatus !== "connecting") store.connectToGateway();
       } catch {
       }
+      if (gatewayAvailable.value) return true;
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        if (store.isReady) return true;
+        if (store.isReady || gatewayAvailable.value) return true;
         await new Promise((resolve) => window.setTimeout(resolve, 350));
       }
-      return !!store.isReady;
+      return !!(store.isReady || gatewayAvailable.value);
     }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
@@ -25984,7 +25990,7 @@ const _sfc_main$9 = {
       scrollToBottom();
       const beforeLength = store.currentMessages.length;
       try {
-        if (!store.isReady) {
+        if (!store.isReady && !gatewayAvailable.value) {
           appendHermesAssistant("Gateway 已启动，正在连接 OpenClaw 会话...", "协同编排", "done");
           const ready = await ensureOpenClawChatReady();
           if (!ready) throw new Error("OpenClaw 会话连接超时，请稍后重试或回到首页重启 Gateway。");
@@ -26046,7 +26052,7 @@ const _sfc_main$9 = {
       scrollToBottom();
       const beforeLength = store.currentMessages.length;
       try {
-        if (!store.isReady) {
+        if (!store.isReady && !gatewayAvailable.value) {
           collabRunState.value = "Gateway 已启动，正在连接 OpenClaw 会话...";
           appendCollabAssistant("Gateway 已启动，正在连接 OpenClaw 会话...", "协同编排", "done");
           const ready = await ensureOpenClawChatReady();
