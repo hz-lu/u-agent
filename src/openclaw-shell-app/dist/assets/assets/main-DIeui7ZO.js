@@ -20656,13 +20656,13 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     inputText.value = "";
     const timeoutId = setTimeout(() => {
       if (sending.value) {
-        console.warn("[aiChat] sendMessage 超时，120 秒未收到回复");
+        console.warn("[aiChat] sendMessage 超时，45 秒未收到回复");
         sending.value = false;
         currentRunId.value = null;
         const timeoutMsg = {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "请求超时，未收到 AI 回复。请检查网络连接或重试。",
+          content: "OpenClaw 已收到发送请求，但 45 秒内没有把回复事件同步回桌面端。请稍后查看是否有回复，或在首页查看 Gateway 日志后重试。",
           images: [],
           videos: [],
           audios: [],
@@ -20676,7 +20676,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         messagesMap.value[sk] = [...curMsgs];
         _scheduleSave(sk);
       }
-    }, 12e4);
+    }, 45e3);
     const imageAtts = attachments?.filter((a) => a.type === "image" && a.content) || [];
     const fileAtts = attachments?.filter((a) => a.type === "file" && a.filePath) || [];
     let sendText = text2 || "";
@@ -20687,6 +20687,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     try {
       let result;
+      let usedMainIpcFallback = false;
       try {
         if (!_ws || _ws.status?.value !== "ready") {
           connectToGateway();
@@ -20706,12 +20707,21 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         if (!fallback?.ok) {
           throw new Error(fallback?.error || "\u53d1\u9001\u5230 OpenClaw Gateway \u5931\u8d25\uff0c\u8bf7\u786e\u8ba4\u9996\u9875 Gateway \u5df2\u542f\u52a8\u540e\u91cd\u8bd5\u3002");
         }
+        usedMainIpcFallback = true;
         result = fallback.result;
       }
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
       if (result?.runId) {
         currentRunId.value = result.runId;
+      }
+      if (usedMainIpcFallback) {
+        setTimeout(() => {
+          try {
+            reconnectWs();
+          } catch {
+          }
+        }, 300);
       }
     } catch (e) {
       clearTimeout(timeoutId);
@@ -24790,7 +24800,7 @@ const _sfc_main$c = {
       return "输入消息... (Enter 发送)";
     });
     const canSend = computed(() => {
-      return (localText.value.trim() || attachments.value.length) && props.isReady && !props.sending;
+      return !!(localText.value.trim() || attachments.value.length);
     });
     watch(() => props.modelValue, (v) => {
       localText.value = v;
@@ -24966,7 +24976,7 @@ const _sfc_main$c = {
           createBaseVNode("div", _hoisted_8$7, [
             createBaseVNode("button", {
               class: "action-btn file-btn",
-              disabled: !__props.isReady,
+              disabled: false,
               onClick: openFilePicker,
               title: "上传附件"
             }, [..._cache[3] || (_cache[3] = [
@@ -24997,7 +25007,7 @@ const _sfc_main$c = {
             }, [
               createBaseVNode("button", {
                 class: "action-btn cmd-btn",
-                disabled: !__props.isReady,
+                disabled: false,
                 onClick: toggleCmdMenu,
                 title: "命令"
               }, [..._cache[4] || (_cache[4] = [
@@ -25037,7 +25047,7 @@ const _sfc_main$c = {
               "onUpdate:modelValue": _cache[0] || (_cache[0] = ($event) => localText.value = $event),
               class: "chat-textarea",
               placeholder: placeholderText.value,
-              disabled: !__props.isReady,
+              disabled: false,
               rows: 1,
               onKeydown: handleKeydown,
               onInput: handleInput,
@@ -25045,7 +25055,7 @@ const _sfc_main$c = {
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
             ]),
-            __props.sending ? (openBlock(), createElementBlock("button", {
+            false && __props.sending ? (openBlock(), createElementBlock("button", {
               key: 0,
               class: "send-btn stop-btn",
               onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("stop")),

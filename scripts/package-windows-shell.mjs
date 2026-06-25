@@ -166,20 +166,27 @@ async function main() {
   run("npm", ["run", "build"]);
   assertBuildOutput();
 
-  console.log(`[windows-shell] downloading Electron ${electronVersion} win32-${targetArch}`);
-  const zipPath = await downloadArtifact({
-    version: electronVersion,
-    platform: "win32",
-    arch: targetArch,
-    artifactName: "electron"
-  });
-  console.log(`[windows-shell] Electron zip: ${zipPath}`);
+  let shellMode = "downloaded";
+  try {
+    console.log(`[windows-shell] downloading Electron ${electronVersion} win32-${targetArch}`);
+    const zipPath = await downloadArtifact({
+      version: electronVersion,
+      platform: "win32",
+      arch: targetArch,
+      artifactName: "electron"
+    });
+    console.log(`[windows-shell] Electron zip: ${zipPath}`);
 
-  fs.rmSync(winUnpackedRoot, { recursive: true, force: true });
-  fs.mkdirSync(winUnpackedRoot, { recursive: true });
-  await extractElectronZip(zipPath);
-  assertElectronExtracted();
-  renameElectronExe();
+    fs.rmSync(winUnpackedRoot, { recursive: true, force: true });
+    fs.mkdirSync(winUnpackedRoot, { recursive: true });
+    await extractElectronZip(zipPath);
+    assertElectronExtracted();
+    renameElectronExe();
+  } catch (err) {
+    if (!fs.existsSync(executablePath)) throw err;
+    shellMode = "reused-existing";
+    console.warn(`[windows-shell] Electron download/extract failed, reusing existing shell: ${err?.message || err}`);
+  }
 
   fs.rmSync(appRoot, { recursive: true, force: true });
   fs.mkdirSync(appRoot, { recursive: true });
@@ -195,6 +202,7 @@ async function main() {
     appDist: path.join(appRoot, "dist"),
     icon: resourcePatch,
     electronVersion,
+    shellMode,
     platform: "win32",
     arch: targetArch,
     fileCount: countFiles(winUnpackedRoot)
