@@ -19533,6 +19533,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   let _lastSessionsRefreshAt = 0;
   const _historyInflight = /* @__PURE__ */ new Set();
   const _historyLastLoadedAt = {};
+  const _localMessageMutatedAt = {};
   async function connectToGateway() {
     const now = Date.now();
     if (now - _lastConnectAttemptAt < 1200) return;
@@ -20415,6 +20416,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       _doPersist(sessionKey);
     }, 1e3);
   }
+  function _canReplaceMessagesFromHistory(sessionKey, loadStartedAt) {
+    const localMutatedAt = _localMessageMutatedAt[sessionKey] || 0;
+    const current = messagesMap.value[sessionKey] || [];
+    return !(localMutatedAt > loadStartedAt && current.length);
+  }
   async function refreshSessions() {
     const now = Date.now();
     if (_sessionsInflight) return _sessionsInflight;
@@ -20452,6 +20458,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   async function loadSessionMessages(sessionKey, limit = 200) {
     if (!sessionKey) return;
     const now = Date.now();
+    const loadStartedAt = now;
     if (_historyInflight.has(sessionKey)) return;
     if (sending.value && messagesMap.value[sessionKey]?.length) return;
     if (now - (_historyLastLoadedAt[sessionKey] || 0) < 8e3 && messagesMap.value[sessionKey]) return;
@@ -20467,6 +20474,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         if (remoteRaw.length) {
           const msgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
           if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
+          if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
+            _historyInflight.delete(sessionKey);
+            _historyLastLoadedAt[sessionKey] = Date.now();
+            return;
+          }
           messagesMap.value[sessionKey] = msgs;
           _historyInflight.delete(sessionKey);
           _historyLastLoadedAt[sessionKey] = Date.now();
@@ -20483,6 +20495,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         if (localMsgs && localMsgs.length) {
           const msgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
           if (CHAT_DEBUG) console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
+          if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
+            _historyInflight.delete(sessionKey);
+            _historyLastLoadedAt[sessionKey] = Date.now();
+            return;
+          }
           messagesMap.value[sessionKey] = msgs;
           _historyInflight.delete(sessionKey);
           _historyLastLoadedAt[sessionKey] = Date.now();
@@ -20634,6 +20651,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const msgs = messagesMap.value[sk] || [];
     msgs.push(userMsg);
     messagesMap.value[sk] = [...msgs];
+    _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
     sending.value = true;
     inputText.value = "";
@@ -24750,7 +24768,7 @@ const _sfc_main$c = {
       { name: "/stop", desc: "停止生成" }
     ];
     const placeholderText = computed(() => {
-      if (props.sending) return "Waiting for reply...";
+      if (props.sending) return "\u7b49\u5f85\u56de\u590d...";
       if (!props.isReady) return "等待 Gateway 就绪...";
       return "输入消息... (Enter 发送)";
     });
