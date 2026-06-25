@@ -658,6 +658,29 @@ class HermesManager {
       }
       return rows;
     }
+    function writeOpenClawSkillCatalog(sources, sourceRoots) {
+      const catalogDir = path$1.join(getAppRoot(), "data", ".openclaw");
+      const catalogJson = path$1.join(catalogDir, "skills-catalog.json");
+      const catalogMd = path$1.join(catalogDir, "skills-catalog.md");
+      const rows = sources.map((item, index) => ({
+        index: index + 1,
+        name: item.name,
+        key: item.key,
+        path: item.source,
+        enabled: true
+      }));
+      const catalog = {
+        ok: true,
+        checkedAt: new Date().toISOString(),
+        total: rows.length,
+        sourceRoots,
+        skills: rows
+      };
+      fs$1.mkdirSync(catalogDir, { recursive: true });
+      fs$1.writeFileSync(catalogJson, JSON.stringify(catalog, null, 2) + "\n", "utf8");
+      fs$1.writeFileSync(catalogMd, ["# OpenClaw Skill Catalog", "", "Total skills: " + rows.length, "", ...rows.map((item) => `${item.index}. ${item.name} (${item.key})`), ""].join("\n"), "utf8");
+      return { catalogJson, catalogMd, total: rows.length };
+    }
     function verifyHermesSkills(python, sourceRoot, env2) {
       if (!fs$1.existsSync(python)) throw new Error("Hermes portable Python was not found: " + python);
       if (!fs$1.existsSync(path$1.join(sourceRoot, "agent", "skill_commands.py"))) throw new Error("Hermes skill_commands.py was not found: " + sourceRoot);
@@ -704,6 +727,7 @@ class HermesManager {
           sources.push({ ...item, targetName, skillMtimeMs: Math.round(stat.mtimeMs), rootDir });
         }
       }
+      const catalog = writeOpenClawSkillCatalog(sources, sourceRoots);
       const nextManifest = { version: 3, syncedAt: new Date().toISOString(), sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };
       const oldManifest = readJsonSafe(manifestPath);
       const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: nextManifest.syncedAt }) === JSON.stringify(nextManifest);
@@ -747,6 +771,8 @@ class HermesManager {
         mirrorRoot: openClawTargetRoot,
         path: openClawTargetRoot,
         reportPath,
+        catalogPath: catalog.catalogJson,
+        catalogMarkdownPath: catalog.catalogMd,
         sampleCommands: verification.commands.slice(0, 20),
         missingNames,
         unchanged
@@ -1241,8 +1267,19 @@ class HermesManager {
         this.status = "starting";
         this.emitLog("system", "[hermes-portable] config server spawned pid=" + (this.proc.pid || "unknown") + " command=" + launchPython + " " + configServer);
         this.emitStatus();
-        this.proc.stdout?.on("data", (data) => this.emitLog("stdout", "[config] " + Buffer.from(data).toString("utf8")));
-        this.proc.stderr?.on("data", (data) => this.emitLog("stderr", "[config] " + Buffer.from(data).toString("utf8")));
+        let configStdoutTail = "";
+        let configStderrTail = "";
+        const appendConfigTail = (current, chunk) => (current + String(chunk || "")).slice(-4000);
+        this.proc.stdout?.on("data", (data) => {
+          const text = Buffer.from(data).toString("utf8");
+          configStdoutTail = appendConfigTail(configStdoutTail, text);
+          this.emitLog("stdout", "[config] " + text);
+        });
+        this.proc.stderr?.on("data", (data) => {
+          const text = Buffer.from(data).toString("utf8");
+          configStderrTail = appendConfigTail(configStderrTail, text);
+          this.emitLog("stderr", "[config] " + text);
+        });
         this.proc.on("error", (err) => {
           this.status = "error";
           this.lastError = err.message;
@@ -1256,7 +1293,10 @@ class HermesManager {
           this.stopping = false;
           this.status = wasStopping || code === 0 ? "idle" : "error";
           if (this.status === "error") this.lastError = "Hermes config server exited with code " + (code ?? "null") + (signal ? ", signal " + signal : "");
-          this.emitLog("exit", "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? ""));
+          this.emitLog("exit", "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? "") + (wasStopping || code === 0 ? " (normal stop)" : " (unexpected)"));
+          if (!wasStopping && code !== 0) {
+            this.emitLog("stderr", "[hermes-portable] unexpected config server exit diagnostics\nstdoutTail=" + configStdoutTail.trim().slice(-1200) + "\nstderrTail=" + configStderrTail.trim().slice(-1200));
+          }
           this.emitStatus();
         });
       }
@@ -1367,8 +1407,19 @@ class HermesManager {
     this.status = "running";
     this.lastError = "";
     this.emitLog("system", "[hermes-portable] " + label + " spawned pid=" + (proc.pid || "unknown"));
-    proc.stdout?.on("data", (data) => this.emitLog("stdout", "[" + label + "] " + Buffer.from(data).toString("utf8")));
-    proc.stderr?.on("data", (data) => this.emitLog("stderr", "[" + label + "] " + Buffer.from(data).toString("utf8")));
+    let stderrTail = "";
+    let stdoutTail = "";
+    const appendTail = (current, chunk) => (current + String(chunk || "")).slice(-4000);
+    proc.stdout?.on("data", (data) => {
+      const text = Buffer.from(data).toString("utf8");
+      stdoutTail = appendTail(stdoutTail, text);
+      this.emitLog("stdout", "[" + label + "] " + text);
+    });
+    proc.stderr?.on("data", (data) => {
+      const text = Buffer.from(data).toString("utf8");
+      stderrTail = appendTail(stderrTail, text);
+      this.emitLog("stderr", "[" + label + "] " + text);
+    });
     proc.on("error", (err) => {
       this.status = "error";
       this.lastError = label + ": " + err.message;
@@ -1376,9 +1427,15 @@ class HermesManager {
       this.emitStatus();
     });
     proc.on("exit", (code, signal) => {
+      const wasStopping = this.stopping;
       if (this.dashboardProc === proc) this.dashboardProc = null;
       if (this.apiProc === proc) this.apiProc = null;
-      this.emitLog("exit", "[hermes-portable] " + label + " exited code=" + (code ?? "null") + " signal=" + (signal ?? ""));
+      const exitMsg = "[hermes-portable] " + label + " exited code=" + (code ?? "null") + " signal=" + (signal ?? "") + (wasStopping || code === 0 ? " (normal stop)" : " (unexpected)");
+      this.emitLog("exit", exitMsg);
+      if (!wasStopping && code !== 0) {
+        this.lastError = label + " exited unexpectedly with code " + (code ?? "null") + (stderrTail.trim() ? ": " + stderrTail.trim().slice(-1200) : "");
+        this.emitLog("stderr", "[hermes-portable] unexpected " + label + " exit diagnostics\nstdoutTail=" + stdoutTail.trim().slice(-1200) + "\nstderrTail=" + stderrTail.trim().slice(-1200));
+      }
       this.getStatus().catch(() => this.emitStatus());
     });
     this.emitStatus();
@@ -1488,6 +1545,9 @@ class HermesManager {
       this.lastError = err instanceof Error ? err.message : String(err);
     }
     this.proc = null;
+    this.dashboardProc = null;
+    this.apiProc = null;
+    this.stopping = false;
     this.status = "idle";
     this.memoryMb = 0;
     this.emitStatus();
@@ -1990,6 +2050,35 @@ function checkTcpPortOpen(port, timeoutMs = 500) {
     socket.once("error", () => finish(false));
   });
 }
+function cleanupPortableChildProcesses() {
+  if (process.platform !== "win32") return;
+  try {
+    const appRoot = path$1.resolve(getAppRoot()).toLowerCase();
+    const dataRoot = path$1.resolve(getDataRoot()).toLowerCase();
+    const runtimeRoot = path$1.resolve(RUNTIME_DIR).toLowerCase();
+    const currentPid = process.pid;
+    const ps = [
+      "$ErrorActionPreference='SilentlyContinue'",
+      "$targets=@(" + [appRoot, dataRoot, runtimeRoot].map((p) => "'" + p.replace(/'/g, "''") + "'").join(",") + ")",
+      "$self=" + currentPid,
+      "Get-CimInstance Win32_Process | ForEach-Object {",
+      "  $cmd=(($_.CommandLine)+'').ToLower(); $exe=(($_.ExecutablePath)+'').ToLower();",
+      "  if ($_.ProcessId -eq $self) { return }",
+      "  $hit=$false; foreach($t in $targets){ if(($cmd -like ('*'+$t+'*')) -or ($exe -like ($t+'*'))){ $hit=$true; break } }",
+      "  if($hit -and ($cmd -match 'openclaw|hermes|runtime|win-unpacked|config_server|hermes_cli|openclaw-weixin|gateway')){",
+      "    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}",
+      "  }",
+      "}"
+    ].join("; ");
+    child_process.execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 6000
+    });
+  } catch (err) {
+    appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
+  }
+}
 function createWindow(gateway) {
   function createTray() {
     try {
@@ -2044,6 +2133,7 @@ function createWindow(gateway) {
           click: () => {
             electron.app.isQuitting = true;
             gateway.stopGatewaySync();
+            getHermesManager().stop().finally(() => cleanupPortableChildProcesses());
             getWechatManagerInstance()?.destroy();
             electron.app.quit();
           }
@@ -3462,6 +3552,7 @@ function setupLifecycle({ getGateway }) {
       await hermesManager.stop();
     }
     await getGateway().stopGateway();
+    cleanupPortableChildProcesses();
   });
   electron.app.on("activate", async () => {
   });
@@ -22542,7 +22633,7 @@ function registerIPCHandlers({ gateway }) {
       for (const extraDir of extraDirs) {
         let resolvedDir = extraDir;
         if (!path$1.isAbsolute(extraDir)) {
-          resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);
+          resolvedDir = path$1.join(getAppRoot(), extraDir);
         }
         if (!fs$1.existsSync(resolvedDir)) {
           continue;
@@ -22641,7 +22732,7 @@ function registerIPCHandlers({ gateway }) {
       }
       for (const extraDir of extraDirs) {
         let resolvedDir = extraDir;
-        if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);
+        if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(getAppRoot(), extraDir);
         if (!fs$1.existsSync(resolvedDir)) continue;
         for (const entry of fs$1.readdirSync(resolvedDir, { withFileTypes: true })) {
           const skillPath = path$1.join(resolvedDir, entry.name);

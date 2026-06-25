@@ -4727,6 +4727,40 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
     );
   }
 
+  if (!mainSource.includes("function cleanupPortableChildProcesses()")) {
+    mainSource = mainSource.replace(
+      "function createWindow(gateway) {",
+      [
+        "function cleanupPortableChildProcesses() {",
+        "  if (process.platform !== \"win32\") return;",
+        "  try {",
+        "    const appRoot = path$1.resolve(getAppRoot()).toLowerCase();",
+        "    const dataRoot = path$1.resolve(getDataRoot()).toLowerCase();",
+        "    const runtimeRoot = path$1.resolve(RUNTIME_DIR).toLowerCase();",
+        "    const currentPid = process.pid;",
+        "    const ps = [",
+        "      \"$ErrorActionPreference='SilentlyContinue'\",",
+        "      \"$targets=@(\" + [appRoot, dataRoot, runtimeRoot].map((p) => \"'\" + p.replace(/'/g, \"''\") + \"'\").join(\",\") + \")\",",
+        "      \"$self=\" + currentPid,",
+        "      \"Get-CimInstance Win32_Process | ForEach-Object {\",",
+        "      \"  $cmd=(($_.CommandLine)+'').ToLower(); $exe=(($_.ExecutablePath)+'').ToLower();\",",
+        "      \"  if ($_.ProcessId -eq $self) { return }\",",
+        "      \"  $hit=$false; foreach($t in $targets){ if(($cmd -like ('*'+$t+'*')) -or ($exe -like ($t+'*'))){ $hit=$true; break } }\",",
+        "      \"  if($hit -and ($cmd -match 'openclaw|hermes|runtime|win-unpacked|config_server|hermes_cli|openclaw-weixin|gateway')){\",",
+        "      \"    try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}\",",
+        "      \"  }\",",
+        "      \"}\"",
+        "    ].join(\"; \");",
+        "    child_process.execFileSync(\"powershell.exe\", [\"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-Command\", ps], { stdio: \"ignore\", windowsHide: true, timeout: 6000 });",
+        "  } catch (err) {",
+        "    appendDesktopCrashLog(\"cleanup-portable-processes-failed\", { message: err?.message || String(err) });",
+        "  }",
+        "}",
+        "function createWindow(gateway) {"
+      ].join("\n")
+    );
+  }
+
   if (!mainSource.includes("gatewayDiskLogBuffer")) {
     mainSource = mainSource.replace(
       "const gatewayUiLogThrottle = new Map();",
@@ -4780,6 +4814,57 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
     mainSource = mainSource.replace(
       "    electron.app.isQuitting = true;\n    if (hermesManager) {",
       "    electron.app.isQuitting = true;\n    flushGatewayDiskLogs();\n    if (hermesManager) {"
+    );
+  }
+  if (!mainSource.includes("cleanupPortableChildProcesses();")) {
+    mainSource = mainSource.replace(
+      "    await getGateway().stopGateway();\n  });",
+      "    await getGateway().stopGateway();\n    cleanupPortableChildProcesses();\n  });"
+    );
+  }
+  mainSource = mainSource.replace(
+    "            getWechatManagerInstance()?.destroy();\n            electron.app.quit();",
+    "            getHermesManager().stop().finally(() => cleanupPortableChildProcesses());\n            getWechatManagerInstance()?.destroy();\n            electron.app.quit();"
+  );
+  mainSource = mainSource.replaceAll(
+    "resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);",
+    "resolvedDir = path$1.join(getAppRoot(), extraDir);"
+  );
+  mainSource = mainSource.replaceAll(
+    "if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);",
+    "if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(getAppRoot(), extraDir);"
+  );
+  if (!mainSource.includes("function writeOpenClawSkillCatalog(sources, sourceRoots)")) {
+    mainSource = mainSource.replace(
+      "    function verifyHermesSkills(python, sourceRoot, env2) {",
+      [
+        "    function writeOpenClawSkillCatalog(sources, sourceRoots) {",
+        "      const catalogDir = path$1.join(getAppRoot(), \"data\", \".openclaw\");",
+        "      const catalogJson = path$1.join(catalogDir, \"skills-catalog.json\");",
+        "      const catalogMd = path$1.join(catalogDir, \"skills-catalog.md\");",
+        "      const rows = sources.map((item, index) => ({ index: index + 1, name: item.name, key: item.key, path: item.source, enabled: true }));",
+        "      const catalog = { ok: true, checkedAt: new Date().toISOString(), total: rows.length, sourceRoots, skills: rows };",
+        "      fs$1.mkdirSync(catalogDir, { recursive: true });",
+        "      fs$1.writeFileSync(catalogJson, JSON.stringify(catalog, null, 2) + \"\\n\", \"utf8\");",
+        "      fs$1.writeFileSync(catalogMd, [\"# OpenClaw Skill Catalog\", \"\", \"Total skills: \" + rows.length, \"\", ...rows.map((item) => `${item.index}. ${item.name} (${item.key})`), \"\"].join(\"\\n\"), \"utf8\");",
+        "      return { catalogJson, catalogMd, total: rows.length };",
+        "    }",
+        "    function verifyHermesSkills(python, sourceRoot, env2) {"
+      ].join("\n")
+    );
+    mainSource = mainSource.replace(
+      "      const nextManifest = { version: 3, syncedAt: new Date().toISOString(), sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };",
+      "      const catalog = writeOpenClawSkillCatalog(sources, sourceRoots);\n      const nextManifest = { version: 3, syncedAt: new Date().toISOString(), sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };"
+    );
+    mainSource = mainSource.replace(
+      "        reportPath,\n        sampleCommands: verification.commands.slice(0, 20),",
+      "        reportPath,\n        catalogPath: catalog.catalogJson,\n        catalogMarkdownPath: catalog.catalogMd,\n        sampleCommands: verification.commands.slice(0, 20),"
+    );
+  }
+  if (!mainSource.includes("this.dashboardProc = null;\n    this.apiProc = null;\n    this.stopping = false;")) {
+    mainSource = mainSource.replace(
+      "    this.proc = null;\n    this.status = \"idle\";",
+      "    this.proc = null;\n    this.dashboardProc = null;\n    this.apiProc = null;\n    this.stopping = false;\n    this.status = \"idle\";"
     );
   }
 
