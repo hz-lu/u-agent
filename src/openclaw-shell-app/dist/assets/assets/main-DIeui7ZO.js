@@ -19451,6 +19451,13 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (!sessions.value.find((s) => s.key === "main")) {
       sessions.value.unshift({ key: "main", title: "主会话", status: "idle", createdAt: Date.now() });
     }
+    if (!activeSessionKey.value) {
+      const mainSession = sessions.value.find((s) => s.key === "main") || sessions.value[0];
+      if (mainSession?.key) {
+        activeSessionKey.value = mainSession.key;
+        _saveSessions();
+      }
+    }
     if (activeSessionKey.value) {
       await loadSessionMessages(activeSessionKey.value);
     }
@@ -20610,7 +20617,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function sendMessage(text2, attachments) {
     if (CHAT_DEBUG) console.log("发送了什么===>", text2, attachments);
-    const sk = activeSessionKey.value;
+    const sk = ensureActiveSession();
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
     if (sending.value) {
       console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
@@ -20636,6 +20643,27 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     messagesMap.value[sk] = [...msgs];
     _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
+    if (!_ws || _ws.status?.value !== "ready") {
+      try {
+        connectToGateway();
+      } catch {
+      }
+      const errMsg = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: "OpenClaw Gateway 尚未就绪，消息已显示在当前会话，但还没有发送到 Gateway。请等待首页显示 Gateway 就绪后重试。",
+        images: [],
+        videos: [],
+        audios: [],
+        files: [],
+        tools: [],
+        timestamp: Date.now(),
+        status: "error"
+      };
+      messagesMap.value[sk] = [...messagesMap.value[sk] || [], errMsg];
+      _scheduleSave(sk);
+      return;
+    }
     sending.value = true;
     inputText.value = "";
     const timeoutId = setTimeout(() => {
@@ -27222,9 +27250,21 @@ const _sfc_main = {
     onUnmounted(() => {
       window.removeEventListener("main-init", doInit);
     });
+    let modelsConfigWatchReady = false;
+    let lastModelsConfigJson = "";
     watch(() => modelsStore.selectedModels, (models) => {
+      const json = JSON.stringify(Array.isArray(models) ? models : []);
+      if (!modelsConfigWatchReady) {
+        modelsConfigWatchReady = true;
+        lastModelsConfigJson = json;
+        return;
+      }
+      if (json === lastModelsConfigJson) return;
+      lastModelsConfigJson = json;
       console.log("model变化===>", models);
-      window.uclaw?.ipcWriteOpenClawConfig({ models: JSON.parse(JSON.stringify(models)) }, "model");
+      window.uclaw?.ipcWriteOpenClawConfig({ models: JSON.parse(json) }, "model").catch((e) => {
+        console.warn("[models] write OpenClaw config failed:", e?.message || e);
+      });
     }, { immediate: true, deep: true });
     return (_ctx, _cache) => {
       const _component_router_view = resolveComponent("router-view");
