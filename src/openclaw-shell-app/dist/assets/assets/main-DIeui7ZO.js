@@ -25767,8 +25767,10 @@ const _sfc_main$9 = {
     function waitForHermesChatResult(taskId, timeoutMs = 18e5) {
       return new Promise((resolve) => {
         let done = false;
+        let pollTimer = null;
         const cleanup = () => {
           if (window.uclaw?.ipcOffHermesChatResult) window.uclaw.ipcOffHermesChatResult(handler);
+          if (pollTimer) window.clearInterval(pollTimer);
           window.clearTimeout(timer);
         };
         const handler = (payload) => {
@@ -25784,6 +25786,19 @@ const _sfc_main$9 = {
         }, timeoutMs);
         if (window.uclaw?.ipcOnHermesChatResult) {
           window.uclaw.ipcOnHermesChatResult(handler);
+          if (window.uclaw?.ipcGetHermesChatResult) {
+            pollTimer = window.setInterval(async () => {
+              if (done) return;
+              try {
+                const payload = await window.uclaw.ipcGetHermesChatResult(taskId);
+                if (!payload || payload.taskId !== taskId) return;
+                done = true;
+                cleanup();
+                resolve(payload.result || { ok: false, error: "Hermes 杩斿洖浜嗙┖缁撴灉銆? });
+              } catch {
+              }
+            }, 2e3);
+          }
         } else {
           cleanup();
           resolve({ ok: false, error: "当前桌面壳缺少 Hermes 后台结果通道，请重新构建应用。" });
@@ -25791,9 +25806,11 @@ const _sfc_main$9 = {
       });
     }
     async function runHermesChatBackground(payload) {
-      const started = await window.uclaw.ipcHermesChat({ ...payload, background: true });
+      const taskId = `hermes-chat-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const waitPromise = waitForHermesChatResult(taskId);
+      const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });
       if (!started?.pending || !started.taskId) return started;
-      return await waitForHermesChatResult(started.taskId);
+      return await waitPromise;
     }
     function upsertHermesProgress(content, stage = "", status = "running") {
       const now = Date.now();

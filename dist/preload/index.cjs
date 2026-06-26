@@ -1,5 +1,6 @@
 ﻿"use strict";
 const electron = require("electron");
+const hermesChatResultListeners = /* @__PURE__ */ new WeakMap();
 electron.contextBridge.exposeInMainWorld("uclaw", {
   // 鏂囦欢璺緞鑾峰彇锛圗lectron 娌欑洅妯″紡涓?file.path 涓嶅彲鐢級
   getFilePath: (file) => {
@@ -183,6 +184,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcOpenHermesDashboard: () => electron.ipcRenderer.invoke("hermes:openDashboard"),
   ipcOpenHermesApiServer: () => electron.ipcRenderer.invoke("hermes:openApiServer"),
   ipcHermesChat: (options) => electron.ipcRenderer.invoke("hermes:chat", options),
+  ipcGetHermesChatResult: (taskId) => electron.ipcRenderer.invoke("hermes:chatResult", taskId),
   ipcOpenHermesInternal: (url) => electron.ipcRenderer.invoke("hermes:openInternal", url),
   ipcOpenHermesEmbedded: (url) => electron.ipcRenderer.invoke("hermes:openEmbedded", url),
   ipcGetHermesFrameUrl: (url) => electron.ipcRenderer.invoke("hermes:getFrameUrl", url),
@@ -192,8 +194,18 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcOffHermesStatus: (callback) => electron.ipcRenderer.removeListener("hermes-status", callback),
   ipcOnHermesChatProgress: (callback) => electron.ipcRenderer.on("hermes-chat-progress", (_, payload) => callback(payload)),
   ipcOffHermesChatProgress: (callback) => electron.ipcRenderer.removeListener("hermes-chat-progress", callback),
-  ipcOnHermesChatResult: (callback) => electron.ipcRenderer.on("hermes-chat-result", (_, payload) => callback(payload)),
-  ipcOffHermesChatResult: (callback) => electron.ipcRenderer.removeListener("hermes-chat-result", callback),
+  ipcOnHermesChatResult: (callback) => {
+    const listener = (_, payload) => callback(payload);
+    hermesChatResultListeners.set(callback, listener);
+    return electron.ipcRenderer.on("hermes-chat-result", listener);
+  },
+  ipcOffHermesChatResult: (callback) => {
+    const listener = hermesChatResultListeners.get(callback);
+    if (listener) {
+      hermesChatResultListeners.delete(callback);
+      electron.ipcRenderer.removeListener("hermes-chat-result", listener);
+    }
+  },
   ipcOnHermesLog: (callback) => electron.ipcRenderer.on("hermes-log", (_, log) => callback(log)),
   ipcOffHermesLog: (callback) => electron.ipcRenderer.removeListener("hermes-log", callback)
 });

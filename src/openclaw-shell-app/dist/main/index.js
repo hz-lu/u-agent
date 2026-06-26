@@ -1861,6 +1861,7 @@ class HermesManager {
   }
 }
 let hermesManager = null;
+const hermesChatResults = /* @__PURE__ */ new Map();
 function getHermesManager() {
   if (!hermesManager) {
     hermesManager = new HermesManager({ dataDir: getDataRoot() });
@@ -22915,11 +22916,23 @@ function registerIPCHandlers({ gateway }) {
     }
     const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
     Promise.resolve().then(() => getHermesManager().chat({ ...chatOptions, taskId })).then((result) => {
-      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result });
+      const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now() };
+      hermesChatResults.set(taskId, payload);
+      safeSend("hermes-chat-result", payload);
     }).catch((err) => {
-      safeSend("hermes-chat-result", { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) } });
+      const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };
+      hermesChatResults.set(taskId, payload);
+      safeSend("hermes-chat-result", payload);
     });
     return { ok: true, pending: true, taskId };
+  });
+  electron.ipcMain.handle("hermes:chatResult", async (_, taskId) => {
+    if (!taskId) return null;
+    const payload = hermesChatResults.get(taskId) || null;
+    if (payload?.finishedAt && Date.now() - payload.finishedAt > 10 * 60 * 1000) {
+      hermesChatResults.delete(taskId);
+    }
+    return payload;
   });
   electron.ipcMain.handle("hermes:openInternal", async (_, targetUrl) => {
     const url2 = typeof targetUrl === "string" && targetUrl.startsWith("http") ? targetUrl : "http://127.0.0.1:17520";
