@@ -18810,6 +18810,7 @@ const _sfc_main$h = {
 };
 const VideoGen = /* @__PURE__ */ _export_sfc(_sfc_main$h, [["__scopeId", "data-v-48c21956"]]);
 let instance = null;
+const CHAT_DEBUG = false;
 function useChatWs() {
   if (instance) return instance;
   const connected = /* @__PURE__ */ ref(false);
@@ -18845,7 +18846,6 @@ function useChatWs() {
   const REQUEST_TIMEOUT = 3e4;
   const CHALLENGE_TIMEOUT = 1e4;
   const _listeners = /* @__PURE__ */ new Map();
-  const CHAT_DEBUG = false;
   const _pending = /* @__PURE__ */ new Map();
   const _readyCallbacks = [];
   const _messageCache = /* @__PURE__ */ new Map();
@@ -19580,6 +19580,25 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   function _isGatewayAvailable() {
     return gatewayStore.gatewayReady || gatewayStore.running;
+  }
+  async function _waitForReadyConnection(timeoutMs = 1e4) {
+    if (_ws?.status?.value === "ready" || wsStatus.value === "ready") return true;
+    try {
+      if (_isGatewayAvailable() && wsStatus.value !== "connecting") connectToGateway();
+    } catch {
+    }
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (_ws?.status?.value === "ready" || wsStatus.value === "ready") return true;
+      if (_isGatewayAvailable() && !_connecting && wsStatus.value !== "connecting") {
+        try {
+          connectToGateway();
+        } catch {
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return _ws?.status?.value === "ready" || wsStatus.value === "ready";
   }
   watch(() => gatewayStore.running, (running) => {
     if (running) {
@@ -20644,10 +20663,9 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
     if (!_ws || _ws.status?.value !== "ready") {
-      try {
-        connectToGateway();
-      } catch {
-      }
+      await _waitForReadyConnection(1e4);
+    }
+    if (!_ws || _ws.status?.value !== "ready") {
       const errMsg = {
         id: crypto.randomUUID(),
         role: "assistant",
@@ -25591,7 +25609,7 @@ const _sfc_main$9 = {
     });
     const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
     const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady || gatewayStore.running);
-    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
+    const activeReady = computed(() => agentMode.value === "openclaw" ? gatewayAvailable.value || store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
