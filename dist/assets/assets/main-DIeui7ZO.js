@@ -25794,7 +25794,7 @@ const _sfc_main$9 = {
                 if (!payload || payload.taskId !== taskId) return;
                 done = true;
                 cleanup();
-                resolve(payload.result || { ok: false, error: "Hermes 杩斿洖浜嗙┖缁撴灉銆? });
+                resolve(payload.result || { ok: false, error: "Hermes returned an empty result." });
               } catch {
               }
             }, 2e3);
