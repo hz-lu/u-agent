@@ -1738,7 +1738,7 @@ class HermesManager {
       const stdoutPath = path$1.join(runDir, "stdout.txt");
       const stderrPath = path$1.join(runDir, "stderr.txt");
       fs$1.mkdirSync(runDir, { recursive: true });
-      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), message, provider, modelName }, null, 2) + "\n", "utf8");
+      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", message, provider, modelName }, null, 2) + "\n", "utf8");
       emitProgress("model", "Hermes 已启动，正在调用模型：" + (modelName || "当前配置模型"));
       const heartbeat = setInterval(() => {
         emitProgress("waiting", "模型仍在处理，本轮任务没有中断；可继续切换其他页面。");
@@ -1862,6 +1862,77 @@ class HermesManager {
 }
 let hermesManager = null;
 const hermesChatResults = /* @__PURE__ */ new Map();
+function readHermesChatResultFromRuns(taskId) {
+  if (!taskId) return null;
+  const runsRoot = path$1.join(getAppRoot(), "data", ".hermes", "runs");
+  try {
+    if (!fs$1.existsSync(runsRoot)) return null;
+    const dirs = fs$1.readdirSync(runsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
+      const fullPath = path$1.join(runsRoot, entry.name);
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs$1.statSync(fullPath).mtimeMs;
+      } catch {
+      }
+      return { name: entry.name, fullPath, mtimeMs };
+    }).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 60);
+    for (const dir of dirs) {
+      const requestPath = path$1.join(dir.fullPath, "request.json");
+      if (!fs$1.existsSync(requestPath)) continue;
+      let request = null;
+      try {
+        request = JSON.parse(fs$1.readFileSync(requestPath, "utf8"));
+      } catch {
+        continue;
+      }
+      if (request?.taskId !== taskId) continue;
+      const stdoutPath = path$1.join(dir.fullPath, "stdout.txt");
+      const stderrPath = path$1.join(dir.fullPath, "stderr.txt");
+      const finishedAt = Date.now();
+      let stdout = "";
+      let stderr = "";
+      let stdoutStable = false;
+      try {
+        if (fs$1.existsSync(stdoutPath)) {
+          const stat = fs$1.statSync(stdoutPath);
+          stdoutStable = finishedAt - stat.mtimeMs > 1200;
+          stdout = fs$1.readFileSync(stdoutPath, "utf8").trim();
+        }
+      } catch {
+      }
+      try {
+        if (fs$1.existsSync(stderrPath)) stderr = fs$1.readFileSync(stderrPath, "utf8").trim();
+      } catch {
+      }
+      if (stdout && stdoutStable) {
+        const payload = {
+          taskId,
+          sessionId: request.sessionId || "hermes-ai-chat",
+          mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
+          result: { ok: true, reply: stdout, raw: stdout, runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath },
+          finishedAt
+        };
+        hermesChatResults.set(taskId, payload);
+        return payload;
+      }
+      if (stderr && !stdout && finishedAt - dir.mtimeMs > 5000) {
+        const payload = {
+          taskId,
+          sessionId: request.sessionId || "hermes-ai-chat",
+          mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
+          result: { ok: false, error: stderr.slice(-4000), runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath },
+          finishedAt
+        };
+        hermesChatResults.set(taskId, payload);
+        return payload;
+      }
+      return null;
+    }
+  } catch (err) {
+    safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat-result] run recovery failed: " + (err instanceof Error ? err.message : String(err)) });
+  }
+  return null;
+}
 function getHermesManager() {
   if (!hermesManager) {
     hermesManager = new HermesManager({ dataDir: getDataRoot() });
@@ -22915,20 +22986,22 @@ function registerIPCHandlers({ gateway }) {
       return await getHermesManager().chat(chatOptions);
     }
     const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-    Promise.resolve().then(() => getHermesManager().chat({ ...chatOptions, taskId })).then((result) => {
-      const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now() };
-      hermesChatResults.set(taskId, payload);
-      safeSend("hermes-chat-result", payload);
-    }).catch((err) => {
-      const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };
-      hermesChatResults.set(taskId, payload);
-      safeSend("hermes-chat-result", payload);
-    });
+    setTimeout(() => {
+      getHermesManager().chat({ ...chatOptions, taskId }).then((result) => {
+        const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now(), runId: result?.runId, runDir: result?.runDir, stdoutPath: result?.stdoutPath, stderrPath: result?.stderrPath };
+        hermesChatResults.set(taskId, payload);
+        safeSend("hermes-chat-result", payload);
+      }).catch((err) => {
+        const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };
+        hermesChatResults.set(taskId, payload);
+        safeSend("hermes-chat-result", payload);
+      });
+    }, 0);
     return { ok: true, pending: true, taskId };
   });
   electron.ipcMain.handle("hermes:chatResult", async (_, taskId) => {
     if (!taskId) return null;
-    const payload = hermesChatResults.get(taskId) || null;
+    const payload = hermesChatResults.get(taskId) || readHermesChatResultFromRuns(taskId) || null;
     if (payload?.finishedAt && Date.now() - payload.finishedAt > 10 * 60 * 1000) {
       hermesChatResults.delete(taskId);
     }
