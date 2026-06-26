@@ -20610,29 +20610,13 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function sendMessage(text2, attachments) {
     if (CHAT_DEBUG) console.log("发送了什么===>", text2, attachments);
-    const sk = ensureActiveSession();
+    const sk = activeSessionKey.value;
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
     if (sending.value) {
-      console.warn("[aiChat] sending flag is already true; continuing so user input is not lost.");
-    }
-    if (!text2?.trim() && !attachments?.length) return;
-    if (!sk) {
-      const errMsg = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: "当前还没有可用会话，请稍后重试或点击新建会话。",
-        images: [],
-        videos: [],
-        audios: [],
-        files: [],
-        tools: [],
-        timestamp: Date.now(),
-        status: "error"
-      };
-      const fallbackKey = activeSessionKey.value || "main";
-      messagesMap.value[fallbackKey] = [...messagesMap.value[fallbackKey] || [], errMsg];
+      console.warn("[DEDUP-DEBUG] sendMessage 被 sending 守卫拦截！调用栈:", new Error().stack);
       return;
     }
+    if (!sk || !text2?.trim() && !attachments?.length) return;
     if (text2?.trim() && handleCommand(text2.trim())) return;
     const userMsg = {
       id: crypto.randomUUID(),
@@ -20648,13 +20632,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       status: "done"
     };
     const msgs = messagesMap.value[sk] || [];
-    const lastEchoIdx = msgs.length - 1;
-    const lastEcho = msgs[lastEchoIdx];
-    if (lastEcho?.role === "user" && lastEcho?._uiEchoKey && lastEcho.content === userMsg.content && Date.now() - (lastEcho.timestamp || 0) < 1e4) {
-      msgs[lastEchoIdx] = { ...userMsg, _uiEchoKey: lastEcho._uiEchoKey };
-    } else {
-      msgs.push(userMsg);
-    }
+    msgs.push(userMsg);
     messagesMap.value[sk] = [...msgs];
     _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
@@ -20692,42 +20670,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     try {
-      let result;
-      let usedMainIpcFallback = false;
-      try {
-        if (!_ws || _ws.status?.value !== "ready") {
-          connectToGateway();
-          throw new Error("Gateway WebSocket is not ready");
-        }
-        result = await _ws.chatSend(sk, sendText, sendAtts);
-      } catch (wsError) {
-        const api = getApi();
-        if (!api?.gatewayChatSend) throw wsError;
-        console.warn("[aiChat] renderer websocket send failed, fallback to main IPC:", wsError?.message || wsError);
-        const fallback = await api.gatewayChatSend({
-          sessionKey: sk,
-          message: sendText,
-          attachments: sendAtts,
-          timeoutMs: 6e4
-        });
-        if (!fallback?.ok) {
-          throw new Error(fallback?.error || "\u53d1\u9001\u5230 OpenClaw Gateway \u5931\u8d25\uff0c\u8bf7\u786e\u8ba4\u9996\u9875 Gateway \u5df2\u542f\u52a8\u540e\u91cd\u8bd5\u3002");
-        }
-        usedMainIpcFallback = true;
-        result = fallback.result;
-      }
+      const result = await _ws?.chatSend(sk, sendText, sendAtts);
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send 响应 | result.runId=", result?.runId, "| result=", JSON.stringify(result)?.slice(0, 200));
       if (result?.runId) {
         currentRunId.value = result.runId;
-      }
-      if (usedMainIpcFallback) {
-        setTimeout(() => {
-          try {
-            reconnectWs();
-          } catch {
-          }
-        }, 300);
       }
     } catch (e) {
       clearTimeout(timeoutId);
@@ -25573,7 +25520,6 @@ const _sfc_main$9 = {
     const renameInputRef = /* @__PURE__ */ ref(null);
     const chatInputRef = /* @__PURE__ */ ref(null);
     const agentMode = /* @__PURE__ */ ref("openclaw");
-    const openclawUiMessages = /* @__PURE__ */ ref([]);
     const hermesMessages = /* @__PURE__ */ ref([]);
     const collabMessages = /* @__PURE__ */ ref([]);
     const hermesSending = /* @__PURE__ */ ref(false);
@@ -25607,59 +25553,7 @@ const _sfc_main$9 = {
       const s = store.activeSession;
       return s ? store.getSessionName(s) : "AI 会话";
     });
-    function mergeOpenClawUiMessages(localItems = [], storeItems = []) {
-      const output = [];
-      const seen = /* @__PURE__ */ new Set();
-      const add = (item) => {
-        if (!item) return;
-        const key = item._uiEchoKey || item.runId || item.id || `${item.role || ""}:${item.content || ""}:${item.timestamp || ""}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        output.push(item);
-      };
-      (Array.isArray(localItems) ? localItems : []).forEach(add);
-      (Array.isArray(storeItems) ? storeItems : []).forEach(add);
-      return output;
-    }
-    function appendOpenClawUiMessage(msg) {
-      openclawUiMessages.value = mergeOpenClawUiMessages(openclawUiMessages.value, [msg]);
-      try {
-        const key = store.activeSessionKey || store.createSession?.()?.key || "main";
-        if (!store.messagesMap[key]) store.messagesMap[key] = [];
-        if (!store.messagesMap[key].some((m) => (m._uiEchoKey || m.id) === (msg._uiEchoKey || msg.id))) {
-          store.messagesMap[key] = [...store.messagesMap[key], msg];
-        }
-      } catch (e) {
-        console.warn("[aiChat] append OpenClaw UI message to store failed:", e?.message || e);
-      }
-    }
-    function appendOpenClawLocalMessage(text2, attachments = []) {
-      const content = text2 || "";
-      if (!content.trim() && !attachments?.length) return;
-      const echoKey = `openclaw-ui-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const msg = {
-        id: echoKey,
-        _uiEchoKey: echoKey,
-        sessionKey: store.activeSessionKey || "main",
-        role: "user",
-        content,
-        images: [],
-        videos: [],
-        audios: [],
-        files: [],
-        tools: [],
-        attachments: attachments || [],
-        timestamp: Date.now(),
-        status: "done"
-      };
-      appendOpenClawUiMessage(msg);
-    }
-    watch(() => store.currentMessages, (messages) => {
-      if (Array.isArray(messages) && messages.length) {
-        openclawUiMessages.value = mergeOpenClawUiMessages(openclawUiMessages.value, messages);
-      }
-    }, { deep: true, immediate: true });
-    const activeMessages = computed(() => agentMode.value === "openclaw" ? openclawUiMessages.value.length ? openclawUiMessages.value : store.currentMessages : agentMode.value === "collab" ? collabMessages.value : hermesMessages.value);
+    const activeMessages = computed(() => agentMode.value === "openclaw" ? store.currentMessages : agentMode.value === "collab" ? collabMessages.value : hermesMessages.value);
     const activeProfile = computed(() => agentMode.value === "openclaw" ? store.profile : {
       ...store.profile,
       aiName: agentMode.value === "collab" ? "OpenClaw + Hermes" : "Hermes Agent",
@@ -25669,7 +25563,7 @@ const _sfc_main$9 = {
     });
     const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
     const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady || gatewayStore.running);
-    const activeReady = computed(() => agentMode.value === "openclaw" ? gatewayAvailable.value : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
+    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
@@ -25694,39 +25588,11 @@ const _sfc_main$9 = {
       return modelsStore.currentModel?.value || null;
     });
     let _storeInitDone = false;
-    let _gatewayStatusPollTimer = null;
-    let _lastGatewayConnectKickAt = 0;
-    async function refreshGatewayReadinessForChat() {
-      try {
-        const status = await window.uclaw?.ipcGetGatewayStatus?.();
-        if (!status) return;
-        const available = !!status.running || !!status.gatewayReady || !!status.portOpen;
-        gatewayStore.setRunning(available);
-        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.portOpen || available);
-        if (status.port) gatewayStore.setPort(status.port);
-        const now = Date.now();
-        if (available && store.wsStatus !== "ready" && store.wsStatus !== "connecting" && now - _lastGatewayConnectKickAt > 2500) {
-          _lastGatewayConnectKickAt = now;
-          store.connectToGateway();
-        }
-      } catch {
-      }
-    }
-    function startGatewayReadinessPoll() {
-      if (_gatewayStatusPollTimer) window.clearInterval(_gatewayStatusPollTimer);
-      refreshGatewayReadinessForChat();
-      _gatewayStatusPollTimer = window.setInterval(() => {
-        if (agentMode.value === "openclaw" || agentMode.value === "collab" || store.wsStatus !== "ready") {
-          refreshGatewayReadinessForChat();
-        }
-      }, 4e3);
-    }
     onMounted(() => {
       if (!_storeInitDone) {
         _storeInitDone = true;
         store.init();
       }
-      startGatewayReadinessPoll();
       if (gatewayStore.running && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
         store.connectToGateway();
       }
@@ -26214,66 +26080,70 @@ const _sfc_main$9 = {
         showToast("Hermes Agent API 启动失败: " + e.message, true);
       }
     }
-    async function handleSend(text2, attachments) {
-      if (agentMode.value === "openclaw") {
-        appendOpenClawLocalMessage(text2, attachments);
-        scrollToBottom();
-        Promise.resolve(store.sendMessage(text2, attachments)).catch((e) => {
-          openclawUiMessages.value = [...openclawUiMessages.value, {
-            id: `openclaw-ui-error-${Date.now()}`,
-            role: "assistant",
-            content: "OpenClaw 发送失败：" + (e?.message || e || "未知错误"),
-            images: [],
-            videos: [],
-            audios: [],
-            files: [],
-            tools: [],
-            timestamp: Date.now(),
-            status: "error"
-          }];
+    const chatAdapters = {
+      openclaw: {
+        send(text2, attachments) {
+          store.sendMessage(text2, attachments);
           scrollToBottom();
-        });
-        scrollToBottom();
-        return;
+        },
+        command(cmd) {
+          store.handleCommand(cmd);
+          if (cmd === "/new" || cmd === "/reset") scrollToBottom();
+        },
+        stop() {
+          store.abortMessage();
+        }
+      },
+      hermes: {
+        send(text2, attachments) {
+          hermesInputText.value = "";
+          sendHermesMessage(text2, attachments);
+        },
+        command(cmd) {
+          if (cmd === "/new" || cmd === "/reset") {
+            hermesMessages.value = [];
+            hermesRunState.value = "Hermes 会话已重置。";
+            saveHermesSession();
+            showToast("Hermes 会话已重置");
+            return;
+          }
+          if (cmd === "/stop") showToast("Hermes 当前调用会在本轮完成后结束");
+        },
+        stop() {
+          showToast("Hermes 当前调用会在本轮完成后结束");
+        }
+      },
+      collab: {
+        send(text2, attachments) {
+          hermesInputText.value = "";
+          sendCollaborativeMessageV2(text2, attachments);
+        },
+        command(cmd) {
+          if (cmd === "/new" || cmd === "/reset") {
+            collabMessages.value = [];
+            collabRunState.value = "协同会话已重置。";
+            saveHermesSession();
+            showToast("Hermes 会话已重置");
+            return;
+          }
+          if (cmd === "/stop") showToast("Hermes 当前调用会在本轮完成后结束");
+        },
+        stop() {
+          showToast("Hermes 当前调用会在本轮完成后结束");
+        }
       }
-      hermesInputText.value = "";
-      if (agentMode.value === "collab") {
-        sendCollaborativeMessageV2(text2, attachments);
-        return;
-      }
-      sendHermesMessage(text2, attachments);
+    };
+    function currentChatAdapter() {
+      return chatAdapters[agentMode.value] || chatAdapters.openclaw;
+    }
+    function handleSend(text2, attachments) {
+      currentChatAdapter().send(text2, attachments);
     }
     function handleCommand(cmd) {
-      if (agentMode.value === "openclaw") {
-        store.handleCommand(cmd);
-        if (cmd === "/new" || cmd === "/reset") {
-          openclawUiMessages.value = [];
-          scrollToBottom();
-        }
-        return;
-      }
-      if (cmd === "/new" || cmd === "/reset") {
-        if (agentMode.value === "collab") {
-          collabMessages.value = [];
-          collabRunState.value = "协同会话已重置。";
-        } else {
-          hermesMessages.value = [];
-          hermesRunState.value = "Hermes 会话已重置。";
-        }
-        saveHermesSession();
-        showToast("Hermes 会话已重置");
-        return;
-      }
-      if (cmd === "/stop") {
-        showToast("Hermes 当前调用会在本轮完成后结束");
-      }
+      currentChatAdapter().command(cmd);
     }
     function handleStop() {
-      if (agentMode.value === "openclaw") {
-        store.abortMessage();
-        return;
-      }
-      showToast("Hermes 当前调用会在本轮完成后结束");
+      currentChatAdapter().stop();
     }
     function handleDeleteClick(key) {
       deletingKey.value = key;
@@ -26330,7 +26200,6 @@ const _sfc_main$9 = {
       }
       if (store.activeSessionKey) {
         await store.resetSession(store.activeSessionKey);
-        openclawUiMessages.value = [];
         showToast("对话已清空");
       }
       showClearDialog.value = false;
@@ -26389,10 +26258,6 @@ const _sfc_main$9 = {
     onUnmounted(() => {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
       if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
-      if (_gatewayStatusPollTimer) {
-        window.clearInterval(_gatewayStatusPollTimer);
-        _gatewayStatusPollTimer = null;
-      }
     });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$9, [

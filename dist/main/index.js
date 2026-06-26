@@ -22943,17 +22943,8 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("start-gateway", async () => {
     try {
-      if (gateway.isGatewayRunning?.() || gateway.isGatewayReady?.()) {
-        return { ok: true, already: true };
-      }
-      gateway.startGateway().then((result) => {
-        if (!result?.success) {
-          console.error("[gateway] background start failed:", result);
-        }
-      }).catch((err2) => {
-        console.error("[gateway] background start error:", err2);
-      });
-      return { ok: true, starting: true };
+      await gateway.startGateway();
+      return { ok: true };
     } catch (err) {
       console.error(`启动 Gateway 失败:`, err);
       return { ok: false, error: err.message };
