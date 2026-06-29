@@ -26081,9 +26081,61 @@ const _sfc_main$9 = {
         }
       });
     }
+    async function clearRecoveredHermesTask(taskId, mode = "hermes", reason = "上一次 Hermes 任务已中断，程序已自动恢复会话。请重新发送消息。") {
+      if (!taskId) return false;
+      try {
+        const payload = await window.uclaw?.ipcGetHermesChatResult?.(taskId);
+        if (payload?.taskId === taskId && payload.result) {
+          const ok = payload.result?.ok !== false;
+          if (mode === "collab") {
+            appendCollabAssistant(ok ? getHermesReply(payload.result) : (payload.result?.error || reason), "协同结果", ok ? "done" : "error");
+            collabActiveTaskId.value = "";
+            collabSending.value = false;
+            collabRunState.value = ok ? "协同流程已完成。" : "协同流程已恢复，可以重新发送。";
+          } else {
+            finishHermesProgress(ok ? "done" : "error");
+            appendHermesAssistant(ok ? getHermesReply(payload.result) : (payload.result?.error || reason), "Hermes Agent", ok ? "done" : "error");
+            hermesActiveTaskId.value = "";
+            hermesSending.value = false;
+            hermesRunState.value = ok ? "Hermes 已完成回复。" : "Hermes 会话已恢复，可以重新发送。";
+          }
+          saveHermesSession();
+          return true;
+        }
+        if (payload?.taskId === taskId && payload.pending) return false;
+      } catch {
+      }
+      return false;
+    }
+    async function prepareRecoveredHermesTask(taskId, mode = "hermes") {
+      if (!taskId) return false;
+      try {
+        const payload = await window.uclaw?.ipcGetHermesChatResult?.(taskId);
+        if (payload?.taskId === taskId && payload.pending) return true;
+        if (payload?.taskId === taskId && payload.result) {
+          await clearRecoveredHermesTask(taskId, mode);
+          return false;
+        }
+      } catch {
+      }
+      if (mode === "collab") {
+        collabActiveTaskId.value = "";
+        collabSending.value = false;
+        collabRunState.value = "协同会话已恢复，可以重新发送。";
+      } else {
+        hermesActiveTaskId.value = "";
+        hermesSending.value = false;
+        hermesRunState.value = "Hermes 会话已恢复，可以重新发送。";
+        finishHermesProgress("error");
+      }
+      saveHermesSession();
+      return false;
+    }
     async function resumeHermesTask(taskId, mode = "hermes") {
       if (!taskId) return;
       try {
+        const shouldWait = await prepareRecoveredHermesTask(taskId, mode);
+        if (!shouldWait) return;
         const result = await waitForHermesChatResult(taskId);
         const ok = result?.ok !== false;
         if (mode === "collab") {
@@ -26289,7 +26341,16 @@ const _sfc_main$9 = {
     }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
-      if (!content || hermesSending.value) return;
+      if (!content) return;
+      if (hermesSending.value) {
+        const recovered = await clearRecoveredHermesTask(hermesActiveTaskId.value, "hermes");
+        if (hermesSending.value && !recovered) {
+          appendHermesAssistant("Hermes 正在处理上一条消息，本条暂未发送。请等待当前回复完成后再发送，或点击停止后重新发送。", "Hermes 系统", "done");
+          hermesRunState.value = "Hermes 正在处理上一条消息。";
+          scrollToBottom();
+          return;
+        }
+      }
       const requestMode = "hermes";
       const now = Date.now();
       const userMessage = {

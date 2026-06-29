@@ -25,7 +25,7 @@ if (!fs.existsSync(path.join(distRoot, "main", "index.js"))) {
   console.error("Main build is missing. Run npm run build first.");
   process.exit(1);
 }
-if (!fs.existsSync(path.join(distRoot, "assets", "index.html"))) {
+if (!fs.existsSync(path.join(distRoot, "assets", "index.html")) && !fs.existsSync(path.join(distRoot, "assets", "main", "index.html"))) {
   console.error("Renderer build is missing. Run npm run build first.");
   process.exit(1);
 }

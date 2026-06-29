@@ -1925,6 +1925,7 @@ class HermesManager {
 }
 let hermesManager = null;
 const hermesChatResults = /* @__PURE__ */ new Map();
+const HERMES_CHAT_STALE_MS = 30 * 1000;
 function readHermesChatResultFromRuns(taskId) {
   if (!taskId) return null;
   const runsRoot = path$1.join(getAppRoot(), "data", ".hermes", "runs");
@@ -1985,6 +1986,51 @@ function readHermesChatResultFromRuns(taskId) {
         };
         hermesChatResults.set(taskId, payload);
         return payload;
+      }
+      if (status?.status === "running") {
+        const startedAtMs = Date.parse(status.startedAt || request.startedAt || "");
+        const ageMs = Number.isFinite(startedAtMs) ? Date.now() - startedAtMs : Infinity;
+        const hasLiveChild = !!hermesManager?.chatChildren?.has?.(taskId);
+        if (hasLiveChild) {
+          return {
+            taskId,
+            sessionId: request.sessionId || "hermes-ai-chat",
+            mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
+            pending: true,
+            startedAt: status.startedAt || request.startedAt || null,
+            runId: dir.name,
+            runDir: dir.fullPath,
+            stdoutPath,
+            stderrPath
+          };
+        }
+        if (!hasLiveChild && ageMs > HERMES_CHAT_STALE_MS) {
+          const resultPayload = {
+            ok: false,
+            errorKind: "interrupted",
+            error: "上一次 Hermes 任务已中断，程序已自动恢复会话。请重新发送消息；如果反复出现，请在首页重新启动 Hermes 后再试。",
+            runId: dir.name,
+            runDir: dir.fullPath,
+            stdoutPath,
+            stderrPath
+          };
+          const payload = {
+            taskId,
+            sessionId: request.sessionId || "hermes-ai-chat",
+            mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
+            result: resultPayload,
+            finishedAt
+          };
+          try {
+            fs$1.writeFileSync(resultPath, JSON.stringify(resultPayload, null, 2) + "\n", "utf8");
+            fs$1.writeFileSync(statusPath, JSON.stringify({ status: "failed", errorKind: "interrupted", finishedAt: new Date().toISOString(), taskId, sessionId: request.sessionId || "hermes-ai-chat", runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath, resultPath }, null, 2) + "\n", "utf8");
+          } catch (err) {
+            safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat-result] stale task close failed: " + (err instanceof Error ? err.message : String(err)) });
+          }
+          hermesChatResults.set(taskId, payload);
+          safeSend("hermes-chat-result", payload);
+          return payload;
+        }
       }
       return null;
     }
@@ -23077,6 +23123,7 @@ function registerIPCHandlers({ gateway }) {
       return await getHermesManager().chat(chatOptions);
     }
     const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] accepted background task " + taskId + " session=" + (chatOptions.sessionId || "hermes-ai-chat") + " messageLength=" + String(chatOptions.message || "").length });
     setTimeout(() => {
       getHermesManager().chat({ ...chatOptions, taskId }).then((result) => {
         const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now(), runId: result?.runId, runDir: result?.runDir, stdoutPath: result?.stdoutPath, stderrPath: result?.stderrPath };
