@@ -1992,9 +1992,9 @@ function patchGatewayChatReadinessUi(filePath) {
         "      window.uclaw?.ipcGetGatewayStatus?.().then((status) => {",
         "        if (!status) return;",
         "        gatewayStore.setRunning(!!status.running);",
-        "        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.running);",
+        "        gatewayStore.setGatewayReady(!!status.gatewayReady);",
         "        if (status.port) gatewayStore.setPort(status.port);",
-        "        if ((status.running || status.gatewayReady) && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\") {",
+        "        if (status.gatewayReady && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\") {",
         "          store.connectToGateway();",
         "        }",
         "      }).catch(() => {});"
@@ -2014,7 +2014,7 @@ function patchGatewayChatReadinessUi(filePath) {
         "      const status = await window.uclaw.ipcGetGatewayStatus?.();",
         "      if (status) {",
         "        store.setRunning(!!status.running);",
-        "        store.setGatewayReady(!!status.gatewayReady || !!status.running);",
+        "        store.setGatewayReady(!!status.gatewayReady);",
         "        if (status.port) store.setPort(status.port);",
         "      }",
         "    } catch (e) {",
@@ -4806,7 +4806,7 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
     "    return { running: ready, gatewayReady: ready, port: GATEWAY_DEFAULT_PORT };",
     [
       "    const portOpen = ready ? true : await checkTcpPortOpen(GATEWAY_DEFAULT_PORT, 500);",
-      "    return { running: ready || portOpen, gatewayReady: ready || portOpen, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };"
+      "    return { running: ready || portOpen, gatewayReady: ready, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };"
     ].join("\n")
   );
 
@@ -4904,12 +4904,12 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
         "      try {",
         "        const status = await window.uclaw?.ipcGetGatewayStatus?.();",
         "        if (!status) return;",
-        "        const available = !!status.running || !!status.gatewayReady || !!status.portOpen;",
+        "        const available = !!status.running || !!status.portOpen;",
         "        gatewayStore.setRunning(available);",
-        "        gatewayStore.setGatewayReady(!!status.gatewayReady || !!status.portOpen || available);",
+        "        gatewayStore.setGatewayReady(!!status.gatewayReady);",
         "        if (status.port) gatewayStore.setPort(status.port);",
         "        const now = Date.now();",
-        "        if (available && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\" && now - _lastGatewayConnectKickAt > 2500) {",
+        "        if (status.gatewayReady && store.wsStatus !== \"ready\" && store.wsStatus !== \"connecting\" && now - _lastGatewayConnectKickAt > 2500) {",
         "          _lastGatewayConnectKickAt = now;",
         "          store.connectToGateway();",
         "        }",

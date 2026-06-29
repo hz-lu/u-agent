@@ -36,10 +36,9 @@ mainSource = mainSource.replace(
   "const IS_DEV = !electron.app.isPackaged;",
   "const IS_DEV = process.env.NODE_ENV === \"development\";"
 );
-mainSource = mainSource.replace(
-  "function getLocalBase() {\n  const appData = process.env.LOCALAPPDATA || process.env.APPDATA;",
-  "function getLocalBase() {\n  if (process.platform !== \"win32\") return path$1.resolve(__dirname, \"..\", \"..\", \"data\", \".openclaw\");\n  const appData = process.env.LOCALAPPDATA || process.env.APPDATA;"
-);
+if (!mainSource.includes('if (!IS_DEV) return path$1.join(getDataRoot(), ".openclaw", "electron");')) {
+  throw new Error("Portable zero-trace Electron data path is missing from main process source.");
+}
 mainSource = mainSource.replace(
   "function loadActivationPage() {\n  if (!mainWindow$1) {",
   "function loadActivationPage() {\n  if (process.env.OPENCLAW_DEV_SKIP_LICENSE === \"1\") {\n    const indexPath = path$1.join(__dirname, \"..\", \"assets\", \"main\", \"index.html\");\n    console.log(\"[loadActivationPage] DEV license skip: loading\", indexPath);\n    mainWindow$1?.loadFile(indexPath);\n    return;\n  }\n  if (!mainWindow$1) {"

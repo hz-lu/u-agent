@@ -9908,7 +9908,7 @@ function useGateway() {
       const status = await window.uclaw.ipcGetGatewayStatus?.();
       if (status) {
         store.setRunning(!!status.running);
-        store.setGatewayReady(!!status.gatewayReady || !!status.running);
+        store.setGatewayReady(!!status.gatewayReady);
         if (status.port) store.setPort(status.port);
       }
     } catch (e) {
@@ -19579,7 +19579,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     connectToGateway();
   }
   function _isGatewayAvailable() {
-    return gatewayStore.gatewayReady || gatewayStore.running;
+    return !!gatewayStore.gatewayReady;
   }
   async function _waitForReadyConnection(timeoutMs = 1e4) {
     if (_ws?.status?.value === "ready" || wsStatus.value === "ready") return true;
@@ -19601,11 +19601,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     return _ws?.status?.value === "ready" || wsStatus.value === "ready";
   }
   watch(() => gatewayStore.running, (running) => {
-    if (running) {
-      if (wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
-        connectToGateway();
-      }
-    } else {
+    if (!running) {
       teardownWsConnection();
     }
   });
@@ -25573,6 +25569,8 @@ const _sfc_main$9 = {
     const hermesInputText = /* @__PURE__ */ ref("");
     const hermesRunState = /* @__PURE__ */ ref("");
     const collabRunState = /* @__PURE__ */ ref("");
+    const hermesActiveTaskId = /* @__PURE__ */ ref("");
+    const collabActiveTaskId = /* @__PURE__ */ ref("");
     const hermesProgressLines = /* @__PURE__ */ ref([]);
     const messagesArea = /* @__PURE__ */ ref(null);
     const messagesEnd = /* @__PURE__ */ ref(null);
@@ -25608,8 +25606,8 @@ const _sfc_main$9 = {
       aiColor: "#4edea3"
     });
     const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
-    const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady || gatewayStore.running);
-    const activeReady = computed(() => agentMode.value === "openclaw" ? gatewayAvailable.value || store.isReady : agentMode.value === "collab" ? !collabSending.value && gatewayAvailable.value : !hermesSending.value);
+    const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady);
+    const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && store.isReady && !store.sending : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
@@ -25639,7 +25637,7 @@ const _sfc_main$9 = {
         _storeInitDone = true;
         store.init();
       }
-      if (gatewayStore.running && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
+      if (gatewayStore.gatewayReady && store.wsStatus !== "ready" && store.wsStatus !== "connecting") {
         store.connectToGateway();
       }
     });
@@ -25647,6 +25645,8 @@ const _sfc_main$9 = {
       loadHermesSession();
       window.addEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
       if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
+      if (hermesActiveTaskId.value) resumeHermesTask(hermesActiveTaskId.value, "hermes");
+      if (collabActiveTaskId.value) resumeHermesTask(collabActiveTaskId.value, "collab");
       nextTick(() => scrollToBottom());
     });
     async function handleRefreshModels() {
@@ -25698,7 +25698,7 @@ const _sfc_main$9 = {
     function saveHermesSession() {
       try {
         const compactMessages = (items) => (Array.isArray(items) ? items.slice(-80).map((item) => ({ ...item, content: typeof item.content === "string" && item.content.length > 3e4 ? item.content.slice(0, 12e3) + "\n\n[中间内容已折叠，完整输出请查看 Hermes 运行日志。]\n\n" + item.content.slice(-12e3) : item.content })) : []);
-        const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value };
+        const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value, hermesActiveTaskId: hermesActiveTaskId.value, collabActiveTaskId: collabActiveTaskId.value };
         window.__uclawHermesChatState = state;
         clearTimeout(window.__uclawHermesChatSaveTimer);
         window.__uclawHermesChatSaveTimer = setTimeout(() => {
@@ -25720,8 +25720,10 @@ const _sfc_main$9 = {
           if (typeof liveState.input === "string") hermesInputText.value = liveState.input;
           if (typeof liveState.runState === "string") hermesRunState.value = liveState.runState;
           if (typeof liveState.collabRunState === "string") collabRunState.value = liveState.collabRunState;
-          hermesSending.value = false;
-          collabSending.value = false;
+          hermesActiveTaskId.value = typeof liveState.hermesActiveTaskId === "string" ? liveState.hermesActiveTaskId : "";
+          collabActiveTaskId.value = typeof liveState.collabActiveTaskId === "string" ? liveState.collabActiveTaskId : "";
+          hermesSending.value = !!hermesActiveTaskId.value;
+          collabSending.value = !!collabActiveTaskId.value;
           if (["openclaw", "hermes", "collab"].includes(liveState.mode)) agentMode.value = liveState.mode;
         }
         const raw = localStorage.getItem("uclaw_hermes_chat_state");
@@ -25736,8 +25738,10 @@ const _sfc_main$9 = {
           if (typeof state.input === "string") hermesInputText.value = state.input;
           if (typeof state.runState === "string") hermesRunState.value = state.runState;
           if (typeof state.collabRunState === "string") collabRunState.value = state.collabRunState;
-          hermesSending.value = false;
-          collabSending.value = false;
+          hermesActiveTaskId.value = typeof state.hermesActiveTaskId === "string" ? state.hermesActiveTaskId : "";
+          collabActiveTaskId.value = typeof state.collabActiveTaskId === "string" ? state.collabActiveTaskId : "";
+          hermesSending.value = !!hermesActiveTaskId.value;
+          collabSending.value = !!collabActiveTaskId.value;
         }
         const mode = localStorage.getItem("uclaw_agent_mode");
         if (["openclaw", "hermes", "collab"].includes(mode)) agentMode.value = mode;
@@ -25805,12 +25809,89 @@ const _sfc_main$9 = {
         }
       });
     }
+    async function resumeHermesTask(taskId, mode = "hermes") {
+      if (!taskId) return;
+      try {
+        const result = await waitForHermesChatResult(taskId);
+        const ok = result?.ok !== false;
+        if (mode === "collab") {
+          appendCollabAssistant(ok ? getHermesReply(result) : (result?.error || "Hermes 协同任务没有完成。"), "协同结果", ok ? "done" : "error");
+          collabRunState.value = ok ? "协同流程已完成。" : "协同流程失败。";
+          collabActiveTaskId.value = "";
+          collabSending.value = false;
+        } else {
+          finishHermesProgress(ok ? "done" : "error");
+          appendHermesAssistant(ok ? getHermesReply(result) : (result?.error || "Hermes 任务没有完成。"), "Hermes Agent", ok ? "done" : "error");
+          hermesRunState.value = ok ? "Hermes 已完成回复。" : "Hermes 暂时无法完成请求。";
+          hermesActiveTaskId.value = "";
+          hermesSending.value = false;
+        }
+      } catch (e) {
+        if (mode === "collab") {
+          appendCollabAssistant("协同流程失败: " + (e?.message || e), "协同编排", "error");
+          collabActiveTaskId.value = "";
+          collabSending.value = false;
+        } else {
+          appendHermesAssistant("Hermes 暂时无法完成请求。\n\n技术信息：" + (e?.message || e), "Hermes Agent", "error");
+          hermesActiveTaskId.value = "";
+          hermesSending.value = false;
+        }
+      } finally {
+        saveHermesSession();
+        scrollToBottom();
+      }
+    }
+    async function cancelActiveHermesTask(mode = "hermes") {
+      const isCollab = mode === "collab";
+      const taskId = isCollab ? collabActiveTaskId.value : hermesActiveTaskId.value;
+      if (!taskId) {
+        if (isCollab) {
+          collabSending.value = false;
+          collabRunState.value = "协同会话当前没有正在执行的任务。";
+        } else {
+          hermesSending.value = false;
+          hermesRunState.value = "Hermes 当前没有正在执行的任务。";
+        }
+        saveHermesSession();
+        return;
+      }
+      try {
+        await window.uclaw?.ipcCancelHermesChat?.(taskId);
+      } catch {
+      }
+      if (isCollab) {
+        collabActiveTaskId.value = "";
+        collabSending.value = false;
+        collabRunState.value = "协同任务已停止。";
+        appendCollabAssistant("已停止当前协同任务。", "协同编排", "done");
+      } else {
+        hermesActiveTaskId.value = "";
+        hermesSending.value = false;
+        hermesRunState.value = "Hermes 任务已停止。";
+        finishHermesProgress("error");
+        appendHermesAssistant("已停止当前 Hermes 任务。", "Hermes Agent", "done");
+      }
+      saveHermesSession();
+      scrollToBottom();
+    }
     async function runHermesChatBackground(payload) {
       const taskId = `hermes-chat-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const waitPromise = waitForHermesChatResult(taskId);
-      const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });
-      if (!started?.pending || !started.taskId) return started;
-      return await waitPromise;
+      if (payload?.sessionId === "openclaw-hermes-collab") collabActiveTaskId.value = taskId;
+      else hermesActiveTaskId.value = taskId;
+      saveHermesSession();
+      try {
+        const waitPromise = waitForHermesChatResult(taskId);
+        const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });
+        if (!started?.pending || !started.taskId) return started;
+        return await waitPromise;
+      } finally {
+        if (payload?.sessionId === "openclaw-hermes-collab") {
+          if (collabActiveTaskId.value === taskId) collabActiveTaskId.value = "";
+        } else if (hermesActiveTaskId.value === taskId) {
+          hermesActiveTaskId.value = "";
+        }
+        saveHermesSession();
+      }
     }
     function upsertHermesProgress(content, stage = "", status = "running") {
       const now = Date.now();
@@ -25927,13 +26008,12 @@ const _sfc_main$9 = {
         if (store.wsStatus !== "ready" && store.wsStatus !== "connecting") store.connectToGateway();
       } catch {
       }
-      if (gatewayAvailable.value) return true;
       const start = Date.now();
       while (Date.now() - start < timeoutMs) {
-        if (store.isReady || gatewayAvailable.value) return true;
+        if (store.isReady) return true;
         await new Promise((resolve) => window.setTimeout(resolve, 350));
       }
-      return !!(store.isReady || gatewayAvailable.value);
+      return !!store.isReady;
     }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
@@ -26170,10 +26250,13 @@ const _sfc_main$9 = {
             showToast("Hermes 会话已重置");
             return;
           }
-          if (cmd === "/stop") showToast("Hermes 当前调用会在本轮完成后结束");
+          if (cmd === "/stop") {
+            cancelActiveHermesTask("hermes");
+            return;
+          }
         },
         stop() {
-          showToast("Hermes 当前调用会在本轮完成后结束");
+          cancelActiveHermesTask("hermes");
         }
       },
       collab: {
@@ -26189,10 +26272,13 @@ const _sfc_main$9 = {
             showToast("Hermes 会话已重置");
             return;
           }
-          if (cmd === "/stop") showToast("Hermes 当前调用会在本轮完成后结束");
+          if (cmd === "/stop") {
+            cancelActiveHermesTask("collab");
+            return;
+          }
         },
         stop() {
-          showToast("Hermes 当前调用会在本轮完成后结束");
+          cancelActiveHermesTask("collab");
         }
       }
     };

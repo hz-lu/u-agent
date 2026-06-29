@@ -185,6 +185,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcOpenHermesApiServer: () => electron.ipcRenderer.invoke("hermes:openApiServer"),
   ipcHermesChat: (options) => electron.ipcRenderer.invoke("hermes:chat", options),
   ipcGetHermesChatResult: (taskId) => electron.ipcRenderer.invoke("hermes:chatResult", taskId),
+  ipcCancelHermesChat: (taskId) => electron.ipcRenderer.invoke("hermes:cancelChat", taskId),
   ipcOpenHermesInternal: (url) => electron.ipcRenderer.invoke("hermes:openInternal", url),
   ipcOpenHermesEmbedded: (url) => electron.ipcRenderer.invoke("hermes:openEmbedded", url),
   ipcGetHermesFrameUrl: (url) => electron.ipcRenderer.invoke("hermes:getFrameUrl", url),

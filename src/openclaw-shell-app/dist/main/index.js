@@ -499,6 +499,8 @@ class HermesManager {
     this.stopping = false;
     this.dashboardProc = null;
     this.apiProc = null;
+    this.chatChildren = /* @__PURE__ */ new Map();
+    this.chatRunMeta = /* @__PURE__ */ new Map();
     this.apiServerKey = process.env.HERMES_API_SERVER_KEY || "openclaw-local-hermes";
   }
   getHermesDataRoot() {
@@ -1535,6 +1537,9 @@ class HermesManager {
     this.stopping = true;
     const pid = this.proc?.pid;
     try {
+      for (const child of this.chatChildren.values()) this.killChild(child);
+      this.chatChildren.clear();
+      this.chatRunMeta.clear();
       this.killChild(this.proc);
       this.killChild(this.dashboardProc);
       this.killChild(this.apiProc);
@@ -1681,6 +1686,7 @@ class HermesManager {
     }
     const chatCommand = this.getHermesCommand(args);
     safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " " + chatCommand.args.join(" ") + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
+    const manager = this;
     return await new Promise((resolve) => {
       const progressBase = {
         sessionId: options.sessionId || "hermes-ai-chat",
@@ -1711,6 +1717,8 @@ class HermesManager {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true
       });
+      const pendingChildKey = options.taskId || "pending-" + Date.now();
+      manager.chatChildren.set(pendingChildKey, child);
       let stdout = "";
       let stderr = "";
       let stdoutBytes = 0;
@@ -1737,8 +1745,16 @@ class HermesManager {
       const runDir = path$1.join(getAppRoot(), "data", ".hermes", "runs", runId);
       const stdoutPath = path$1.join(runDir, "stdout.txt");
       const stderrPath = path$1.join(runDir, "stderr.txt");
+      const statusPath = path$1.join(runDir, "status.json");
+      const resultPath = path$1.join(runDir, "result.json");
       fs$1.mkdirSync(runDir, { recursive: true });
+      if (!options.taskId) {
+        manager.chatChildren.delete(pendingChildKey);
+        manager.chatChildren.set(runId, child);
+      }
+      manager.chatRunMeta.set(options.taskId || runId, { statusPath, resultPath, runId, runDir, stdoutPath, stderrPath, sessionId: options.sessionId || "hermes-ai-chat" });
       fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", message, provider, modelName }, null, 2) + "\n", "utf8");
+      fs$1.writeFileSync(statusPath, JSON.stringify({ status: "running", startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", runId, runDir }, null, 2) + "\n", "utf8");
       emitProgress("model", "Hermes 已启动，正在调用模型：" + (modelName || "当前配置模型"));
       const heartbeat = setInterval(() => {
         emitProgress("waiting", "模型仍在处理，本轮任务没有中断；可继续切换其他页面。");
@@ -1752,6 +1768,15 @@ class HermesManager {
       function finish(payload) {
         if (settled) return;
         settled = true;
+        const finalStatus = payload?.errorKind === "cancelled" ? "cancelled" : payload?.ok === false ? "failed" : "finished";
+        try {
+          fs$1.writeFileSync(resultPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+          fs$1.writeFileSync(statusPath, JSON.stringify({ status: finalStatus, finishedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", runId, runDir, stdoutPath, stderrPath, resultPath }, null, 2) + "\n", "utf8");
+        } catch (err) {
+          safeSend("hermes-log", { type: "stderr", msg: "[chat-status] write failed: " + (err?.message || err) });
+        }
+        manager.chatChildren.delete(options.taskId || runId);
+        manager.chatRunMeta.delete(options.taskId || runId);
         clearTimeout(timer);
         clearInterval(heartbeat);
         emitProgress(payload?.ok === false ? "error" : "done", payload?.ok === false ? "Hermes 本轮请求未完成，已生成友好错误说明。" : "Hermes 已完成回复。");
@@ -1844,6 +1869,10 @@ class HermesManager {
       child.on("exit", async (code) => {
         await flushSpoolWrites();
         if (settled) return;
+        if (child.__uclawCancelled) {
+          finish({ ok: false, errorKind: "cancelled", error: "Hermes task was cancelled by the user.", runId, runDir, stdoutPath, stderrPath });
+          return;
+        }
         const reply = stdout.trim();
         const errText = stderr.trim();
         if (code !== 0) {
@@ -1888,39 +1917,36 @@ function readHermesChatResultFromRuns(taskId) {
       if (request?.taskId !== taskId) continue;
       const stdoutPath = path$1.join(dir.fullPath, "stdout.txt");
       const stderrPath = path$1.join(dir.fullPath, "stderr.txt");
+      const statusPath = path$1.join(dir.fullPath, "status.json");
+      const resultPath = path$1.join(dir.fullPath, "result.json");
       const finishedAt = Date.now();
-      let stdout = "";
-      let stderr = "";
-      let stdoutStable = false;
+      let status = null;
+      let result = null;
       try {
-        if (fs$1.existsSync(stdoutPath)) {
-          const stat = fs$1.statSync(stdoutPath);
-          stdoutStable = finishedAt - stat.mtimeMs > 1200;
-          stdout = fs$1.readFileSync(stdoutPath, "utf8").trim();
-        }
+        if (fs$1.existsSync(statusPath)) status = JSON.parse(fs$1.readFileSync(statusPath, "utf8"));
       } catch {
       }
       try {
-        if (fs$1.existsSync(stderrPath)) stderr = fs$1.readFileSync(stderrPath, "utf8").trim();
+        if (fs$1.existsSync(resultPath)) result = JSON.parse(fs$1.readFileSync(resultPath, "utf8"));
       } catch {
       }
-      if (stdout && stdoutStable) {
+      if (result && ["finished", "failed", "cancelled"].includes(status?.status || "")) {
         const payload = {
           taskId,
           sessionId: request.sessionId || "hermes-ai-chat",
           mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
-          result: { ok: true, reply: stdout, raw: stdout, runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath },
+          result: { ...result, runId: result.runId || dir.name, runDir: result.runDir || dir.fullPath, stdoutPath: result.stdoutPath || stdoutPath, stderrPath: result.stderrPath || stderrPath },
           finishedAt
         };
         hermesChatResults.set(taskId, payload);
         return payload;
       }
-      if (stderr && !stdout && finishedAt - dir.mtimeMs > 5000) {
+      if (status?.status === "failed" || status?.status === "cancelled") {
         const payload = {
           taskId,
           sessionId: request.sessionId || "hermes-ai-chat",
           mode: request.mode || (request.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes"),
-          result: { ok: false, error: stderr.slice(-4000), runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath },
+          result: { ok: false, error: status.error || "Hermes task did not complete.", runId: dir.name, runDir: dir.fullPath, stdoutPath, stderrPath },
           finishedAt
         };
         hermesChatResults.set(taskId, payload);
@@ -2369,6 +2395,7 @@ const FILE_CONFIG = "openclaw.json";
 const FILE_LICENSE = ".license";
 const FILE_OPENCLAW_MJS = "openclaw.mjs";
 function getLocalBase() {
+  if (!IS_DEV) return path$1.join(getDataRoot(), ".openclaw", "electron");
   const appData = process.env.LOCALAPPDATA || process.env.APPDATA;
   if (appData) {
     const candidate = path$1.join(appData, APP_NAME);
@@ -2382,7 +2409,11 @@ function getLocalBase() {
 }
 const localBase = getLocalBase();
 const electronDataDir = path$1.join(localBase, "electron-cache");
+fs$1.mkdirSync(electronDataDir, { recursive: true });
 electron.app.setPath("userData", electronDataDir);
+electron.app.setPath("sessionData", path$1.join(electronDataDir, "session"));
+electron.app.setPath("crashDumps", path$1.join(electronDataDir, "crashDumps"));
+electron.app.setAppLogsPath(path$1.join(electronDataDir, "logs"));
 const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);
 function getAppRoot() {
   if (_appRoot) return _appRoot;
@@ -3261,11 +3292,8 @@ function createGatewayManager() {
         const portOpen = await checkTcpPortOpen(port, 350);
         if (portOpen && !resolved) {
           gatewayRunning = true;
-          sendBootPhase("done", "启动成功", "Gateway 端口已就绪，正在后台完成健康检查...", 100);
+          sendBootPhase("waiting-ready", "Gateway 端口已打开", "Gateway 端口已打开，正在等待 health 和 WebSocket 就绪...", progress);
           sendGatewayStatus(true);
-          safeSend("gateway-ready", true);
-          resolved = true;
-          if (onFirstResult) onFirstResult({ success: true, degraded: true });
         }
         const result = await new Promise((res, rej) => {
           const req = http22.get(`http://127.0.0.1:${port}/health`, { timeout: 900 }, (resp) => {
@@ -3456,7 +3484,6 @@ function createGatewayManager() {
           if (line.includes("[gateway] listening on") || line.includes("gateway ready") || line.includes("http server listening")) {
             gatewayRunning = true;
             sendGatewayStatus(true);
-            safeSend("gateway-ready", true);
           }
         });
       });
@@ -3583,7 +3610,6 @@ function createGatewayManager() {
     safeSend("gateway-restarting", false);
     if (restartOk) {
       sendGatewayStatus(true);
-      safeSend("gateway-ready", true);
       safeSend("gateway-restarted", { success: true, port, source: "codex-gateway-restart-status-recovery" });
       return { success: true };
     }
@@ -23007,6 +23033,30 @@ function registerIPCHandlers({ gateway }) {
     }
     return payload;
   });
+  electron.ipcMain.handle("hermes:cancelChat", async (_, taskId) => {
+    if (!taskId) return { ok: false, error: "missing taskId" };
+    const manager = getHermesManager();
+    const child = manager.chatChildren.get(taskId);
+    if (!child) return { ok: false, error: "task not running" };
+    child.__uclawCancelled = true;
+    const meta = manager.chatRunMeta.get(taskId);
+    if (meta?.statusPath && meta?.resultPath) {
+      try {
+        const payload = { ok: false, errorKind: "cancelled", error: "Hermes task was cancelled by the user.", runId: meta.runId, runDir: meta.runDir, stdoutPath: meta.stdoutPath, stderrPath: meta.stderrPath };
+        fs$1.writeFileSync(meta.resultPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+        fs$1.writeFileSync(meta.statusPath, JSON.stringify({ status: "cancelled", finishedAt: new Date().toISOString(), taskId, sessionId: meta.sessionId, runId: meta.runId, runDir: meta.runDir, stdoutPath: meta.stdoutPath, stderrPath: meta.stderrPath, resultPath: meta.resultPath }, null, 2) + "\n", "utf8");
+        const completed = { taskId, sessionId: meta.sessionId, mode: meta.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: payload, finishedAt: Date.now() };
+        hermesChatResults.set(taskId, completed);
+        safeSend("hermes-chat-result", completed);
+      } catch (err) {
+        safeSend("hermes-log", { type: "stderr", msg: "[chat-cancel] write failed: " + (err?.message || err) });
+      }
+    }
+    manager.killChild(child);
+    manager.chatChildren.delete(taskId);
+    manager.chatRunMeta.delete(taskId);
+    return { ok: true, taskId };
+  });
   electron.ipcMain.handle("hermes:openInternal", async (_, targetUrl) => {
     const url2 = typeof targetUrl === "string" && targetUrl.startsWith("http") ? targetUrl : "http://127.0.0.1:17520";
     return openHermesInternalWindow(url2, "Hermes");
@@ -23049,7 +23099,7 @@ function registerIPCHandlers({ gateway }) {
       });
     }
     const portOpen = ready ? true : await checkTcpPortOpen(GATEWAY_DEFAULT_PORT, 500);
-    return { running: ready || portOpen, gatewayReady: ready || portOpen, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };
+    return { running: ready || portOpen, gatewayReady: ready, healthReady: ready, portOpen, port: GATEWAY_DEFAULT_PORT };
   });
   electron.ipcMain.handle("stop-gateway", async () => {
     await gateway.stopGateway();
