@@ -19585,6 +19585,13 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   const _historyInflight = /* @__PURE__ */ new Set();
   const _historyLastLoadedAt = {};
   const _localMessageMutatedAt = {};
+  const OPENCLAW_QUEUE_MAX = 3;
+  const OPENCLAW_TEXT_MAX = 12e3;
+  const OPENCLAW_ATTACHMENT_MAX = 3;
+  const OPENCLAW_INLINE_ATTACHMENT_MAX = 1536 * 1024;
+  const OPENCLAW_TOTAL_INLINE_MAX = 2 * 1024 * 1024;
+  const queuedOpenClawMessages = /* @__PURE__ */ ref([]);
+  let _flushingOpenClawQueue = false;
   async function connectToGateway() {
     const now = Date.now();
     if (now - _lastConnectAttemptAt < 1200) return;
@@ -19647,6 +19654,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   watch(() => gatewayStore.running, (running) => {
     if (!running) {
       teardownWsConnection();
+      failOpenClawQueue("\u005f\u005fOPENCLAW_STOPPED\u005f\u005f");
     }
   });
   watch(() => gatewayStore.gatewayReady, (ready) => {
@@ -19684,6 +19692,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (activeSessionKey.value) {
         await loadSessionMessages(activeSessionKey.value);
       }
+      flushOpenClawQueue();
     }));
     _unsubs.push(ws.onEvent((event) => {
       if ((event.event === "chat" || event.event === "chat.message") && event.payload) {
@@ -19826,6 +19835,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (payload.state === "error") {
       sending.value = false;
       currentRunId.value = null;
+      setTimeout(() => flushOpenClawQueue(), 0);
       let errorText = payload.errorMessage || payload.error || "AI 生成失败，请重试";
       if (errorText.includes("unknown variant") && errorText.includes("image_url")) {
         errorText = "当前模型不支持图片识别，请切换支持图片识别的模型或移除图片后重试";
@@ -19859,6 +19869,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (payload.state === "final") {
       sending.value = false;
       currentRunId.value = null;
+      setTimeout(() => flushOpenClawQueue(), 0);
       let finalContent = "";
       let finalContentBlocks = void 0;
       let finalThinkContent = void 0;
@@ -20674,7 +20685,142 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       _saveSessions();
     }
   }
-  async function sendMessage(text2, attachments) {
+  function appendOpenClawNotice(sessionKey, content, status = "done") {
+    const notice = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content,
+      images: [],
+      videos: [],
+      audios: [],
+      files: [],
+      tools: [],
+      timestamp: Date.now(),
+      status
+    };
+    messagesMap.value[sessionKey] = [...messagesMap.value[sessionKey] || [], notice];
+    _localMessageMutatedAt[sessionKey] = Date.now();
+    _scheduleSave(sessionKey);
+    return notice;
+  }
+  function updateOpenClawMessage(sessionKey, messageId, patch) {
+    const msgs = messagesMap.value[sessionKey] || [];
+    const idx = msgs.findIndex((m) => m.id === messageId);
+    if (idx < 0) return;
+    const next = msgs.slice();
+    next[idx] = { ...next[idx], ...patch };
+    messagesMap.value[sessionKey] = next;
+    _localMessageMutatedAt[sessionKey] = Date.now();
+    _scheduleSave(sessionKey);
+  }
+  function estimateInlineBytes(value) {
+    if (!value) return 0;
+    return Math.ceil(String(value).length * 0.75);
+  }
+  function validateOpenClawPayload(text2, attachments, forQueue = false) {
+    const content = String(text2 || "");
+    const atts = Array.isArray(attachments) ? attachments : [];
+    if (content.length > OPENCLAW_TEXT_MAX) {
+      return { ok: false, error: `消息太长，当前约 ${content.length} 字。为保证程序稳定，单条消息最多 ${OPENCLAW_TEXT_MAX} 字，请拆成多条发送。` };
+    }
+    if (atts.length > OPENCLAW_ATTACHMENT_MAX) {
+      return { ok: false, error: `附件太多，单次最多 ${OPENCLAW_ATTACHMENT_MAX} 个。请减少附件后再发送。` };
+    }
+    let totalInline = 0;
+    for (const att of atts) {
+      const inlineBytes = estimateInlineBytes(att?.content);
+      totalInline += inlineBytes;
+      if (inlineBytes > OPENCLAW_INLINE_ATTACHMENT_MAX) {
+        return { ok: false, error: "图片或内嵌附件过大。为避免界面卡死，请压缩后再发送，或等 OpenClaw 就绪后改用文件附件。" };
+      }
+    }
+    if (forQueue && totalInline > OPENCLAW_TOTAL_INLINE_MAX) {
+      return { ok: false, error: "待发送附件总体积过大。OpenClaw 未就绪时不会缓存大体积附件，请压缩或稍后再发。" };
+    }
+    return { ok: true };
+  }
+  function queueOpenClawMessage(item, reason = "OpenClaw 正在准备中") {
+    if (queuedOpenClawMessages.value.length >= OPENCLAW_QUEUE_MAX) {
+      updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "error" });
+      appendOpenClawNotice(item.sessionKey, `OpenClaw 待发送队列已满（最多 ${OPENCLAW_QUEUE_MAX} 条）。请等待前面的消息处理完成后再发送。`, "error");
+      return false;
+    }
+    queuedOpenClawMessages.value = [...queuedOpenClawMessages.value, item];
+    updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "queued" });
+    appendOpenClawNotice(item.sessionKey, `${reason}，这条消息已进入待发送队列。OpenClaw 就绪后会自动按顺序发送。`, "done");
+    if (_isGatewayAvailable() && wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
+      connectToGateway();
+    }
+    return true;
+  }
+  function failOpenClawQueue(reason) {
+    if (!queuedOpenClawMessages.value.length) return;
+    const items = queuedOpenClawMessages.value;
+    queuedOpenClawMessages.value = [];
+    for (const item of items) {
+      updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "error" });
+      const message = reason === "__OPENCLAW_STOPPED__" ? "OpenClaw 已停止运行，待发送消息没有继续发送。请重新启动后再发送。" : reason || "待发送消息已取消。";
+      appendOpenClawNotice(item.sessionKey, message, "error");
+    }
+  }
+  function buildOpenClawSendPayload(text2, attachments) {
+    const imageAtts = attachments?.filter((a) => a.type === "image" && a.content) || [];
+    const fileAtts = attachments?.filter((a) => a.type === "file" && a.filePath) || [];
+    let sendText = text2 || "";
+    if (fileAtts.length) {
+      const fileRefs = fileAtts.map((f) => `[file attached: ${f.filePath} (${f.fileName})]`).join("\n");
+      sendText = sendText ? sendText + "\n" + fileRefs : fileRefs;
+    }
+    const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
+    return { sendText, sendAtts };
+  }
+  async function sendOpenClawToGateway(item) {
+    const sk = item.sessionKey;
+    if (!_ws || _ws.status?.value !== "ready") return false;
+    updateOpenClawMessage(sk, item.userMessageId, { status: "done" });
+    sending.value = true;
+    inputText.value = "";
+    const timeoutId = setTimeout(() => {
+      if (sending.value) {
+        console.warn("[aiChat] OpenClaw send timeout: no reply event in 45 seconds");
+        sending.value = false;
+        currentRunId.value = null;
+        appendOpenClawNotice(sk, "OpenClaw 已收到请求，但较长时间没有把回复同步回桌面端。可以先继续使用其它功能，稍后查看本会话或首页日志。", "error");
+        setTimeout(() => flushOpenClawQueue(), 0);
+      }
+    }, 45e3);
+    const { sendText, sendAtts } = buildOpenClawSendPayload(item.text, item.attachments);
+    try {
+      const result = await _ws?.chatSend(sk, sendText, sendAtts);
+      clearTimeout(timeoutId);
+      if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send response | runId=", result?.runId);
+      if (result?.runId) currentRunId.value = result.runId;
+      return true;
+    } catch (e) {
+      clearTimeout(timeoutId);
+      sending.value = false;
+      currentRunId.value = null;
+      appendOpenClawNotice(sk, "发送失败：" + (e.message || "未知错误"), "error");
+      setTimeout(() => flushOpenClawQueue(), 0);
+      return false;
+    }
+  }
+  async function flushOpenClawQueue() {
+    if (_flushingOpenClawQueue || sending.value) return;
+    if (!_ws || _ws.status?.value !== "ready") return;
+    _flushingOpenClawQueue = true;
+    try {
+      while (queuedOpenClawMessages.value.length && _ws?.status?.value === "ready" && !sending.value) {
+        const item = queuedOpenClawMessages.value[0];
+        queuedOpenClawMessages.value = queuedOpenClawMessages.value.slice(1);
+        await sendOpenClawToGateway(item);
+        if (sending.value) break;
+      }
+    } finally {
+      _flushingOpenClawQueue = false;
+    }
+  }
+  async function sendMessageLegacy(text2, attachments) {
     if (CHAT_DEBUG) console.log("发送了什么===>", text2, attachments);
     const sk = ensureActiveSession();
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] sendMessage 调用 | sending=", sending.value, "| sessionKey=", sk, "| text前30字=", text2?.trim()?.slice(0, 30));
@@ -20784,12 +20930,58 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       _scheduleSave(sk);
     }
   }
+  async function sendMessage(text2, attachments) {
+    const sk = ensureActiveSession();
+    if (!sk || !text2?.trim() && !attachments?.length) return;
+    if (text2?.trim() && handleCommand(text2.trim())) return;
+    const shouldQueue = !_ws || _ws.status?.value !== "ready" || sending.value;
+    const validation = validateOpenClawPayload(text2, attachments, shouldQueue);
+    const userMsg = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content: text2 || "",
+      images: [],
+      videos: [],
+      audios: [],
+      files: [],
+      tools: [],
+      attachments: attachments || [],
+      timestamp: Date.now(),
+      status: validation.ok ? "done" : "error"
+    };
+    const msgs = messagesMap.value[sk] || [];
+    messagesMap.value[sk] = [...msgs, userMsg];
+    _localMessageMutatedAt[sk] = Date.now();
+    _scheduleSave(sk);
+    if (!validation.ok) {
+      appendOpenClawNotice(sk, validation.error, "error");
+      return;
+    }
+    const item = {
+      id: crypto.randomUUID(),
+      sessionKey: sk,
+      userMessageId: userMsg.id,
+      text: text2 || "",
+      attachments: attachments || [],
+      createdAt: Date.now()
+    };
+    if (!_ws || _ws.status?.value !== "ready") {
+      queueOpenClawMessage(item, "OpenClaw 会话连接尚未就绪");
+      return;
+    }
+    if (sending.value) {
+      queueOpenClawMessage(item, "上一条 OpenClaw 消息仍在处理中");
+      return;
+    }
+    await sendOpenClawToGateway(item);
+  }
   function abortMessage() {
     if (activeSessionKey.value) {
       _ws?.chatAbort(activeSessionKey.value, currentRunId.value);
       sending.value = false;
       currentRunId.value = null;
     }
+    failOpenClawQueue("已停止当前生成，待发送消息也已取消。");
   }
   function handleCommand(text2) {
     const cmd = text2.toLowerCase();
