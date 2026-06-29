@@ -9880,6 +9880,10 @@ function useGateway() {
       window.updateLoadingProgress?.(progress, title, detail);
       if (phase === "done") {
         window.hideLoadingOverlayVue?.();
+      } else if (phase === "waiting-ready" && String(title || "").includes("Gateway")) {
+        setTimeout(() => {
+          window.hideLoadingOverlayVue?.();
+        }, 300);
       } else if (phase === "error") {
         setTimeout(() => {
           window.hideLoadingOverlayVue?.();
@@ -13627,13 +13631,53 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
   }
   return { allModels, selectedModels, currentModel, apiKey, setAllModels, setSelectedModels, setApiKey };
 });
+function modelsFromOpenClawConfig(config) {
+  const providers = config?.models?.providers || {};
+  const primary = config?.agents?.defaults?.model?.primary || "";
+  const result = [];
+  for (const [provider, providerConfig] of Object.entries(providers)) {
+    const models = Array.isArray(providerConfig?.models) ? providerConfig.models : [];
+    for (const model of models) {
+      const modelName = model?.id || model?.name;
+      if (!modelName) continue;
+      const source = provider === "custom" ? "custom" : "recommend";
+      const value = source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
+      const labelPrefix = source === "custom" ? "" : provider;
+      result.push({
+        label: labelPrefix ? `${labelPrefix} / ${modelName}` : modelName,
+        value,
+        source,
+        base: providerConfig?.baseUrl || providerConfig?.base || "",
+        key: providerConfig?.apiKey || providerConfig?.key || "",
+        model: modelName,
+        provider,
+        api: providerConfig?.api || "openai-completions",
+        isCurrent: primary === `${provider}/${modelName}`
+      });
+    }
+  }
+  if (result.length && !result.some((item) => item.isCurrent)) result[0].isCurrent = true;
+  return result;
+}
 async function fetchAllModels() {
   try {
     const store = useModelsStore();
     store.setAllModels([]);
     const stored = localStorage.getItem("uclaw_selected_models");
     const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
-    const selectedModels = stored ? JSON.parse(stored).filter((m) => m.source !== removedSource) : [];
+    let selectedModels = [];
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored);
+        selectedModels = Array.isArray(parsed) ? parsed.filter((m) => m.source !== removedSource) : [];
+      } catch {
+        selectedModels = [];
+      }
+    }
+    if ((!Array.isArray(selectedModels) || selectedModels.length === 0) && window.uclaw?.ipcReadConfig) {
+      const config = await window.uclaw.ipcReadConfig();
+      selectedModels = modelsFromOpenClawConfig(config).filter((m) => m.source !== removedSource);
+    }
     store.setSelectedModels(selectedModels);
   } catch (e) {
     console.error("[models] fetchAllModels error:", e);
@@ -27299,8 +27343,14 @@ const _sfc_main = {
       fetchAllSkills();
       preloadAllImageSessions();
       preloadAllVideoSessions();
-      await runAllChecks();
-      gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));
+      window.setTimeout(async () => {
+        try {
+          await runAllChecks();
+          gatewayStore.setEnvCheckResults(JSON.parse(JSON.stringify(checkItems.value)));
+        } catch (e) {
+          console.warn("[init] env check failed:", e?.message || e);
+        }
+      }, 800);
     }
     function handleWechatStatus(status) {
       const payload = status && typeof status === "object" ? status : { status };
@@ -27350,6 +27400,7 @@ const _sfc_main = {
     }
     onMounted(async () => {
       window.addEventListener("main-init", doInit);
+      doInit();
       window.uclaw.ipcOnWeChatStatus(handleWechatStatus);
       window.uclaw.ipcOnWechatLog(onWechatLog);
       window.uclaw.ipcOnFeishuStatus(handleFeishuStatus);

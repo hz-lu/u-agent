@@ -3294,6 +3294,8 @@ function createGatewayManager() {
           gatewayRunning = true;
           sendBootPhase("waiting-ready", "Gateway 端口已打开", "Gateway 端口已打开，正在等待 health 和 WebSocket 就绪...", progress);
           sendGatewayStatus(true);
+          resolved = true;
+          if (onFirstResult) onFirstResult({ success: true, pendingReady: true, portOpen: true });
         }
         const result = await new Promise((res, rej) => {
           const req = http22.get(`http://127.0.0.1:${port}/health`, { timeout: 900 }, (resp) => {
