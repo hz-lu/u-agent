@@ -9800,7 +9800,7 @@ const useGatewayStore = /* @__PURE__ */ defineStore("gateway", () => {
     envCheckResults.value = results;
   }
   function addLog(log) {
-    logs.value.push(log);
+    logs.value = [...logs.value.slice(-199), log];
   }
   function clearLogs() {
     logs.value = [];
@@ -13112,7 +13112,7 @@ function useEnvCheck() {
     checkModel();
     checkNetwork();
     checkPort();
-    await checkHermes();
+    checkHermes();
   }
   return {
     checkItems,
@@ -13179,6 +13179,11 @@ const _sfc_main$v = {
       return "未启动";
     });
     const activeLogs = computed(() => activeLogSource.value === "hermes" ? hermesLogs.value : logs.value);
+    const openClawLogQueue = [];
+    let openClawLogFlushTimer = null;
+    const hermesLogQueue = [];
+    let hermesLogFlushTimer = null;
+    let scrollTimer = null;
     function extractTimestamp(msg) {
       const stripped = msg.replace(/\x1b\[[0-9;]*m/g, "");
       const isoMatch = stripped.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?)/);
@@ -13197,15 +13202,43 @@ const _sfc_main$v = {
       const stripped = msg.replace(/\x1b\[[0-9;]*m/g, "");
       return stripped.replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?)\s*/, "");
     }
+    function deferUiTask(fn, delay = 0) {
+      window.setTimeout(() => {
+        try {
+          fn();
+        } catch (e) {
+          console.warn("[home] deferred task failed:", e);
+        }
+      }, delay);
+    }
+    function scheduleLogScroll(source) {
+      if (scrollTimer) return;
+      scrollTimer = window.setTimeout(() => {
+        scrollTimer = null;
+        const container = document.getElementById("terminal-logs");
+        if (container && activeLogSource.value === source) container.scrollTop = container.scrollHeight;
+      }, 120);
+    }
     onMounted(async () => {
       activationStore.setActivation({});
-      runAllChecks();
-      refreshHermesStatus();
-      loadHermesLogs();
       startLiveLogs();
+      deferUiTask(() => runAllChecks(), 300);
+      deferUiTask(() => refreshHermesStatus(), 900);
+      deferUiTask(() => loadHermesLogs(80), 1500);
     });
     onUnmounted(() => {
+      if (openClawLogFlushTimer) window.clearTimeout(openClawLogFlushTimer);
+      if (hermesLogFlushTimer) window.clearTimeout(hermesLogFlushTimer);
+      if (scrollTimer) window.clearTimeout(scrollTimer);
     });
+    function flushOpenClawLogs() {
+      openClawLogFlushTimer = null;
+      if (!openClawLogQueue.length) return;
+      const batch = openClawLogQueue.splice(0, openClawLogQueue.length);
+      const current = gatewayStore.logs || [];
+      gatewayStore.logs = [...current, ...batch].slice(-200);
+      scheduleLogScroll("openclaw");
+    }
     function startLiveLogs() {
       window.uclaw.ipcOnGatewayLog((log) => {
         const typeLabel = {
@@ -13224,17 +13257,15 @@ const _sfc_main$v = {
         }[log.type] || "#ffffff";
         const timestamp = extractTimestamp(log.msg);
         const message = cleanLogMessage(log.msg);
-        gatewayStore.addLog({
+        openClawLogQueue.push({
           id: Date.now() + Math.random(),
           typeLabel,
           typeColor,
           message,
           timestamp
         });
-        nextTick(() => {
-          const container = document.getElementById("terminal-logs");
-          if (container && activeLogSource.value === "openclaw") container.scrollTop = container.scrollHeight;
-        });
+        if (openClawLogQueue.length > 200) openClawLogQueue.splice(0, openClawLogQueue.length - 200);
+        if (!openClawLogFlushTimer) openClawLogFlushTimer = window.setTimeout(flushOpenClawLogs, 250);
       });
       if (window.uclaw.ipcOnHermesLog) window.uclaw.ipcOnHermesLog((log) => appendHermesLog(log));
       if (window.uclaw.ipcOnHermesStatus) window.uclaw.ipcOnHermesStatus((status) => hermesStatus.value = status);
@@ -13286,16 +13317,21 @@ const _sfc_main$v = {
       const typeLabel = { stdout: "[stdout]", stderr: "[stderr]", system: "[system]", error: "[error]", exit: "[exit]" }[log.type] || "[log]";
       const typeColor = { stdout: "#4ade80", stderr: "#f87171", system: "#60a5fa", error: "#f87171", exit: "#a78bfa" }[log.type] || "#ffffff";
       const msg = String(log.msg || "");
-      hermesLogs.value.push({ id: Date.now() + Math.random(), typeLabel, typeColor, message: cleanLogMessage(msg), timestamp: extractTimestamp(msg) });
-      if (hermesLogs.value.length > 500) hermesLogs.value.shift();
-      nextTick(() => {
-        const container = document.getElementById("terminal-logs");
-        if (container && activeLogSource.value === "hermes") container.scrollTop = container.scrollHeight;
-      });
+      hermesLogQueue.push({ id: Date.now() + Math.random(), typeLabel, typeColor, message: cleanLogMessage(msg), timestamp: extractTimestamp(msg) });
+      if (hermesLogQueue.length > 200) hermesLogQueue.splice(0, hermesLogQueue.length - 200);
+      if (!hermesLogFlushTimer) {
+        hermesLogFlushTimer = window.setTimeout(() => {
+          hermesLogFlushTimer = null;
+          if (!hermesLogQueue.length) return;
+          const batch = hermesLogQueue.splice(0, hermesLogQueue.length);
+          hermesLogs.value = [...hermesLogs.value, ...batch].slice(-200);
+          scheduleLogScroll("hermes");
+        }, 250);
+      }
     }
-    async function loadHermesLogs() {
+    async function loadHermesLogs(limit = 120) {
       try {
-        const rows = window.uclaw.ipcGetHermesLogs ? await window.uclaw.ipcGetHermesLogs({ limit: 300 }) : [];
+        const rows = window.uclaw.ipcGetHermesLogs ? await window.uclaw.ipcGetHermesLogs({ limit }) : [];
         hermesLogs.value = [];
         for (const row of rows || []) appendHermesLog(row);
       } catch (e) {

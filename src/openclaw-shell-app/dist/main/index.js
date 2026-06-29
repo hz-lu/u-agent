@@ -502,6 +502,9 @@ class HermesManager {
     this.chatChildren = /* @__PURE__ */ new Map();
     this.chatRunMeta = /* @__PURE__ */ new Map();
     this.apiServerKey = process.env.HERMES_API_SERVER_KEY || "openclaw-local-hermes";
+    this._lastStatusSnapshot = null;
+    this._lastStatusAt = 0;
+    this._statusRefreshInFlight = null;
   }
   getHermesDataRoot() {
     return path$1.join(getAppRoot(), "data", ".hermes");
@@ -1128,7 +1131,8 @@ class HermesManager {
     } catch {
     }
   }
-  snapshot() {
+  snapshot(options = {}) {
+    const fast = options?.fast === true;
     const root = this.getPortableRoot();
     const hermesBin = this.getHermesBin();
     const python = this.getPortablePython();
@@ -1169,7 +1173,7 @@ class HermesManager {
     const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));
     const skillGrowthReady = !!skillGrowthReport?.ok || !!(skillReport?.ok && (skillReport?.visibleCount || 0) > 0 && (skillReport?.commandCount || 0) > 0);
     const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);
-    const skillCount = reportedSkillCount || (this._skillCountCache && Date.now() - this._skillCountCache.checkedAt < 60000 ? this._skillCountCache.count : (() => {
+    const skillCount = reportedSkillCount || (this._skillCountCache && Date.now() - this._skillCountCache.checkedAt < 60000 ? this._skillCountCache.count : fast ? 0 : (() => {
       const count = countHermesSkills(skillsRoot);
       this._skillCountCache = { checkedAt: Date.now(), count };
       return count;
@@ -1222,7 +1226,7 @@ class HermesManager {
     };
   }
   emitStatus() {
-    safeSend("hermes-status", this.snapshot());
+    safeSend("hermes-status", this.snapshot({ fast: true }));
   }
   refreshMemory() {
     const pid = this.proc?.pid;
@@ -1558,7 +1562,35 @@ class HermesManager {
     this.emitStatus();
     return this.snapshot();
   }
-  async getStatus() {
+  async getStatus(options = {}) {
+    const fast = options?.fast === true;
+    const now = Date.now();
+    if (fast && this._lastStatusSnapshot && now - this._lastStatusAt < 5000) {
+      return this._lastStatusSnapshot;
+    }
+    if (fast) {
+      const snap = {
+        ...this.snapshot({ fast: true }),
+        portableRoot: this.getPortableRoot(),
+        configUrl: "http://127.0.0.1:17520",
+        dashboardUrl: "http://127.0.0.1:9119",
+        apiServerUrl: "http://127.0.0.1:8642",
+        gatewayUrl: "http://127.0.0.1:8642",
+        configReady: this._lastStatusSnapshot?.configReady || false,
+        dashboardReady: this._lastStatusSnapshot?.dashboardReady || false,
+        apiServerReady: this._lastStatusSnapshot?.apiServerReady || false,
+        gatewayReady: this._lastStatusSnapshot?.gatewayReady || false
+      };
+      this._lastStatusSnapshot = snap;
+      this._lastStatusAt = now;
+      if (!this._statusRefreshInFlight || now - (this._statusRefreshStartedAt || 0) > 5000) {
+        this._statusRefreshStartedAt = now;
+        this._statusRefreshInFlight = this.getStatus({ fast: false }).catch(() => null).finally(() => {
+          this._statusRefreshInFlight = null;
+        });
+      }
+      return snap;
+    }
     const configReady = await this.checkTcpPort(17520);
     const dashboardReady = await this.checkTcpPort(9119);
     const apiServerReady = await this.checkTcpPort(8642);
@@ -1582,6 +1614,8 @@ class HermesManager {
       gatewayReady
     };
     safeSend("hermes-status", snap);
+    this._lastStatusSnapshot = snap;
+    this._lastStatusAt = Date.now();
     return snap;
   }
   async chat(options = {}) {
@@ -2362,6 +2396,20 @@ function openHermesInMainWindow(targetUrl) {
   win.focus();
   return true;
 }
+function readFileTailLines(filePath, limit = 100, maxBytes = 256 * 1024) {
+  const safeLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+  const stat = fs$1.statSync(filePath);
+  const start = Math.max(0, stat.size - maxBytes);
+  const fd = fs$1.openSync(filePath, "r");
+  try {
+    const length = stat.size - start;
+    const buffer = Buffer.alloc(length);
+    fs$1.readSync(fd, buffer, 0, length, start);
+    return buffer.toString("utf8").split(/\r?\n/).filter(Boolean).slice(-safeLimit);
+  } finally {
+    fs$1.closeSync(fd);
+  }
+}
 
 function isWin() {
   return process.platform === "win32";
@@ -2442,6 +2490,15 @@ function appendDesktopCrashLog(kind, payload) {
 function installDesktopCrashDiagnostics() {
   if (globalThis.__uclawDesktopCrashDiagnosticsInstalled) return;
   globalThis.__uclawDesktopCrashDiagnosticsInstalled = true;
+  let lastTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const delay = now - lastTick - 2000;
+    lastTick = now;
+    if (delay > 2500) {
+      appendDesktopCrashLog("main-event-loop-delay", { delayMs: Math.round(delay), at: new Date(now).toISOString() });
+    }
+  }, 2000).unref?.();
   process.on("uncaughtException", (err) => {
     appendDesktopCrashLog("uncaughtException", { message: err?.message || String(err), stack: err?.stack || "" });
   });
@@ -22974,10 +23031,10 @@ function registerIPCHandlers({ gateway }) {
     return await getHermesManager().stop();
   });
   electron.ipcMain.handle("hermes:getStatus", async () => {
-    return await getHermesManager().getStatus();
+    return await getHermesManager().getStatus({ fast: true });
   });
   electron.ipcMain.handle("hermes:getLogs", async (_, options = {}) => {
-    const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(1e3, Number(options.limit))) : 300;
+    const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(300, Number(options.limit))) : 100;
     const logsRoot = path$1.join(getAppRoot(), "data", ".hermes", "logs");
     const files = ["launcher.log", "gateway.log", "agent.log", "errors.log", "gui.log", "gateway-exit-diag.log"];
     const rows = [];
@@ -22985,7 +23042,7 @@ function registerIPCHandlers({ gateway }) {
       const filePath = path$1.join(logsRoot, name);
       try {
         if (!fs$1.existsSync(filePath)) continue;
-        const lines = fs$1.readFileSync(filePath, "utf8").split(/\r?\n/).filter(Boolean).slice(-limit);
+        const lines = readFileTailLines(filePath, limit, 192 * 1024);
         for (const line of lines) rows.push({ type: name.includes("error") ? "stderr" : "system", msg: "[" + name + "] " + line, file: name });
       } catch (err) {
         rows.push({ type: "stderr", msg: "[" + name + "] read failed: " + err.message, file: name });
