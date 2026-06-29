@@ -2228,6 +2228,7 @@ function checkTcpPortOpen(port, timeoutMs = 500) {
     socket.once("error", () => finish(false));
   });
 }
+let portableCleanupInFlight = false;
 function cleanupPortableChildProcesses() {
   if (process.platform !== "win32") return;
   try {
@@ -2248,12 +2249,30 @@ function cleanupPortableChildProcesses() {
       "  }",
       "}"
     ].join("; ");
-    child_process.execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
+    if (portableCleanupInFlight) return;
+    portableCleanupInFlight = true;
+    const child = child_process.spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
       stdio: "ignore",
       windowsHide: true,
-      timeout: 6000
+      detached: false
+    });
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+      }
+    }, 4000);
+    child.on("exit", () => {
+      clearTimeout(timer);
+      portableCleanupInFlight = false;
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      portableCleanupInFlight = false;
+      appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
     });
   } catch (err) {
+    portableCleanupInFlight = false;
     appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
   }
 }

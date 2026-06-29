@@ -26051,6 +26051,7 @@ const _sfc_main$9 = {
         };
         const handler = (payload) => {
           if (!payload || payload.taskId !== taskId) return;
+          if (payload.pending && !payload.result) return;
           done = true;
           cleanup();
           resolve(payload.result || { ok: false, error: "Hermes 返回了空结果。" });
@@ -26068,6 +26069,7 @@ const _sfc_main$9 = {
               try {
                 const payload = await window.uclaw.ipcGetHermesChatResult(taskId);
                 if (!payload || payload.taskId !== taskId) return;
+                if (payload.pending && !payload.result) return;
                 done = true;
                 cleanup();
                 resolve(payload.result || { ok: false, error: "Hermes returned an empty result." });
