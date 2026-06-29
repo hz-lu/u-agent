@@ -14226,7 +14226,11 @@ const _sfc_main$u = {
                       createBaseVNode("span", null, "自定义", -1)
                     ])])) : createCommentVNode("", true),
                     _cache[20] || (_cache[20] = createBaseVNode("span", { style: { "margin": "0 6px" } }, "/", -1)),
-                    createBaseVNode("span", _hoisted_10$g, toDisplayString(model.label), 1)
+                    createBaseVNode("span", _hoisted_10$g, toDisplayString(model.label), 1),
+                    model.isCurrent ? (openBlock(), createElementBlock("span", {
+                      key: 3,
+                      class: "model-using-badge"
+                    }, "使用中")) : createCommentVNode("", true)
                   ]),
                   createBaseVNode("div", { class: "model-row-actions" }, [
                     createBaseVNode("button", {
