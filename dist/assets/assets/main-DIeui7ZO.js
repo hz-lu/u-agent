@@ -13647,18 +13647,45 @@ const Home = /* @__PURE__ */ _export_sfc(_sfc_main$v, [["__scopeId", "data-v-16d
 const _imports_1$2 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAADIBAMAAABfdrOtAAAAG1BMVEUAAADpOCLrNyHrOCDqNyH////vaVn1m5D6zcj52H1PAAAABHRSTlMAgL9ARyeO/QAAAzNJREFUeNrt2mFymkAUwPEYe4C04wHa1AN0nB6gSZ4LB/AJBwDqAUBzAKkeu4sLWbPL7grddTrx/T8kJDH+BB6MincURVEURVEURVEURVEURVHUzTd9nIOXnr89mIwJeOzBaIRX5n6R5z5jAZ576UGAF3pV7sF7XzVk5h950hAIkGl+g07xJwjQr3C7RPZyDeS553D/GAhosaIAUSZ+7rlBBiKxpOdEcsRSLFWHLbBNvYf3RYjrlkNM/hVBRIgR14EQeRcsICLvDDGFrt+7plfEZNctpWKpHIvEiCuAGjGDthpN7cciy9NCHhapELPT+uwDIoip2DOrcEgkRud8vF6PTTXXj6K3pbE7Pm6HqJ2g0tsIs7cHClApG2Q8MlUQ7PKJzI1IhCaE8Y2X7jKx4gc3MgMjsrTNz1KOnBNZgBmpbEglhsOY/rxO3/H8KyBPnlyU6ouRCci0EY5URCybKg3IdG5DKj/IHGwIekFmYEMiL8gCrEjuA7mHMQgrTtWISfG+rAeZgAOJManwvOT9wVSCNTFYLoThyoCIjQb2hOFAWI2ZEaman5iysTRkBg5kW6cHMCERtjtNttKRBTgQXgoGRPweHIg03EjB2yCuC975iqydyMxusLpD1BGWK1I6EavCXtutY0Ki0x8VJNORqVnZoCjNdESuyFpZ8T2oWQ/FXBr9SIwSkfOsIzZl2Z2JDAirFSTXNpb7tBI7kAo7RG7eP2BATEqEeKwkclYiQIGoG0tHRJ97EZYWkBsRhrxUQUozYhrkDCxIhLyiQYq2CnFrONXbFBsCzbiyBqkuflY/G4zk/NsARCh2RD93McwGI5OZHdFHeAuDEKEMRWAAIpWRCCtEtW26pDIcUY6T7IJXWjeC7HhV+/p06xXpPUFyyR9SZKwOjiDvQmTHJxdHITU2ZS5E3hRhOFLJ+3Mh+RhE/ueqQ0BNR5IRyBIRD3AREsuTlgsxvx27OR6tSITyAbmQwemvFNxIkD7se/VBkCcF+QkBerre5abwF87Cz/AVL2aGvywbfIgVIMgQf7/uRf/xU/w/fEhCGqryxddHSh5/3FEURVEURVEURVEURVEURVG3119T75aRNb1TQAAAAABJRU5ErkJggg==";
 const _imports_2$1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAADIBAMAAABfdrOtAAAAG1BMVEUAAADV//HW//LT/+/V//EBpm9r07Cg6dE2vJBT1TkuAAAABHRSTlMAgL9ARyeO/QAABMpJREFUeNrVnG9u2kAUxGngAE7KASj1AdymB8BmtPYBssAB8A2w1APgqseuqqp6SYBdv38qnY+Rwi8zs+uAeesZQ/Pnp/W6BJr1+vHjzEPzxzXeaP1YWSOIANKnwhDxvMYN1VaY+Vck9MnGRomkmsLMhqeZedIGNePJIIojgySmfABDhSeDKK5ZEcWfgbpiQ5ZgqxYw3ClfIdJn2cJyLL+EULVjWKStZ1gUGCcs58C+QaUtIyzfwJZQqtYZ0VshI35WyIi/lRIGatKMB5ho5W8EaJSN6FtZwki1yojeyhJmqj2NkBX55Vd/MYapHNMirYS166ufw1jVFcgC8M9rCWM1jrWTCskm0W+VEuZqBGnp81rAQRv22tLvxzlcVPlXAqy4aekXMXzUMNPSL+IFnLThVaJfxHCTTyXtT7xW5VFJO8YTQFp5VNLHeAZIWwfI9xjjC0BqqBJLRtzhtSprSIi/dQCJSlnArPTfetv81riSPiYgJYwK+aM9SNQ8zAohI6SKejcrJJ5xDfIAy0IOeKcVLS6rQuIRIFHzSxgWssN1SAm7Qi6NoLFaXAMZuVRls7hCJCNekHZMGcHKZHH1ZARekC4mjWBjsILbmDaCrQGkzxhBo98mXcIIQaAMK2cEUH8y6bNGgEq5TcIEIyh0kHZMGSHIAxQaphjBSgUJMWmEIAvAovUDbmujgXSRdMZtbRX3VNqYMUKQJQzCii/wgYT4SickVBNEY2SHlJpZCX3r8egDacesET1kyBrRQ0LMGtFD+teQcxYCtZGInAgiNrIHPCBdvKhdBGmR0HhRuwzSHxlGhJAQD6fUPiQdMAFS3nqdXXYf0vVXtE+GRA5tfKOTFBLo93NGdpBCRnqBnJGjFDKkXqGPF7VLICEVeIiJ2hn/GcdU4j0jLYJ8Y/2nCJFTO0HSL3NkGGG87xoTf2uIbwWQWO8gu3d/bMLIfirkgdFtiNy06F395HJ7Xu0E+YDJVtqY2ST5T1r5VIbIuzYSZA5SOpY2ctOiOzjIWzmTEX7twI2bBf2114v5TcK6IxGuJNNJ06pvfX3dXwY28tMiyAITrMTj+58cMFUbui2csbJ7/4O9GkJWSNK0UNB3yzkrstoJIrHygslK3XwejNJqUiMYrVFadQqCwSatTfKrjdYkLazSowuDRVoo0pDWIi3kvjj7bpBWk53wGfVp1VlIp09rQwOpPCtHXu/UPMPKAQLIrORZ2fMqoVI4Vo5sCJUy+ZIPXu/5UhBUCxjFtJGSXpMWJg7HBE1a9dQxn16R1mbqwFKQb3cUk2cHe30l+SnIIN7uNWOevhcvYMZgX5CmVXFGFHvhAmYNWwbhAuaNjfayBcwbgA2SShruKO8gqGTLHUpuZQuYlxcGdiU1/3xLy65kIxh5H7iVVILh/Zb/ro6fFzpeJYXsQMXIqkR4NKSLJ+4mEczv/+CmJagerah2/4NH/keo/A+D+R9r+/cH9GysNPdwaNLk+Od9HGTVW6nv5XCx/zFpfWDNPR1dFwZGTy1wDqy5twcjiB/xcH8PqyCKA4M0Z1Oayu9xK8S414e6EMWFQRTPrIiy9GQQxZFBepqwz4khNlNmbDzPLPSksqFvZk02DDBPVxHV//fgtj/68vj3EXSfnjmEX0KmyDnS9+ibAAAAAElFTkSuQmCC";
 const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
+  const cifuDefaultModel = {
+    label: "词符科技",
+    value: "cifu-tech-default",
+    source: "recommend",
+    base: "https://token.51cifu.com/v1",
+    key: "123456",
+    model: "词符科技",
+    provider: "cifu",
+    api: "openai-completions",
+    locked: true,
+    isCifuDefault: true
+  };
   const allModels = /* @__PURE__ */ ref([]);
   const selectedModels = /* @__PURE__ */ ref([]);
   const apiKey = /* @__PURE__ */ ref("");
   const currentModel = computed(
     () => selectedModels.value.find((item) => item.isCurrent) || null
   );
+  function isCifuModel(model) {
+    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || model.provider === "cifu" || String(model.label || "").trim() === "词符科技");
+  }
+  function normalizeSelectedModels(models) {
+    const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
+    const input = Array.isArray(models) ? models : [];
+    const cifuExisting = input.find(isCifuModel);
+    const others = input.filter((model) => model && !isCifuModel(model) && model.source !== removedSource);
+    const hasCurrent = input.some((model) => model?.isCurrent);
+    const cifu = {
+      ...cifuDefaultModel,
+      key: cifuExisting?.key || cifuDefaultModel.key,
+      isCurrent: cifuExisting?.isCurrent || (!hasCurrent && others.length === 0)
+    };
+    return [cifu, ...others.map((model) => ({ ...model, locked: !!model.locked, isCifuDefault: !!model.isCifuDefault }))];
+  }
   function setAllModels(models) {
     allModels.value = models;
   }
   function setSelectedModels(models) {
-    const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
-    const processedModels = models.filter((model) => model.source !== removedSource);
+    const processedModels = normalizeSelectedModels(models);
     selectedModels.value = processedModels;
     localStorage.setItem("uclaw_selected_models", JSON.stringify(processedModels));
   }
@@ -13822,7 +13849,14 @@ const _sfc_main$u = {
     const removingId = /* @__PURE__ */ ref(null);
     const dragIndex = /* @__PURE__ */ ref(null);
     const dropIndex = /* @__PURE__ */ ref(null);
+    function isLockedModel(model) {
+      return !!model?.locked || !!model?.isCifuDefault;
+    }
     function onDragStart(event, index) {
+      if (isLockedModel(modelsStore.selectedModels[index])) {
+        event.preventDefault();
+        return;
+      }
       dragIndex.value = index;
       event.dataTransfer.effectAllowed = "move";
       event.dataTransfer.setData("text/plain", index);
@@ -13839,6 +13873,7 @@ const _sfc_main$u = {
     }
     function onDragEnter(event, index) {
       if (dragIndex.value === null || dragIndex.value === index) return;
+      if (index === 0) return;
       dropIndex.value = index;
       document.querySelectorAll(".model-model-row").forEach((el, i) => {
         el.classList.toggle("model-drag-over", i === index);
@@ -13846,6 +13881,7 @@ const _sfc_main$u = {
     }
     function onDrop(event, index) {
       if (dragIndex.value === null || dragIndex.value === index) return;
+      if (index === 0 || isLockedModel(modelsStore.selectedModels[dragIndex.value])) return;
       const newModels = [...modelsStore.selectedModels];
       const [removed] = newModels.splice(dragIndex.value, 1);
       newModels.splice(index, 0, removed);
@@ -13857,7 +13893,7 @@ const _sfc_main$u = {
       showToast("模型顺序已调整");
       if (currentValue && (dragIndex.value === index || dragIndex.value === currentIndex)) ;
     }
-    const modelApiPurchaseUrl = "";
+    const modelApiPurchaseUrl = "https://token.51cifu.com/";
     const editingModelValue = /* @__PURE__ */ ref("");
     const editUrl = /* @__PURE__ */ ref("");
     const editKey = /* @__PURE__ */ ref("");
@@ -13866,6 +13902,10 @@ const _sfc_main$u = {
     const editProvider = /* @__PURE__ */ ref("custom");
     const editSource = /* @__PURE__ */ ref("custom");
     const editLabelPrefix = /* @__PURE__ */ ref("");
+    const editingLockedModel = computed(() => {
+      const model = modelsStore.selectedModels.find((item) => item.value === editingModelValue.value);
+      return isLockedModel(model);
+    });
     function openApiPurchasePlatform() {
       if (modelApiPurchaseUrl) {
         window.uclaw?.ipcOpenExternalUrl?.(modelApiPurchaseUrl);
@@ -13905,6 +13945,20 @@ const _sfc_main$u = {
     function saveEditingModel() {
       const originalValue = editingModelValue.value;
       if (!originalValue) return;
+      const originalModel = modelsStore.selectedModels.find((item) => item.value === originalValue);
+      if (isLockedModel(originalModel)) {
+        if (!editKey.value.trim()) {
+          showToast("请填写 API Key，不可为空", true);
+          return;
+        }
+        modelsStore.setSelectedModels(
+          modelsStore.selectedModels.map((item) => item.value === originalValue ? { ...item, key: editKey.value.trim() } : item)
+        );
+        cancelEditModel();
+        showRestartCardNotice();
+        showToast("词符科技 API Key 已更新，OpenClaw 与 Hermes 将共用新配置");
+        return;
+      }
       if (!editUrl.value.trim()) {
         showToast("请填写 API URL，不可为空", true);
         return;
@@ -14076,6 +14130,10 @@ const _sfc_main$u = {
       return tagMap[tag2] || "";
     }
     function removeModel(model) {
+      if (isLockedModel(model)) {
+        showToast("词符科技为默认配置项，只能编辑 API Key，不能删除。", true);
+        return;
+      }
       if (!confirm(`确定要删除模型「${model.label}」吗？`)) {
         return;
       }
@@ -14122,15 +14180,18 @@ const _sfc_main$u = {
           ]),
           _: 1
         }),
-        createBaseVNode("div", { class: "model-api-purchase-card" }, [
+        createBaseVNode("div", {
+          class: "model-api-purchase-card",
+          onClick: openApiPurchasePlatform
+        }, [
           createBaseVNode("div", { class: "model-api-purchase-main" }, [
             createBaseVNode("div", { class: "model-api-purchase-title" }, "点击购买模型API，超低价格"),
-            createBaseVNode("div", { class: "model-api-purchase-desc" }, "后续可在这里直达官方平台购买 token 套餐，购买后回到本页填写 API Key 即可同时供 OpenClaw 与 Hermes 使用。")
+            createBaseVNode("div", { class: "model-api-purchase-desc" }, "直达官方平台购买 token 套餐，购买后回到本页填写 API Key 即可同时供 OpenClaw 与 Hermes 使用。")
           ]),
           createBaseVNode("button", {
             class: "model-api-purchase-action",
-            onClick: openApiPurchasePlatform
-          }, "即将开放")
+            onClick: withModifiers(openApiPurchasePlatform, ["stop"])
+          }, "词符科技")
         ]),
         unref(modelsStore).selectedModels.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_4$p, [
           createVNode(TransitionGroup, { name: "model-remove" }, {
@@ -14139,7 +14200,7 @@ const _sfc_main$u = {
                 return openBlock(), createElementBlock("div", {
                   key: model.value,
                   class: normalizeClass(["model-model-row", { "model-current": model.isCurrent, "model-removing": removingId.value === model.value, "model-dragging": dragIndex.value === index }]),
-                  draggable: "true",
+                  draggable: isLockedModel(model) ? "false" : "true",
                   onDragstart: ($event) => onDragStart($event, index),
                   onDragend: onDragEnd,
                   onDragover: withModifiers(($event) => onDragOver($event, index), ["prevent"]),
@@ -14173,7 +14234,7 @@ const _sfc_main$u = {
                       class: normalizeClass(["model-row-edit", { active: editingModelValue.value === model.value }]),
                       title: "编辑模型配置"
                     }, toDisplayString(editingModelValue.value === model.value ? "编辑中" : "编辑"), 11, _hoisted_11$e),
-                    unref(modelsStore).selectedModels.length > 1 && !model.isCurrent ? (openBlock(), createElementBlock("button", {
+                    unref(modelsStore).selectedModels.length > 1 && !model.isCurrent && !isLockedModel(model) ? (openBlock(), createElementBlock("button", {
                       key: 0,
                       onClick: withModifiers(($event) => removeModel(model), ["stop"]),
                       class: "model-row-remove",
@@ -14197,7 +14258,13 @@ const _sfc_main$u = {
           createBaseVNode("div", { class: "model-edit-grid" }, [
             createBaseVNode("label", { class: "model-form-group" }, [
               createBaseVNode("span", { class: "model-form-label" }, "API URL"),
-              withDirectives(createBaseVNode("input", { type: "text", class: "model-form-input", "onUpdate:modelValue": ($event) => editUrl.value = $event, placeholder: "请输入 API 地址" }, null, 512), [[vModelText, editUrl.value]])
+              withDirectives(createBaseVNode("input", {
+                type: "text",
+                class: "model-form-input",
+                disabled: editingLockedModel.value,
+                "onUpdate:modelValue": ($event) => editUrl.value = $event,
+                placeholder: "请输入 API 地址"
+              }, null, 8, ["disabled"]), [[vModelText, editUrl.value]])
             ]),
             createBaseVNode("label", { class: "model-form-group" }, [
               createBaseVNode("span", { class: "model-form-label" }, "API Key"),
@@ -14205,15 +14272,25 @@ const _sfc_main$u = {
             ]),
             createBaseVNode("label", { class: "model-form-group" }, [
               createBaseVNode("span", { class: "model-form-label" }, "API 类型"),
-              withDirectives(createBaseVNode("select", { class: "model-form-input", "onUpdate:modelValue": ($event) => editApiType.value = $event }, [
+              withDirectives(createBaseVNode("select", {
+                class: "model-form-input",
+                disabled: editingLockedModel.value,
+                "onUpdate:modelValue": ($event) => editApiType.value = $event
+              }, [
                 (openBlock(), createElementBlock(Fragment, null, renderList(apiTypeOptions, (opt) => {
                   return createBaseVNode("option", { key: opt.value, value: opt.value }, toDisplayString(opt.label), 9, _hoisted_49$1);
                 }), 64))
-              ], 512), [[vModelSelect, editApiType.value]])
+              ], 8, ["disabled"]), [[vModelSelect, editApiType.value]])
             ]),
             createBaseVNode("label", { class: "model-form-group" }, [
               createBaseVNode("span", { class: "model-form-label" }, "模型名称"),
-              withDirectives(createBaseVNode("input", { type: "text", class: "model-form-input", "onUpdate:modelValue": ($event) => editModelName.value = $event, placeholder: "请输入模型名称" }, null, 512), [[vModelText, editModelName.value]])
+              withDirectives(createBaseVNode("input", {
+                type: "text",
+                class: "model-form-input",
+                disabled: editingLockedModel.value,
+                "onUpdate:modelValue": ($event) => editModelName.value = $event,
+                placeholder: "请输入模型名称"
+              }, null, 8, ["disabled"]), [[vModelText, editModelName.value]])
             ])
           ]),
           createBaseVNode("div", { class: "model-edit-actions" }, [
@@ -27715,6 +27792,7 @@ const _sfc_main = {
     });
     let modelsConfigWatchReady = false;
     let lastModelsConfigJson = "";
+    let modelsConfigWriteTimer = null;
     watch(() => modelsStore.selectedModels, (models) => {
       const json = JSON.stringify(Array.isArray(models) ? models : []);
       if (!modelsConfigWatchReady) {
@@ -27725,9 +27803,20 @@ const _sfc_main = {
       if (json === lastModelsConfigJson) return;
       lastModelsConfigJson = json;
       console.log("model变化===>", models);
-      window.uclaw?.ipcWriteOpenClawConfig({ models: JSON.parse(json) }, "model").catch((e) => {
-        console.warn("[models] write OpenClaw config failed:", e?.message || e);
-      });
+      if (modelsConfigWriteTimer) window.clearTimeout(modelsConfigWriteTimer);
+      modelsConfigWriteTimer = window.setTimeout(() => {
+        modelsConfigWriteTimer = null;
+        let payload;
+        try {
+          payload = JSON.parse(lastModelsConfigJson);
+        } catch (e) {
+          console.warn("[models] skip malformed model config:", e?.message || e);
+          return;
+        }
+        window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").catch((e) => {
+          console.warn("[models] write OpenClaw config failed:", e?.message || e);
+        });
+      }, 800);
     }, { immediate: true, deep: true });
     return (_ctx, _cache) => {
       const _component_router_view = resolveComponent("router-view");

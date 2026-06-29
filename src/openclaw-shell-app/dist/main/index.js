@@ -22512,13 +22512,28 @@ function reloadGateway() {
   try {
     const ocBin = getOpenClawPath();
     if (fs$1.existsSync(ocBin)) {
-      child_process.execSync(`"${ocBin}" gateway reload`, { timeout: 1e4 });
-      return true;
+      const child = child_process.spawn(ocBin, ["gateway", "reload"], {
+        stdio: "ignore",
+        windowsHide: true,
+        shell: false
+      });
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {
+        }
+      }, 6000);
+      child.on("exit", () => clearTimeout(timer));
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        console.error("[ws-auth] reload-gateway async error:", err);
+      });
+      return { ok: true, pending: true };
     }
-    return false;
+    return { ok: false, error: "openclaw runtime not found" };
   } catch (e) {
     console.error("[ws-auth] reload-gateway error:", e);
-    return false;
+    return { ok: false, error: e?.message || String(e) };
   }
 }
 function readGatewayAuthFromConfig() {

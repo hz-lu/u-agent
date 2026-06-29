@@ -8483,6 +8483,14 @@ to {
   border-radius: 8px;
   background: linear-gradient(135deg, rgba(78, 222, 163, 0.14), rgba(79, 131, 255, 0.1));
   color: #1e293b;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.model-api-purchase-card:hover {
+  border-color: rgba(78, 222, 163, 0.62);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
 }
 
 .model-api-purchase-main {
