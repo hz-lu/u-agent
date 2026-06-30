@@ -261,7 +261,7 @@ function releaseDocs() {
   const readme = [
     "# OpenClawPro Agent Hub Windows Portable",
     "",
-    "这是一个初始化版 Windows 便携包。解压到任意 U 盘根目录后，双击 `启动OpenClawPro.bat` 或 `win-unpacked/OpenClawPro.exe` 启动。",
+    "这是一个初始化版 Windows 便携包。解压到任意 U 盘根目录后，双击 `OpenClawPro U盘便携版.exe` 启动。",
     "",
     "## 包含内容",
     "- Windows 桌面程序：`win-unpacked/`",
@@ -306,7 +306,7 @@ function releaseDocs() {
     ],
     notes: [
       "Extract to a short USB root path such as X:\\ to avoid Windows long path limits.",
-      "Use 启动OpenClawPro.bat or win-unpacked/OpenClawPro.exe to start the app."
+      "Use OpenClawPro U盘便携版.exe or win-unpacked/OpenClawPro.exe to start the app."
     ]
   };
 

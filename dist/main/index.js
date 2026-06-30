@@ -45,7 +45,7 @@ const LICENSE_DIGEST = "sha256";
 const LICENSE_SIGN_VERSION = 2;
 const LICENSE_SIGN_ALG = "ed25519";
 const LICENSE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAoHz49rzsgfzp1tUHu4mPbRVmpuGC171uvnA/1ft90hY=
+MCowBQYDK2VwAyEA29uQxiQyam4tRMJfeul/MEZX8NOYVp6AM35bYGavo8I=
 -----END PUBLIC KEY-----`;
 function aesGcmEncrypt(data, key) {
   const iv = crypto$1.randomBytes(12);

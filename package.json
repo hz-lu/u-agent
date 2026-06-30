@@ -18,6 +18,7 @@
     "audit:portable": "node scripts/audit-portable-release.mjs",
     "audit:openclaw-shell": "node scripts/audit-openclaw-shell-features.mjs",
     "package:windows-shell": "node scripts/package-windows-shell.mjs",
+    "package:windows-root-launcher": "node scripts/build-windows-root-launcher.mjs",
     "package:windows-runtime": "node scripts/package-windows-runtime-required.mjs",
     "package:windows-runtime:slim": "cross-env WINDOWS_RUNTIME_PROFILE=slim node scripts/package-windows-runtime-required.mjs",
     "stage:windows-portable": "node scripts/stage-windows-portable-test.mjs",

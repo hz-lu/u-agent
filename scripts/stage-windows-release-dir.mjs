@@ -10,6 +10,7 @@ const runtimeSource = process.env.WINDOWS_RELEASE_RUNTIME_SOURCE
 const cifuModelName = "请填写模型名称";
 const cifuProvider = "cifu";
 const weixinPluginId = "openclaw-weixin";
+const rootLauncherName = "OpenClawPro U盘便携版.exe";
 
 function fail(message) {
   console.error(message);
@@ -211,7 +212,7 @@ function writeReleaseDocs() {
   writeFile("README-PORTABLE.md", [
     "# OpenClawPro Agent Hub Windows Portable",
     "",
-    "这是一个初始化的 Windows 便携版本。把整个目录复制到任意 U 盘根目录或短路径目录后，双击 `启动OpenClawPro.bat` 或 `win-unpacked/OpenClawPro.exe` 启动。",
+    "这是一个初始化的 Windows 便携版本。把整个目录复制到任意 U 盘根目录或短路径目录后，双击 `OpenClawPro U盘便携版.exe` 启动。",
     "",
     "## 包含内容",
     "- `win-unpacked/`：Windows 桌面程序壳。",
@@ -238,7 +239,7 @@ function writeReleaseDocs() {
     excludesUserData: true,
     includesRuntime: true,
     includesWechatPlugin: true,
-    start: ["启动OpenClawPro.bat", "win-unpacked/OpenClawPro.exe"]
+    start: [rootLauncherName, "win-unpacked/OpenClawPro.exe"]
   }, null, 2)}\n`);
 }
 
@@ -266,6 +267,20 @@ function runVerification(script, label) {
   if (result.status !== 0) fail(`${label} failed with exit code ${result.status}`);
 }
 
+function buildRootLauncher() {
+  const outputPath = path.join(releaseRoot, rootLauncherName);
+  const result = spawnSync(process.execPath, [path.join(projectRoot, "scripts", "build-windows-root-launcher.mjs"), outputPath], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 120000
+  });
+  if (result.stdout?.trim()) console.log(result.stdout.trim());
+  if (result.stderr?.trim()) console.error(result.stderr.trim());
+  if (result.status !== 0) fail(`Root launcher build failed with exit code ${result.status}`);
+  if (!fs.existsSync(outputPath)) fail(`Root launcher missing: ${outputPath}`);
+}
+
 function main() {
   fs.mkdirSync(releaseRoot, { recursive: true });
   ensureRuntime();
@@ -274,7 +289,8 @@ function main() {
   copyDir(path.join(projectRoot, "skills"), path.join(releaseRoot, "skills"));
   copyDir(path.join(projectRoot, "extensions"), path.join(releaseRoot, "extensions"));
   fs.rmSync(path.join(releaseRoot, "OpenClawPro.exe"), { force: true });
-  writeFile("启动OpenClawPro.bat", "@echo off\r\nstart \"\" \"%~dp0win-unpacked\\OpenClawPro.exe\"\r\n");
+  fs.rmSync(path.join(releaseRoot, "启动OpenClawPro.bat"), { force: true });
+  buildRootLauncher();
   writeCleanData();
   verifyWechatPlugin();
   writeReleaseDocs();
