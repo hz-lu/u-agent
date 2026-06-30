@@ -6,7 +6,7 @@ const projectRoot = path.resolve(import.meta.dirname, "..");
 const runtimeProfile = process.env.WINDOWS_RUNTIME_PROFILE === "slim" ? "slim" : "required";
 const stagingRoot = path.resolve(process.env.WINDOWS_PORTABLE_STAGING || path.join(projectRoot, "release", runtimeProfile === "slim" ? "windows-shell-e2e-slim-staging" : "windows-shell-e2e-staging"));
 const runtimeStagingRoot = path.join(projectRoot, "release", runtimeProfile === "slim" ? "windows-runtime-slim-staging" : "windows-runtime-required-staging", "runtime");
-const cifuModelName = "\u8bcd\u7b26\u79d1\u6280";
+const cifuModelName = "\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0";
 
 function fail(message) {
   console.error(message);
@@ -93,10 +93,6 @@ function createCleanOpenClawConfig() {
     },
     channels: {
       "openclaw-weixin": {}
-    },
-    meta: {
-      lastTouchedVersion: "2026.6.5",
-      lastTouchedAt: new Date().toISOString()
     }
   };
 }
