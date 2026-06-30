@@ -13667,7 +13667,7 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
   );
   function isCifuModel(model) {
     const label = String(model?.label || "").trim();
-    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || model.provider === "cifu" || label === "词符科技" || label.includes("词符科技") || label.includes("璇嶇绉戞妧"));
+    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || label === "词符科技");
   }
   function buildCifuLabel(modelName) {
     const cleanName = String(modelName || "").trim() || "请填写模型名称";
@@ -14041,6 +14041,7 @@ const _sfc_main$u = {
       { provider: "siliconflow", name: "硅基流动", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-72B-Instruct", desc: "多模型聚合，价格低", buyLink: "https://cloud.siliconflow.cn/", tags: ["国内", "便宜"] }
     ];
     function selectRecommendedModel(model) {
+      cancelEditModel();
       selectedRecommendModel.value = model;
       recommendUrl.value = model.base || "";
       recommendKey.value = "";
@@ -14068,9 +14069,10 @@ const _sfc_main$u = {
         showToast("请填写模型名称，不可为空", true);
         return;
       }
-      const modelName = recommendModelName.value;
-      const modelValue2 = `${selectedRecommendModel.value.provider}-${recommendModelName.value}`;
-      const label = selectedRecommendModel.value.name + " / " + recommendModelName.value;
+      const provider = selectedRecommendModel.value.provider;
+      const modelName = recommendModelName.value.trim();
+      const modelValue2 = `${provider}-${modelName}`;
+      const label = provider === "cifu" ? buildModelLabel("recommend", "cifu", modelName) : selectedRecommendModel.value.name + " / " + modelName;
       const source = "recommend";
       const exists = modelsStore.selectedModels.some((m) => m.value === modelValue2);
       if (exists) {
@@ -14165,6 +14167,9 @@ const _sfc_main$u = {
     }
     function switchModel(model) {
       const isChanging = !modelsStore.selectedModels.find((m) => m.isCurrent)?.value || modelsStore.selectedModels.find((m) => m.isCurrent)?.value !== model.value;
+      if (editingModelValue.value && editingModelValue.value !== model.value) {
+        cancelEditModel();
+      }
       modelsStore.setSelectedModels(
         modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item.value === model.value }))
       );
