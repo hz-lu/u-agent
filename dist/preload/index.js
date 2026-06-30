@@ -127,6 +127,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   autoPairDevice: () => electron.ipcRenderer.invoke("auto-pair-device"),
   reloadGateway: () => electron.ipcRenderer.invoke("reload-gateway"),
   gatewayChatSend: (payload) => electron.ipcRenderer.invoke("gateway-chat-send", payload),
+  gatewayChatHistory: (payload) => electron.ipcRenderer.invoke("gateway-chat-history", payload),
   // default port
   ipcGetDefaultPort: () => electron.ipcRenderer.invoke("get-default-port"),
   // restart app

@@ -13653,7 +13653,7 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     source: "recommend",
     base: "https://token.51cifu.com/v1",
     key: "123456",
-    model: "词符科技",
+    model: "请填写模型名称",
     provider: "cifu",
     api: "openai-completions",
     locked: true,
@@ -13666,7 +13666,12 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     () => selectedModels.value.find((item) => item.isCurrent) || null
   );
   function isCifuModel(model) {
-    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || model.provider === "cifu" || String(model.label || "").trim() === "词符科技");
+    const label = String(model?.label || "").trim();
+    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || model.provider === "cifu" || label === "词符科技" || label.includes("词符科技") || label.includes("璇嶇绉戞妧"));
+  }
+  function buildCifuLabel(modelName) {
+    const cleanName = String(modelName || "").trim() || "请填写模型名称";
+    return "词符科技 / " + cleanName;
   }
   function normalizeSelectedModels(models) {
     const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
@@ -13674,9 +13679,13 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     const cifuExisting = input.find(isCifuModel);
     const others = input.filter((model) => model && !isCifuModel(model) && model.source !== removedSource);
     const hasCurrent = input.some((model) => model?.isCurrent);
+    let cifuModelName = String(cifuExisting?.model || "").trim();
+    if (!cifuModelName || cifuModelName === String(cifuExisting?.label || "").trim()) cifuModelName = cifuDefaultModel.model;
     const cifu = {
       ...cifuDefaultModel,
       key: cifuExisting?.key || cifuDefaultModel.key,
+      model: cifuModelName,
+      label: buildCifuLabel(cifuModelName),
       isCurrent: cifuExisting?.isCurrent || (!hasCurrent && others.length === 0)
     };
     return [cifu, ...others.map((model) => ({ ...model, locked: !!model.locked, isCifuDefault: !!model.isCifuDefault }))];
@@ -13705,7 +13714,7 @@ function modelsFromOpenClawConfig(config) {
       if (!modelName) continue;
       const source = provider === "custom" ? "custom" : "recommend";
       const value = source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
-      const labelPrefix = source === "custom" ? "" : provider;
+      const labelPrefix = source === "custom" ? "" : provider === "cifu" ? "词符科技" : provider;
       result.push({
         label: labelPrefix ? `${labelPrefix} / ${modelName}` : modelName,
         value,
@@ -13915,10 +13924,13 @@ const _sfc_main$u = {
     }
     function buildModelLabel(source, provider, modelName, fallbackLabel) {
       const cleanName = String(modelName || "").trim();
+      if (provider === "cifu") {
+        return "词符科技 / " + (cleanName || "请填写模型名称");
+      }
       if (source === "recommend") {
         const matched = recommendedModels.find((item) => item.provider === provider);
         const prefix = editLabelPrefix.value || matched?.name || provider || "推荐模型";
-        return cleanName ? `${prefix} / ${cleanName}` : fallbackLabel || prefix;
+        return cleanName ? prefix + " / " + cleanName : fallbackLabel || prefix;
       }
       return cleanName || fallbackLabel || "自定义模型";
     }
@@ -13926,11 +13938,11 @@ const _sfc_main$u = {
       editingModelValue.value = model.value || "";
       editUrl.value = model.base || "";
       editKey.value = model.key || "";
-      editModelName.value = model.model || model.label || "";
+      editModelName.value = isLockedModel(model) ? (model.model || "") : model.model || model.label || "";
       editApiType.value = model.api || "openai-completions";
       editProvider.value = model.provider || (model.source === "custom" ? "custom" : "recommend");
       editSource.value = model.source || "custom";
-      editLabelPrefix.value = model.source === "recommend" ? String(model.label || "").split(" / ")[0] : "";
+      editLabelPrefix.value = model.provider === "cifu" ? "词符科技" : model.source === "recommend" ? String(model.label || "").split(" / ")[0] : "";
     }
     function cancelEditModel() {
       editingModelValue.value = "";
@@ -13951,12 +13963,13 @@ const _sfc_main$u = {
           showToast("请填写 API Key，不可为空", true);
           return;
         }
+        const nextModelName = editModelName.value.trim() || "请填写模型名称";
         modelsStore.setSelectedModels(
-          modelsStore.selectedModels.map((item) => item.value === originalValue ? { ...item, key: editKey.value.trim() } : item)
+          modelsStore.selectedModels.map((item) => item.value === originalValue ? { ...item, key: editKey.value.trim(), model: nextModelName, label: buildModelLabel("recommend", "cifu", nextModelName, item.label), provider: "cifu", source: "recommend", locked: true, isCifuDefault: true } : item)
         );
         cancelEditModel();
         showRestartCardNotice();
-        showToast("词符科技 API Key 已更新，OpenClaw 与 Hermes 将共用新配置");
+        showToast("词符科技模型配置已更新，OpenClaw 与 Hermes 将共用新配置");
         return;
       }
       if (!editUrl.value.trim()) {
@@ -14291,9 +14304,8 @@ const _sfc_main$u = {
               withDirectives(createBaseVNode("input", {
                 type: "text",
                 class: "model-form-input",
-                disabled: editingLockedModel.value,
                 "onUpdate:modelValue": ($event) => editModelName.value = $event,
-                placeholder: "请输入模型名称"
+                placeholder: "请填写模型名称"
               }, null, 8, ["disabled"]), [[vModelText, editModelName.value]])
             ])
           ]),
@@ -19749,6 +19761,30 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isGatewayAvailable() {
     return !!gatewayStore.gatewayReady;
   }
+  function _isWsReady() {
+    return !!(_ws && _ws.status?.value === "ready");
+  }
+  function _isOpenClawSendPathAvailable() {
+    return _isWsReady() || _isGatewayAvailable();
+  }
+  function scheduleOpenClawHistorySync(sessionKey) {
+    const delays = [1500, 5e3, 12e3, 25e3];
+    for (const delay of delays) {
+      setTimeout(() => loadSessionMessages(sessionKey, 200, { force: true }), delay);
+    }
+  }
+  async function syncOpenClawHistoryFromMain(sessionKey, limit = 200) {
+    const api = getApi();
+    if (!api?.gatewayChatHistory || !sessionKey) return null;
+    try {
+      const response = await api.gatewayChatHistory({ sessionKey, limit, timeoutMs: 12e3 });
+      if (!response?.ok) return null;
+      return response.result;
+    } catch (e) {
+      console.warn("[aiChat] gatewayChatHistory IPC failed:", e);
+      return null;
+    }
+  }
   async function _waitForReadyConnection(timeoutMs = 1e4) {
     if (_ws?.status?.value === "ready" || wsStatus.value === "ready") return true;
     try {
@@ -20649,20 +20685,27 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       _sessionsInflight = null;
     }
   }
-  async function loadSessionMessages(sessionKey, limit = 200) {
+  async function loadSessionMessages(sessionKey, limit = 200, options = {}) {
     if (!sessionKey) return;
     const now = Date.now();
     const loadStartedAt = now;
+    const force = !!options.force;
     if (_historyInflight.has(sessionKey)) return;
-    if (sending.value && messagesMap.value[sessionKey]?.length) return;
-    if (now - (_historyLastLoadedAt[sessionKey] || 0) < 8e3 && messagesMap.value[sessionKey]) return;
+    if (!force && sending.value && messagesMap.value[sessionKey]?.length) return;
+    if (!force && now - (_historyLastLoadedAt[sessionKey] || 0) < 8e3 && messagesMap.value[sessionKey]) return;
     _historyInflight.add(sessionKey);
     if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages 开始 | sessionKey=", sessionKey);
     try {
-      const remoteResult = await _ws?.chatHistory(sessionKey, limit).catch((e) => {
-        console.error("[aiChat] chatHistory WS failed:", e);
-        return null;
-      });
+      let remoteResult = null;
+      if (_isWsReady()) {
+        remoteResult = await _ws?.chatHistory(sessionKey, limit).catch((e) => {
+          console.error("[aiChat] chatHistory WS failed:", e);
+          return null;
+        });
+      }
+      if (remoteResult === null) {
+        remoteResult = await syncOpenClawHistoryFromMain(sessionKey, limit);
+      }
       if (remoteResult !== null) {
         const remoteRaw = remoteResult?.messages || remoteResult || [];
         if (remoteRaw.length) {
@@ -20893,7 +20936,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function sendOpenClawToGateway(item) {
     const sk = item.sessionKey;
-    if (!_ws || _ws.status?.value !== "ready") return false;
+    if (!_isOpenClawSendPathAvailable()) return false;
     updateOpenClawMessage(sk, item.userMessageId, { status: "done" });
     sending.value = true;
     inputText.value = "";
@@ -20902,13 +20945,24 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         console.warn("[aiChat] OpenClaw send timeout: no reply event in 45 seconds");
         sending.value = false;
         currentRunId.value = null;
-        appendOpenClawNotice(sk, "OpenClaw 已收到请求，但较长时间没有把回复同步回桌面端。可以先继续使用其它功能，稍后查看本会话或首页日志。", "error");
+        appendOpenClawNotice(sk, "OpenClaw 已收到请求，正在同步回复。可以先继续使用其它功能，稍后回到本会话查看。", "done");
+        scheduleOpenClawHistorySync(sk);
         setTimeout(() => flushOpenClawQueue(), 0);
       }
     }, 45e3);
     const { sendText, sendAtts } = buildOpenClawSendPayload(item.text, item.attachments);
     try {
-      const result = await _ws?.chatSend(sk, sendText, sendAtts);
+      let result;
+      if (_isWsReady()) {
+        result = await _ws?.chatSend(sk, sendText, sendAtts);
+      } else {
+        const api = getApi();
+        if (!api?.gatewayChatSend) throw new Error("OpenClaw Gateway 已启动，但桌面端发送通道尚未就绪");
+        const response = await api.gatewayChatSend({ sessionKey: sk, message: sendText, attachments: sendAtts, timeoutMs: 15e3 });
+        if (!response?.ok) throw new Error(response?.error || "OpenClaw Gateway 发送失败");
+        result = response.result;
+        scheduleOpenClawHistorySync(sk);
+      }
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send response | runId=", result?.runId);
       if (result?.runId) currentRunId.value = result.runId;
@@ -20924,10 +20978,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function flushOpenClawQueue() {
     if (_flushingOpenClawQueue || sending.value) return;
-    if (!_ws || _ws.status?.value !== "ready") return;
+    if (!_isOpenClawSendPathAvailable()) return;
     _flushingOpenClawQueue = true;
     try {
-      while (queuedOpenClawMessages.value.length && _ws?.status?.value === "ready" && !sending.value) {
+      while (queuedOpenClawMessages.value.length && _isOpenClawSendPathAvailable() && !sending.value) {
         const item = queuedOpenClawMessages.value[0];
         queuedOpenClawMessages.value = queuedOpenClawMessages.value.slice(1);
         await sendOpenClawToGateway(item);
@@ -21051,7 +21105,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sk = ensureActiveSession();
     if (!sk || !text2?.trim() && !attachments?.length) return;
     if (text2?.trim() && handleCommand(text2.trim())) return;
-    const shouldQueue = !_ws || _ws.status?.value !== "ready" || sending.value;
+    const shouldQueue = !_isOpenClawSendPathAvailable() || sending.value;
     const validation = validateOpenClawPayload(text2, attachments, shouldQueue);
     const userMsg = {
       id: crypto.randomUUID(),
@@ -21082,7 +21136,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       attachments: attachments || [],
       createdAt: Date.now()
     };
-    if (!_ws || _ws.status?.value !== "ready") {
+    if (!_isOpenClawSendPathAvailable()) {
       queueOpenClawMessage(item, "OpenClaw 会话连接尚未就绪");
       return;
     }

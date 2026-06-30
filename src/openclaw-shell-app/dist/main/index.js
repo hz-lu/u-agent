@@ -22646,6 +22646,11 @@ async function sendGatewayChatViaMain(payload = {}) {
   if (payload.attachments?.length) params.attachments = payload.attachments;
   return gatewayRpcViaMain("chat.send", params, payload);
 }
+async function getGatewayChatHistoryViaMain(payload = {}) {
+  const sessionKey = payload.sessionKey || "main";
+  const limit = Number(payload.limit || 200);
+  return gatewayRpcViaMain("chat.history", { sessionKey, limit }, payload);
+}
 function parseSkillMeta(skillFilePath) {
   try {
     const content = fs$1.readFileSync(skillFilePath, "utf-8");
@@ -22901,6 +22906,15 @@ function registerIPCHandlers({ gateway }) {
       return { ok: true, result };
     } catch (e) {
       console.error("[gateway-ipc] chat.send failed:", e?.message || e);
+      return { ok: false, error: e?.message || String(e) };
+    }
+  });
+  electron.ipcMain.handle("gateway-chat-history", async (_, payload) => {
+    try {
+      const result = await getGatewayChatHistoryViaMain(payload || {});
+      return { ok: true, result };
+    } catch (e) {
+      console.error("[gateway-ipc] chat.history failed:", e?.message || e);
       return { ok: false, error: e?.message || String(e) };
     }
   });
