@@ -30,10 +30,49 @@ function readJsonSafe(relPath) {
   try {
     const file = path.join(usbRoot, relPath);
     if (!fs.existsSync(file)) return null;
-    return JSON.parse(fs.readFileSync(file, "utf8"));
+    return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return null;
   }
+}
+
+function hasUtf8Bom(relPath) {
+  const file = path.join(usbRoot, relPath);
+  if (!fs.existsSync(file)) return false;
+  const bytes = fs.readFileSync(file);
+  return bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+}
+
+function validateOpenClawConfigShape(config) {
+  const findings = [];
+  if (!config || typeof config !== "object") {
+    findings.push("data/.openclaw/openclaw.json is missing or is not valid JSON.");
+    return findings;
+  }
+  const meta = config.meta;
+  if (!meta || typeof meta !== "object") {
+    findings.push("OpenClaw config meta must be an object with lastTouchedVersion and lastTouchedAt.");
+  } else {
+    if (typeof meta.lastTouchedVersion !== "string" || !meta.lastTouchedVersion) {
+      findings.push("OpenClaw config meta.lastTouchedVersion is required.");
+    }
+    if (typeof meta.lastTouchedAt !== "string" || !meta.lastTouchedAt) {
+      findings.push("OpenClaw config meta.lastTouchedAt is required.");
+    }
+    if ("release" in meta || "initializedAt" in meta) {
+      findings.push("OpenClaw config meta uses release/initializedAt, which is rejected by OpenClaw 2026.6.5.");
+    }
+  }
+  const configuredExtraDirs = config.skills?.load?.extraDirs;
+  if (Array.isArray(configuredExtraDirs)) {
+    for (const [index, value] of configuredExtraDirs.entries()) {
+      if (typeof value !== "string") continue;
+      if (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/")) {
+        findings.push(`OpenClaw skills.load.extraDirs[${index}] must be portable relative path, got ${value}`);
+      }
+    }
+  }
+  return findings;
 }
 
 function countChildren(relPath) {
@@ -55,6 +94,7 @@ function releaseFileMatches(pattern) {
 const openClawConfig = readJsonSafe("data/.openclaw/openclaw.json");
 const runtimeManifest = readJsonSafe("runtime/PORTABLE-RUNTIME-MANIFEST.json");
 const extraDirs = openClawConfig?.skills?.load?.extraDirs || [];
+const openClawConfigFindings = validateOpenClawConfigShape(openClawConfig);
 const rootDrive = path.parse(usbRoot).root.replace(/\\$/, "").toLowerCase();
 const absolutePathsOutsideRoot = [];
 
@@ -152,6 +192,8 @@ const checks = {
   dataDir: exists("data"),
   openClawData: exists("data/.openclaw/openclaw.json"),
   hermesData: exists("data/.hermes"),
+  openClawConfigNoBom: !hasUtf8Bom("data/.openclaw/openclaw.json"),
+  openClawConfigShape: openClawConfigFindings.length === 0,
   skillsDir: exists("skills"),
   hermesSkillMirror: exists("data/.hermes/skills/openclaw"),
   legacyHermesDataInRuntime: exists("runtime/HermesPortable/data") || exists("runtime/HermesPortable/_home"),
@@ -192,6 +234,8 @@ for (const [platform, platformAudit] of Object.entries(runtimeManifestAudit.plat
 }
 if (runtimeManifestAudit.sharedMissing.length) report.gaps.push(`Shared portable paths are missing: ${runtimeManifestAudit.sharedMissing.join(", ")}`);
 if (runtimeManifestAudit.dataTemplateMissing.length) report.gaps.push(`Portable data templates are missing: ${runtimeManifestAudit.dataTemplateMissing.join(", ")}`);
+if (!checks.openClawConfigNoBom) report.gaps.push("data/.openclaw/openclaw.json contains a UTF-8 BOM; OpenClaw JSON.parse can reject it.");
+for (const finding of openClawConfigFindings) report.gaps.push(finding);
 if (!report.summary.threePlatformNativeReady) report.gaps.push("macOS arm64/x64 and Linux x64/arm64 runtimes/launchers are not bundled.");
 if (!checks.universalManifest) report.gaps.push("No generated universal zip manifest was found.");
 if (!checks.universalZipPackage) report.gaps.push("No generated universal zip package was found.");

@@ -250,6 +250,8 @@ export class OpenClawRuntime implements AgentRuntime {
   }
 
   private createDefaultOpenClawConfig(): any {
+    const cifuModelName = "\u8bcd\u7b26\u79d1\u6280";
+    const cifuModelRef = `cifu/${cifuModelName}`;
     return {
       gateway: {
         mode: "local",
@@ -263,13 +265,32 @@ export class OpenClawRuntime implements AgentRuntime {
       },
       models: {
         mode: "replace",
-        providers: {}
+        providers: {
+          cifu: {
+            apiKey: "123456",
+            baseUrl: "https://token.51cifu.com/v1",
+            api: "openai-completions",
+            models: [
+              {
+                id: cifuModelName,
+                name: cifuModelName,
+                input: ["text", "image"],
+                contextWindow: 128000,
+                maxTokens: 4096
+              }
+            ]
+          }
+        }
       },
       agents: {
         defaults: {
           compaction: { mode: "safeguard" },
-          model: { primary: "" },
-          models: {}
+          model: { primary: cifuModelRef },
+          models: {
+            [cifuModelRef]: {
+              alias: cifuModelRef
+            }
+          }
         }
       },
       plugins: {
@@ -285,7 +306,11 @@ export class OpenClawRuntime implements AgentRuntime {
           "talk-voice": { enabled: true }
         }
       },
-      channels: {}
+      channels: {},
+      meta: {
+        lastTouchedVersion: "2026.6.5",
+        lastTouchedAt: new Date().toISOString()
+      }
     };
   }
 

@@ -64,6 +64,7 @@ const sharedRequiredPaths = Array.isArray(runtimeManifest.sharedRequiredPaths) ?
 const windowsRequiredPaths = Array.isArray(windowsRuntimeSpec.requiredPaths) ? windowsRuntimeSpec.requiredPaths : [];
 const requiredPaths = Array.from(new Set([runtimeManifestRel, ...sharedRequiredPaths, ...windowsRequiredPaths]));
 const forbiddenRuntimePaths = Array.isArray(runtimeManifest.forbiddenRuntimePaths) ? runtimeManifest.forbiddenRuntimePaths : [];
+const cifuModelName = "\u8bcd\u7b26\u79d1\u6280";
 
 const sourceEntries = [
   runtimeManifestRel,
@@ -168,13 +169,32 @@ function createCleanOpenClawConfig() {
     },
     models: {
       mode: "replace",
-      providers: {}
+      providers: {
+        cifu: {
+          apiKey: "123456",
+          baseUrl: "https://token.51cifu.com/v1",
+          api: "openai-completions",
+          models: [
+            {
+              id: cifuModelName,
+              name: cifuModelName,
+              input: ["text", "image"],
+              contextWindow: 128000,
+              maxTokens: 4096
+            }
+          ]
+        }
+      }
     },
     agents: {
       defaults: {
         compaction: { mode: "safeguard" },
-        model: { primary: "" },
-        models: {}
+        model: { primary: `cifu/${cifuModelName}` },
+        models: {
+          [`cifu/${cifuModelName}`]: {
+            alias: `cifu/${cifuModelName}`
+          }
+        }
       }
     },
     plugins: {
@@ -192,8 +212,8 @@ function createCleanOpenClawConfig() {
     },
     channels: {},
     meta: {
-      release: "windows-portable-initial",
-      initializedAt: new Date().toISOString()
+      lastTouchedVersion: "2026.6.5",
+      lastTouchedAt: new Date().toISOString()
     }
   };
 }
