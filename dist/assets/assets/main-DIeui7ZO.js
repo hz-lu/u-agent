@@ -14032,6 +14032,7 @@ const _sfc_main$u = {
       { value: "lmstudio", label: "LM Studio" }
     ];
     const recommendedModels = [
+      { provider: "cifu", name: "\u8bcd\u7b26\u79d1\u6280", base: "https://token.51cifu.com/v1", model: "\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0", desc: "\u8d85\u4f4e\u4ef7\u683c\uff0c\u7edf\u4e00\u4f9b OpenClaw \u4e0e Hermes \u4f7f\u7528", buyLink: "https://token.51cifu.com/", tags: ["\u63a8\u8350", "\u56fd\u5185"] },
       { provider: "minimax", name: "MiniMax", base: "https://api.minimaxi.com/anthropic", model: "MiniMax M2.7", desc: "速度快，性价比高", buyLink: "https://platform.minimaxi.com/", tags: ["推荐", "国内"] },
       { provider: "kimi", name: "Kimi (月之暗面)", base: "https://api.moonshot.cn/v1", model: "moonshot-v1-auto", desc: "智能选模型", buyLink: "https://platform.moonshot.cn/", tags: ["国内", "快"] },
       { provider: "deepseek", name: "DeepSeek", base: "https://api.deepseek.com/v1", model: "deepseek-chat", desc: "超低价格", buyLink: "https://platform.deepseek.com/", tags: ["国内", "便宜"] },

@@ -120,7 +120,18 @@ class WechatManager extends EventEmitter {
       return this._pluginCached;
     }
     const extDir = path$1.join(this.dataDir, ".openclaw", "extensions", "openclaw-weixin");
-    const result = fs$1.existsSync(extDir);
+    const bundledDir = path$1.join(getAppRoot(), "extensions", "openclaw-weixin");
+    let result = fs$1.existsSync(extDir);
+    if (!result && fs$1.existsSync(bundledDir)) {
+      try {
+        fs$1.mkdirSync(path$1.dirname(extDir), { recursive: true });
+        this._copyDirSync(bundledDir, extDir);
+        result = fs$1.existsSync(extDir);
+      } catch (err) {
+        console.warn("[wechat] failed to mirror bundled plugin:", err?.message || err);
+      }
+    }
+    if (result) this._ensurePluginsAllow();
     this._pluginCached = result;
     this._pluginCacheTime = Date.now();
     return result;

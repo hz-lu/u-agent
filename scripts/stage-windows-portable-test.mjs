@@ -78,7 +78,7 @@ function createCleanOpenClawConfig() {
       }
     },
     plugins: {
-      allow: ["qwen", "memory-core", "browser", "canvas", "device-pair", "file-transfer", "phone-control", "talk-voice"],
+      allow: ["qwen", "memory-core", "browser", "canvas", "device-pair", "file-transfer", "phone-control", "talk-voice", "openclaw-weixin"],
       entries: {
         qwen: { enabled: true },
         "memory-core": { enabled: true },
@@ -87,10 +87,13 @@ function createCleanOpenClawConfig() {
         "device-pair": { enabled: true },
         "file-transfer": { enabled: true },
         "phone-control": { enabled: true },
-        "talk-voice": { enabled: true }
+        "talk-voice": { enabled: true },
+        "openclaw-weixin": { enabled: true, config: {} }
       }
     },
-    channels: {},
+    channels: {
+      "openclaw-weixin": {}
+    },
     meta: {
       lastTouchedVersion: "2026.6.5",
       lastTouchedAt: new Date().toISOString()
@@ -154,6 +157,7 @@ fs.cpSync(runtimeStagingRoot, path.join(stagingRoot, "runtime"), { recursive: tr
 copyDir("skills", "skills");
 copyDir("extensions", "extensions");
 writeCleanDataTemplates();
+copyDir("extensions/openclaw-weixin", "data/.openclaw/extensions/openclaw-weixin");
 
 const report = {
   ok: true,
