@@ -2677,10 +2677,7 @@ function getResourcesPath() {
 }
 function getOpenClawEntry() {
   const runtimeRoot = getActiveRuntimeDir();
-  if (process.platform === "win32" || runtimeRoot === RUNTIME_DIR) {
-    return path$1.join(runtimeRoot, "node_modules", "openclaw", FILE_OPENCLAW_MJS);
-  }
-  return path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw", FILE_OPENCLAW_MJS);
+  return path$1.join(getOpenClawPackageRoot(runtimeRoot), FILE_OPENCLAW_MJS);
 }
 function getLicensePath() {
   return path$1.join(getAppRoot(), FILE_LICENSE);
@@ -2975,7 +2972,7 @@ function copyDirSync(src2, dest) {
 }
 function repairOpenClawRuntimeTemplates(runtimeRoot = RUNTIME_DIR) {
   try {
-    const packageRoot = path$1.join(runtimeRoot, "node_modules", "openclaw");
+    const packageRoot = getOpenClawPackageRoot(runtimeRoot);
     const targetRoot = path$1.join(packageRoot, "src", "agents", "templates");
     const templateNames = ["AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"];
     const zip = path$1.join(runtimeRoot, "openclaw.zip");
@@ -3049,14 +3046,14 @@ async function extractRuntime() {
   const runtimeHasNode = fs$1.existsSync(path$1.join(RUNTIME_DIR, "node.exe"));
   if (runtimeHasCli && runtimeHasNode) {
     /* codex-portable-runtime-ready-skip */
-    const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+    const repair = repairOpenClawRuntimeTemplates(getActiveRuntimeDir());
     if (!repair.ok) console.log("[runtime] OpenClaw template repair pending:", repair.error || repair.target);
     try { fs$1.writeFileSync(runtimeMarker, Date.now().toString(), "utf8"); } catch {}
     console.log("[runtime] Portable runtime already present, skipping extraction");
     return;
   }
   if (path$1.resolve(RUNTIME_DIR) === path$1.resolve(runtimeSrc)) {
-    const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+    const repair = repairOpenClawRuntimeTemplates(getActiveRuntimeDir());
     if (!repair.ok) console.log("[runtime] OpenClaw template repair pending:", repair.error || repair.target);
     console.log("[runtime] Runtime source and target are identical; skipping self-extraction");
     return;
@@ -3181,6 +3178,12 @@ function getOpenClawPath() {
   }
   return "openclaw";
 }
+function getOpenClawPackageRoot(runtimeRoot = getActiveRuntimeDir()) {
+  if (process.platform === "win32" || runtimeRoot === RUNTIME_DIR) {
+    return path$1.join(runtimeRoot, "node_modules", "openclaw");
+  }
+  return path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw");
+}
 function getOpenClawRuntimeBinDir() {
   const runtimeRoot = getActiveRuntimeDir();
   const packagedBin = path$1.join(runtimeRoot, "openclaw", "bin");
@@ -3195,7 +3198,7 @@ function getOpenClawRuntimeDiagnosis() {
   const binDir = getOpenClawRuntimeBinDir();
   const nodePath = isWindowsRuntime ? path$1.join(runtimeRoot, "node.exe") : path$1.join(runtimeRoot, "node", "bin", "node");
   const cliPath = isWindowsRuntime ? path$1.join(runtimeRoot, "openclaw.cmd") : path$1.join(binDir, "openclaw");
-  const packageRoot = isWindowsRuntime ? path$1.join(runtimeRoot, "node_modules", "openclaw") : path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw");
+  const packageRoot = getOpenClawPackageRoot(runtimeRoot);
   const entry = path$1.join(packageRoot, "openclaw.mjs");
   const dist = path$1.join(packageRoot, "dist");
   const nestedEntry = path$1.join(runtimeRoot, "runtime", "node_modules", "openclaw", "openclaw.mjs");
@@ -3381,9 +3384,7 @@ function normalizeOpenClawPluginSkillLinks() {
     const pluginSkillsRoot = path$1.resolve(stateRoot, "plugin-skills");
     const browserSkill = path$1.resolve(pluginSkillsRoot, "browser-automation");
     const runtimeRoot = getActiveRuntimeDir();
-    const packageRoot = process.platform === "win32" || runtimeRoot === RUNTIME_DIR
-      ? path$1.join(runtimeRoot, "node_modules", "openclaw")
-      : path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw");
+    const packageRoot = getOpenClawPackageRoot(runtimeRoot);
     const browserSkillTarget = path$1.resolve(packageRoot, "dist", "extensions", "browser", "skills", "browser-automation");
     if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;
     fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });
@@ -3414,8 +3415,7 @@ function normalizeOpenClawPluginSkillLinks() {
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
   const runtimeRoot = getActiveRuntimeDir();
-  const repairRoot = process.platform === "win32" || runtimeRoot === RUNTIME_DIR ? runtimeRoot : path$1.join(runtimeRoot, "openclaw");
-  const repair = repairOpenClawRuntimeTemplates(repairRoot);
+  const repair = repairOpenClawRuntimeTemplates(runtimeRoot);
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");

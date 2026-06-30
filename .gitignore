@@ -23,6 +23,15 @@ src/runtime/
 !/runtime/**/
 !/runtime/PORTABLE-RUNTIME-MANIFEST.json
 !/runtime/**/.gitkeep
+/runtime/**/node_modules/**
+!/runtime/*/openclaw/node_modules/
+!/runtime/*/openclaw/node_modules/openclaw/
+!/runtime/*/openclaw/node_modules/openclaw/dist/
+!/runtime/*/openclaw/node_modules/openclaw/dist/.gitkeep
+!/runtime/node_modules/
+!/runtime/node_modules/openclaw/
+!/runtime/node_modules/openclaw/dist/
+!/runtime/node_modules/openclaw/dist/.gitkeep
 /data/**
 !/data/
 !/data/**/

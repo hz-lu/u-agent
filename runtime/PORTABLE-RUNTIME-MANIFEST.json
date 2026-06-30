@@ -36,6 +36,7 @@
         "runtime/HermesPortable/venv/Scripts/hermes.exe",
         "runtime/HermesPortable/venv/Scripts/python.exe",
         "runtime/HermesPortable/node/node.exe",
+        "runtime/HermesPortable/lib/config_server.py",
         "runtime/HermesPortable/hermes-agent/pyproject.toml"
       ]
     },
@@ -48,8 +49,17 @@
         "runtime/macos-arm64/node/bin/node",
         "runtime/macos-arm64/openclaw/bin/openclaw",
         "runtime/macos-arm64/openclaw/node_modules/openclaw/dist",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/AGENTS.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/BOOT.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/BOOTSTRAP.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/HEARTBEAT.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/IDENTITY.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/SOUL.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/TOOLS.md",
+        "runtime/macos-arm64/openclaw/node_modules/openclaw/src/agents/templates/USER.md",
         "runtime/macos-arm64/HermesPortable/venv/bin/hermes",
-        "runtime/macos-arm64/HermesPortable/venv/bin/python"
+        "runtime/macos-arm64/HermesPortable/venv/bin/python",
+        "runtime/macos-arm64/HermesPortable/lib/config_server.py"
       ]
     },
     "macos-x64": {
@@ -61,8 +71,17 @@
         "runtime/macos-x64/node/bin/node",
         "runtime/macos-x64/openclaw/bin/openclaw",
         "runtime/macos-x64/openclaw/node_modules/openclaw/dist",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/AGENTS.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/BOOT.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/BOOTSTRAP.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/HEARTBEAT.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/IDENTITY.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/SOUL.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/TOOLS.md",
+        "runtime/macos-x64/openclaw/node_modules/openclaw/src/agents/templates/USER.md",
         "runtime/macos-x64/HermesPortable/venv/bin/hermes",
-        "runtime/macos-x64/HermesPortable/venv/bin/python"
+        "runtime/macos-x64/HermesPortable/venv/bin/python",
+        "runtime/macos-x64/HermesPortable/lib/config_server.py"
       ]
     },
     "linux-x64": {
@@ -74,8 +93,17 @@
         "runtime/linux-x64/node/bin/node",
         "runtime/linux-x64/openclaw/bin/openclaw",
         "runtime/linux-x64/openclaw/node_modules/openclaw/dist",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/AGENTS.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/BOOT.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/BOOTSTRAP.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/HEARTBEAT.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/IDENTITY.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/SOUL.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/TOOLS.md",
+        "runtime/linux-x64/openclaw/node_modules/openclaw/src/agents/templates/USER.md",
         "runtime/linux-x64/HermesPortable/venv/bin/hermes",
-        "runtime/linux-x64/HermesPortable/venv/bin/python"
+        "runtime/linux-x64/HermesPortable/venv/bin/python",
+        "runtime/linux-x64/HermesPortable/lib/config_server.py"
       ]
     },
     "linux-arm64": {
@@ -87,8 +115,17 @@
         "runtime/linux-arm64/node/bin/node",
         "runtime/linux-arm64/openclaw/bin/openclaw",
         "runtime/linux-arm64/openclaw/node_modules/openclaw/dist",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/AGENTS.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/BOOT.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/BOOTSTRAP.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/HEARTBEAT.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/IDENTITY.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/SOUL.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/TOOLS.md",
+        "runtime/linux-arm64/openclaw/node_modules/openclaw/src/agents/templates/USER.md",
         "runtime/linux-arm64/HermesPortable/venv/bin/hermes",
-        "runtime/linux-arm64/HermesPortable/venv/bin/python"
+        "runtime/linux-arm64/HermesPortable/venv/bin/python",
+        "runtime/linux-arm64/HermesPortable/lib/config_server.py"
       ]
     }
   },
