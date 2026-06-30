@@ -83,7 +83,8 @@ class WechatManager extends EventEmitter {
     this.status = "disconnected";
   }
   _getEnv() {
-    const paths = [this.runtimeDir, this.usbRuntime].filter(Boolean);
+    const nodeBinDir = process.platform === "win32" || !this.usbRuntime ? "" : path$1.join(this.usbRuntime, "node", "bin");
+    const paths = [this.runtimeDir, nodeBinDir, this.usbRuntime].filter(Boolean);
     return {
       ...process.env,
       OPENCLAW_HOME: this.dataDir,
@@ -546,6 +547,8 @@ class HermesManager {
   getPortableRoot() {
     const envRoot = process.env.HERMES_PORTABLE_ROOT?.trim();
     if (envRoot) return envRoot;
+    const platformRoot = path$1.join(getActiveRuntimeDir(), "HermesPortable");
+    if (fs$1.existsSync(platformRoot)) return platformRoot;
     return path$1.join(getAppRoot(), "runtime", "HermesPortable");
   }
   getPortableLauncher() {
@@ -566,6 +569,12 @@ class HermesManager {
   }
   getPortablePython() {
     const root = this.getPortableRoot();
+    if (process.platform !== "win32") {
+      const venvPython = path$1.join(root, "venv", "bin", "python");
+      if (fs$1.existsSync(venvPython)) return venvPython;
+      const venvPython3 = path$1.join(root, "venv", "bin", "python3");
+      if (fs$1.existsSync(venvPython3)) return venvPython3;
+    }
     const exact = path$1.join(root, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
     if (fs$1.existsSync(exact)) return exact;
     const pyRoot = path$1.join(root, "python");
@@ -579,17 +588,18 @@ class HermesManager {
         else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
       }
     }
-    return path$1.join(root, "venv", "Scripts", "python.exe");
+    return process.platform === "win32" ? path$1.join(root, "venv", "Scripts", "python.exe") : path$1.join(root, "venv", "bin", "python");
   }
   getHermesEnv() {
     const root = this.getPortableRoot();
     const usbRoot = getAppRoot();
     const data = this.getHermesDataRoot();
     const home = path$1.join(data, "home");
-    const venvScripts = path$1.join(root, "venv", "Scripts");
-    const venvSitePackages = path$1.join(root, "venv", "Lib", "site-packages");
+    const venvScripts = process.platform === "win32" ? path$1.join(root, "venv", "Scripts") : path$1.join(root, "venv", "bin");
+    const venvSitePackages = findPythonSitePackages(root);
     const sourceRoot = path$1.join(root, "hermes-agent");
-    const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : path$1.join(root, "node");
+    const platformNodeDir = process.platform === "win32" ? path$1.join(root, "node") : path$1.join(getActiveRuntimeDir(), "node", "bin");
+    const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : platformNodeDir;
     const pythonDir = path$1.dirname(this.getPortablePython());
     for (const dir of [data, home, path$1.join(data, "config"), path$1.join(data, "cache"), path$1.join(data, "logs"), path$1.join(data, "memories"), path$1.join(data, "skills"), path$1.join(data, "tmp")]) {
       if (!fs$1.existsSync(dir)) fs$1.mkdirSync(dir, { recursive: true });
@@ -2069,8 +2079,8 @@ const REMOTE_API_DISABLED_MESSAGE = "远程服务器功能已移除";
 const RENDER_PORT = env.rendererPort;
 let wechatManager = null;
 function initWechat() {
-  const wechatRuntimeDir = fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd")) ? RUNTIME_DIR : RUNTIME_DIR;
-  wechatManager = new WechatManager({ runtimeDir: wechatRuntimeDir, usbRuntime: path$1.join(getAppRoot(), "runtime"), dataDir: getDataRoot(), isDev: IS_DEV });
+  const wechatRuntimeDir = getOpenClawRuntimeBinDir();
+  wechatManager = new WechatManager({ runtimeDir: wechatRuntimeDir, usbRuntime: getActiveRuntimeDir(), dataDir: getDataRoot(), isDev: IS_DEV });
   wechatManager.on("status", (status) => {
     safeSend("wechat-status", status);
   });
@@ -2518,6 +2528,56 @@ const DIR_RUNTIME = "runtime";
 const FILE_CONFIG = "openclaw.json";
 const FILE_LICENSE = ".license";
 const FILE_OPENCLAW_MJS = "openclaw.mjs";
+function hasPortableRootMarkers(candidate) {
+  try {
+    const markers = ["runtime", "data", "skills", "extensions"];
+    return markers.filter((name) => fs$1.existsSync(path$1.join(candidate, name))).length >= 2;
+  } catch {
+    return false;
+  }
+}
+function findPortableRootFrom(startPath) {
+  let current = path$1.resolve(startPath);
+  const parsed = path$1.parse(current);
+  while (current && current !== parsed.root) {
+    if (hasPortableRootMarkers(current)) return current;
+    current = path$1.dirname(current);
+  }
+  return hasPortableRootMarkers(parsed.root) ? parsed.root : null;
+}
+function getPortablePlatformId() {
+  if (process.platform === "darwin") return process.arch === "arm64" ? "macos-arm64" : "macos-x64";
+  if (process.platform === "linux") return process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+  if (process.platform === "win32") return "windows-x64";
+  return `${process.platform}-${process.arch}`;
+}
+function getActiveRuntimeDir() {
+  const envRoot = process.env.OPENCLAW_RUNTIME_ROOT?.trim();
+  if (envRoot) return path$1.resolve(envRoot);
+  const rootRuntime = path$1.join(getAppRoot(), DIR_RUNTIME);
+  const platformRuntime = path$1.join(rootRuntime, getPortablePlatformId());
+  if (process.platform !== "win32" && fs$1.existsSync(platformRuntime)) return platformRuntime;
+  return rootRuntime;
+}
+function findPythonSitePackages(root) {
+  const windowsPath = path$1.join(root, "venv", "Lib", "site-packages");
+  if (fs$1.existsSync(windowsPath)) return windowsPath;
+  const libRoot = path$1.join(root, "venv", "lib");
+  if (!fs$1.existsSync(libRoot)) return "";
+  const stack = [libRoot];
+  while (stack.length) {
+    const dir = stack.pop();
+    if (!dir || !fs$1.existsSync(dir)) continue;
+    for (const entry of fs$1.readdirSync(dir, { withFileTypes: true })) {
+      const full = path$1.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "site-packages") return full;
+        stack.push(full);
+      }
+    }
+  }
+  return "";
+}
 function getLocalBase() {
   if (!IS_DEV) return path$1.join(getDataRoot(), ".openclaw", "electron");
   const appData = process.env.LOCALAPPDATA || process.env.APPDATA;
@@ -2542,7 +2602,19 @@ const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);
 function getAppRoot() {
   if (_appRoot) return _appRoot;
   if (!IS_DEV) {
-    _appRoot = path$1.resolve(path$1.dirname(electron.app.getPath("exe")), "..");
+    const exeDir = path$1.dirname(electron.app.getPath("exe"));
+    const discovered = findPortableRootFrom(exeDir);
+    if (discovered) {
+      _appRoot = discovered;
+      return _appRoot;
+    }
+    if (process.platform === "darwin") {
+      const appBundle = path$1.resolve(exeDir, "..", "..");
+      const appContainer = path$1.dirname(appBundle);
+      _appRoot = path$1.basename(appContainer) === "macos" ? path$1.dirname(appContainer) : appContainer;
+      return _appRoot;
+    }
+    _appRoot = path$1.resolve(exeDir, "..");
     return _appRoot;
   }
   _appRoot = path$1.resolve(__dirname, "..", "..");
@@ -2604,7 +2676,11 @@ function getResourcesPath() {
   return _resourcesPath;
 }
 function getOpenClawEntry() {
-  return path$1.join(getOpenClawPath(), FILE_OPENCLAW_MJS);
+  const runtimeRoot = getActiveRuntimeDir();
+  if (process.platform === "win32" || runtimeRoot === RUNTIME_DIR) {
+    return path$1.join(runtimeRoot, "node_modules", "openclaw", FILE_OPENCLAW_MJS);
+  }
+  return path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw", FILE_OPENCLAW_MJS);
 }
 function getLicensePath() {
   return path$1.join(getAppRoot(), FILE_LICENSE);
@@ -3092,25 +3168,48 @@ async function extractRuntime() {
   }
 }
 function getOpenClawPath() {
-  const extractedCli = path$1.join(RUNTIME_DIR, "openclaw.cmd");
-  if (fs$1.existsSync(extractedCli)) return extractedCli;
+  const runtimeRoot = getActiveRuntimeDir();
+  const binDir = getOpenClawRuntimeBinDir();
+  const cliName = process.platform === "win32" ? "openclaw.cmd" : "openclaw";
+  const candidates = [
+    path$1.join(runtimeRoot, cliName),
+    path$1.join(binDir, cliName),
+    process.platform === "win32" ? path$1.join(RUNTIME_DIR, "openclaw.cmd") : ""
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (fs$1.existsSync(candidate)) return candidate;
+  }
   return "openclaw";
+}
+function getOpenClawRuntimeBinDir() {
+  const runtimeRoot = getActiveRuntimeDir();
+  const packagedBin = path$1.join(runtimeRoot, "openclaw", "bin");
+  if (fs$1.existsSync(packagedBin)) return packagedBin;
+  return runtimeRoot;
 }
 function getOpenClawRuntimeDiagnosis() {
   const appRoot = getAppRoot();
-  const runtimeRoot = RUNTIME_DIR;
-  const entry = path$1.join(runtimeRoot, "node_modules", "openclaw", "openclaw.mjs");
-  const dist = path$1.join(runtimeRoot, "node_modules", "openclaw", "dist");
+  const runtimeRoot = getActiveRuntimeDir();
+  const rootRuntime = RUNTIME_DIR;
+  const isWindowsRuntime = process.platform === "win32" || runtimeRoot === rootRuntime;
+  const binDir = getOpenClawRuntimeBinDir();
+  const nodePath = isWindowsRuntime ? path$1.join(runtimeRoot, "node.exe") : path$1.join(runtimeRoot, "node", "bin", "node");
+  const cliPath = isWindowsRuntime ? path$1.join(runtimeRoot, "openclaw.cmd") : path$1.join(binDir, "openclaw");
+  const packageRoot = isWindowsRuntime ? path$1.join(runtimeRoot, "node_modules", "openclaw") : path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw");
+  const entry = path$1.join(packageRoot, "openclaw.mjs");
+  const dist = path$1.join(packageRoot, "dist");
   const nestedEntry = path$1.join(runtimeRoot, "runtime", "node_modules", "openclaw", "openclaw.mjs");
   const appNestedEntry = path$1.join(appRoot, "u-agent", "runtime", "node_modules", "openclaw", "openclaw.mjs");
   const stagingEntry = path$1.join(appRoot, "release", "windows-shell-e2e-slim-staging", "runtime", "node_modules", "openclaw", "openclaw.mjs");
   const rootEntries = fs$1.existsSync(appRoot) ? fs$1.readdirSync(appRoot).slice(0, 40) : [];
   const runtimeEntries = fs$1.existsSync(runtimeRoot) ? fs$1.readdirSync(runtimeRoot).slice(0, 40) : [];
   const problems = [];
-  if (!fs$1.existsSync(path$1.join(runtimeRoot, "openclaw.cmd"))) problems.push("缺少 runtime/openclaw.cmd");
-  if (!fs$1.existsSync(path$1.join(runtimeRoot, "node.exe"))) problems.push("缺少 runtime/node.exe");
-  if (!fs$1.existsSync(entry)) problems.push("缺少 runtime/node_modules/openclaw/openclaw.mjs");
-  if (!fs$1.existsSync(dist)) problems.push("缺少 runtime/node_modules/openclaw/dist");
+  if (!fs$1.existsSync(cliPath)) problems.push("缺少 " + path$1.relative(appRoot, cliPath));
+  if (!fs$1.existsSync(nodePath)) problems.push("缺少 " + path$1.relative(appRoot, nodePath));
+  if (isWindowsRuntime && !fs$1.existsSync(entry)) problems.push("缺少 runtime/node_modules/openclaw/openclaw.mjs");
+  if (!isWindowsRuntime && !fs$1.existsSync(entry)) problems.push("缺少 " + path$1.relative(appRoot, entry));
+  if (isWindowsRuntime && !fs$1.existsSync(dist)) problems.push("缺少 runtime/node_modules/openclaw/dist");
+  if (!isWindowsRuntime && !fs$1.existsSync(dist)) problems.push("缺少 " + path$1.relative(appRoot, dist));
   const hints = [];
   if (fs$1.existsSync(nestedEntry)) hints.push("检测到 runtime/runtime/node_modules/openclaw/openclaw.mjs：runtime 可能多套了一层 runtime 目录。请把内层 runtime 的内容移动到 U 盘根目录的 runtime。");
   if (fs$1.existsSync(appNestedEntry)) hints.push("检测到 u-agent/runtime/node_modules/openclaw/openclaw.mjs：程序当前按 U 盘根目录运行，请把 u-agent 目录内的 runtime 复制到 U 盘根目录 runtime，或从完整 staging 目录启动。");
@@ -3142,7 +3241,7 @@ function formatOpenClawRuntimeDiagnosis(diag) {
   ].filter(Boolean).join("\n");
 }
 function writeDnsHook() {
-  const hookPath = path$1.join(RUNTIME_DIR, "dns-hook.cjs");
+  const hookPath = path$1.join(getActiveRuntimeDir(), "dns-hook.cjs");
   const content = `// Portable OpenClaw hook: fast-fail pricing DNS and tolerate Windows plugin skill junction races.
 const dns = require('dns');
 const fs = require('fs');
@@ -3281,7 +3380,11 @@ function normalizeOpenClawPluginSkillLinks() {
     const stateRoot = path$1.resolve(getDataRoot(), ".openclaw");
     const pluginSkillsRoot = path$1.resolve(stateRoot, "plugin-skills");
     const browserSkill = path$1.resolve(pluginSkillsRoot, "browser-automation");
-    const browserSkillTarget = path$1.resolve(RUNTIME_DIR, "node_modules", "openclaw", "dist", "extensions", "browser", "skills", "browser-automation");
+    const runtimeRoot = getActiveRuntimeDir();
+    const packageRoot = process.platform === "win32" || runtimeRoot === RUNTIME_DIR
+      ? path$1.join(runtimeRoot, "node_modules", "openclaw")
+      : path$1.join(runtimeRoot, "openclaw", "node_modules", "openclaw");
+    const browserSkillTarget = path$1.resolve(packageRoot, "dist", "extensions", "browser", "skills", "browser-automation");
     if (!browserSkill.startsWith(pluginSkillsRoot + path$1.sep)) return;
     fs$1.mkdirSync(pluginSkillsRoot, { recursive: true });
     if (!fs$1.existsSync(browserSkillTarget)) return;
@@ -3310,18 +3413,32 @@ function normalizeOpenClawPluginSkillLinks() {
 }
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
-  const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
+  const runtimeRoot = getActiveRuntimeDir();
+  const repairRoot = process.platform === "win32" || runtimeRoot === RUNTIME_DIR ? runtimeRoot : path$1.join(runtimeRoot, "openclaw");
+  const repair = repairOpenClawRuntimeTemplates(repairRoot);
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");
   const paths = [];
-  if (fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd")) || fs$1.existsSync(path$1.join(RUNTIME_DIR, "node_modules"))) {
-    paths.push(RUNTIME_DIR);
+  const binDir = getOpenClawRuntimeBinDir();
+  const nodeBinDir = process.platform === "win32" ? runtimeRoot : path$1.join(runtimeRoot, "node", "bin");
+  if (fs$1.existsSync(binDir)) {
+    paths.push(binDir);
+  }
+  if (fs$1.existsSync(nodeBinDir)) {
+    paths.push(nodeBinDir);
+  }
+  if (fs$1.existsSync(path$1.join(runtimeRoot, "openclaw.cmd")) || fs$1.existsSync(path$1.join(runtimeRoot, "node_modules")) || fs$1.existsSync(path$1.join(runtimeRoot, "openclaw", "node_modules"))) {
+    paths.push(runtimeRoot);
   }
   if (fs$1.existsSync(usbRuntime)) {
     paths.push(usbRuntime);
   }
-  const runtimePath = paths[0] || RUNTIME_DIR;
+  const runtimePath = runtimeRoot;
+  const nodePathEntries = [
+    path$1.join(runtimePath, "node_modules"),
+    path$1.join(runtimePath, "openclaw", "node_modules")
+  ].filter((entry) => fs$1.existsSync(entry));
   const dnsHookPath = writeDnsHook();
   const nodeOptions = [
     // Windows 上 NODE_OPTIONS 中的反斜杠会被 Node.js 解析为转义字符，
@@ -3348,7 +3465,7 @@ function getGatewayEnv() {
     OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, "workspace"),
     TMP: portableTmp,
     TEMP: portableTmp,
-    NODE_PATH: path$1.join(runtimePath, "node_modules"),
+    NODE_PATH: (nodePathEntries.length ? nodePathEntries : [path$1.join(runtimePath, "node_modules")]).join(path$1.delimiter),
     PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,
     NODE_OPTIONS: nodeOptions,
     NO_PROXY: noProxy,
@@ -21971,7 +22088,8 @@ class FeishuManager extends EventEmitter {
   }
   _getEnv() {
     const nodeBin = path$1.join(this.runtimeDir, "node.exe");
-    const nodeDir = fs$1.existsSync(nodeBin) ? this.runtimeDir : path$1.dirname(process.execPath);
+    const portableNodeDir = process.platform === "win32" || !this.usbRuntime ? "" : path$1.join(this.usbRuntime, "node", "bin");
+    const nodeDir = fs$1.existsSync(nodeBin) ? this.runtimeDir : portableNodeDir || path$1.dirname(process.execPath);
     const paths = [nodeDir, this.runtimeDir, this.usbRuntime].filter(Boolean);
     return {
       ...process.env,
@@ -22370,10 +22488,10 @@ class FeishuManager extends EventEmitter {
 }
 let feishuManager = null;
 function initFeishu() {
-  const feishuRuntimeDir = fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd")) ? RUNTIME_DIR : RUNTIME_DIR;
+  const feishuRuntimeDir = getOpenClawRuntimeBinDir();
   feishuManager = new FeishuManager({
     runtimeDir: feishuRuntimeDir,
-    usbRuntime: path$1.join(getAppRoot(), "runtime"),
+    usbRuntime: getActiveRuntimeDir(),
     dataDir: getDataRoot(),
     isDev: IS_DEV
   });

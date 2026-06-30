@@ -37,6 +37,7 @@ src/runtime/
 !/extensions/openclaw-weixin/node_modules/**
 /release/
 /backups/
+/macos/
 
 # Local editor state.
 .idea/
