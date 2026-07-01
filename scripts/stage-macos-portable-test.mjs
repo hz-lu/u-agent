@@ -13,6 +13,7 @@ const releaseRoot = path.resolve(process.env.MACOS_RELEASE_ROOT || path.join(pro
 const appName = "OpenClawPro";
 const sourceMacosRoot = path.join(projectRoot, "macos");
 const appBundleName = `${appName}.app`;
+const innerAppBundleName = `${appName}-Runtime.app`;
 const requiredRuntimePaths = [
   `runtime/${platformId}/node/bin/node`,
   `runtime/${platformId}/openclaw/bin/openclaw`,
@@ -67,11 +68,91 @@ function copyFile(source, target) {
 function copyMacosShell() {
   const sourceAppBundle = path.join(sourceMacosRoot, appBundleName);
   if (usbRootLayout) {
-    copyDir(sourceAppBundle, path.join(releaseRoot, appBundleName));
-    copyFile(path.join(sourceMacosRoot, "BUILD-MANIFEST.json"), path.join(releaseRoot, "MACOS-SHELL-BUILD-MANIFEST.json"));
+    writeRootLauncherApp(sourceAppBundle);
     return;
   }
   copyDir(sourceMacosRoot, path.join(releaseRoot, "macos"));
+}
+
+function rootLauncherScript() {
+  return [
+    "#!/bin/bash",
+    "set -euo pipefail",
+    "APP_BUNDLE_DIR=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)\"",
+    "USB_ROOT=\"$(cd \"$APP_BUNDLE_DIR/..\" && pwd)\"",
+    "LOG_FILE=\"$USB_ROOT/.OpenClawPro-launch.log\"",
+    "exec >>\"$LOG_FILE\" 2>&1",
+    "echo \"[$(date '+%Y-%m-%d %H:%M:%S')] OpenClawPro launcher start\"",
+    "show_error() {",
+    "  local msg=\"$1\"",
+    "  echo \"[error] $msg\"",
+    "  /usr/bin/osascript -e \"display dialog \\\"$msg\\\" buttons {\\\"OK\\\"} default button \\\"OK\\\" with icon caution\" >/dev/null 2>&1 || true",
+    "}",
+    "trap 'show_error \"OpenClawPro 启动失败，请查看 U 盘根目录 .OpenClawPro-launch.log\"' ERR",
+    `INNER_EXE="$APP_BUNDLE_DIR/Contents/Resources/${innerAppBundleName}/Contents/MacOS/${appName}"`,
+    "if [ ! -x \"$INNER_EXE\" ]; then",
+    "  show_error \"OpenClawPro 内部程序不存在或不可执行：$INNER_EXE\"",
+    "  exit 1",
+    "fi",
+    "mkdir -p \"$USB_ROOT/data\" \"$USB_ROOT/skills\" \"$USB_ROOT/extensions\"",
+    "export AGENT_HUB_ROOT=\"$USB_ROOT\"",
+    "export AGENT_HUB_DATA_ROOT=\"$USB_ROOT/data\"",
+    "export AGENT_HUB_USB_ROOT=\"$USB_ROOT\"",
+    "echo \"launch app: $INNER_EXE\"",
+    "\"$INNER_EXE\"",
+    "echo \"launcher done\"",
+    ""
+  ].join("\n");
+}
+
+function writeRootLauncherApp(sourceAppBundle) {
+  const launcherApp = path.join(releaseRoot, appBundleName);
+  const contentsRoot = path.join(launcherApp, "Contents");
+  const macosRoot = path.join(contentsRoot, "MacOS");
+  const resourcesRoot = path.join(contentsRoot, "Resources");
+  fs.rmSync(launcherApp, { recursive: true, force: true });
+  fs.mkdirSync(macosRoot, { recursive: true });
+  fs.mkdirSync(resourcesRoot, { recursive: true });
+  copyDir(sourceAppBundle, path.join(resourcesRoot, innerAppBundleName));
+  writeFile(path.join(appBundleName, "Contents", "Info.plist"), [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>CFBundleExecutable</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundleIdentifier</key>",
+    "  <string>com.openclawpro.agenthub.launcher</string>",
+    "  <key>CFBundleName</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundleDisplayName</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundlePackageType</key>",
+    "  <string>APPL</string>",
+    "  <key>CFBundleShortVersionString</key>",
+    "  <string>2.0.0</string>",
+    "  <key>CFBundleVersion</key>",
+    "  <string>2.0.0</string>",
+    "  <key>LSMinimumSystemVersion</key>",
+    "  <string>11.0</string>",
+    "  <key>NSHighResolutionCapable</key>",
+    "  <true/>",
+    "</dict>",
+    "</plist>",
+    ""
+  ].join("\n"));
+  writeFile(path.join(appBundleName, "Contents", "Resources", "launcher.sh"), rootLauncherScript(), 0o755);
+  fs.chmodSync(path.join(resourcesRoot, "launcher.sh"), 0o755);
+  run("clang", [
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-mmacosx-version-min=11.0",
+    path.join(projectRoot, "scripts", "macos-root-launcher.c"),
+    "-o",
+    path.join(macosRoot, appName)
+  ]);
+  fs.chmodSync(path.join(macosRoot, appName), 0o755);
 }
 
 function writeFile(relPath, content) {
@@ -197,6 +278,7 @@ function writeCleanData() {
 }
 
 function writeLauncher() {
+  if (usbRootLayout) return;
   const launcher = path.join(releaseRoot, "OpenClawPro.command");
   const appRelPath = usbRootLayout ? appBundleName : path.join("macos", appBundleName);
   fs.writeFileSync(launcher, [
@@ -276,8 +358,8 @@ function makeExfatCompatible() {
   for (const link of symlinksBefore) materializeSymlink(link);
   const symlinksAfter = collectSymlinks(releaseRoot);
   const executableRoots = [
-    path.join(releaseRoot, "OpenClawPro.command"),
     path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName), "Contents", "MacOS"),
+    path.join(releaseRoot, appBundleName, "Contents", "Resources", innerAppBundleName, "Contents", "MacOS"),
     path.join(releaseRoot, "runtime", platformId, "node", "bin"),
     path.join(releaseRoot, "runtime", platformId, "openclaw", "bin"),
     path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", ".bin"),
@@ -297,9 +379,23 @@ function makeExfatCompatible() {
       .map((item) => path.relative(releaseRoot, item)),
     quarantine
   };
-  writeFile("EXFAT-COMPATIBILITY.json", `${JSON.stringify(report, null, 2)}\n`);
+  if (!usbRootLayout) writeFile("EXFAT-COMPATIBILITY.json", `${JSON.stringify(report, null, 2)}\n`);
   if (!report.ok) fail(`exFAT compatibility failed; remaining symlinks:\n${report.remainingSymlinks.join("\n")}`);
   return report;
+}
+
+function signMacosApp() {
+  const appPath = path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName));
+  if (!fs.existsSync(appPath)) return;
+  const args = usbRootLayout ? ["--force", "--sign", "-", appPath] : ["--force", "--deep", "--sign", "-", appPath];
+  const result = spawnSync("codesign", args, {
+    cwd: projectRoot,
+    stdio: "inherit",
+    windowsHide: true
+  });
+  if (result.status !== 0) {
+    console.warn(`[macos] codesign warning: ${appPath} was not re-signed; continuing with bundled Electron signature.`);
+  }
 }
 
 function verifyWechatPlugin() {
@@ -327,6 +423,7 @@ function runtimeReport() {
 }
 
 function writeReleaseDocs(report, exfatReport = null) {
+  if (usbRootLayout) return;
   const appPath = usbRootLayout ? appBundleName : `macos/${appBundleName}`;
   writeFile("README-MACOS-PORTABLE.md", [
     "# OpenClawPro Agent Hub macOS Portable",
@@ -388,6 +485,7 @@ function main() {
   verifyWechatPlugin();
   writeLauncher();
   const exfatReport = exfatCompat ? makeExfatCompatible() : null;
+  signMacosApp();
   const report = runtimeReport();
   writeReleaseDocs(report, exfatReport);
   console.log(JSON.stringify({
@@ -395,7 +493,7 @@ function main() {
     releaseRoot,
     layout: usbRootLayout ? "usb-root" : "portable-staging",
     app: path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName)),
-    launcher: path.join(releaseRoot, "OpenClawPro.command"),
+    launcher: usbRootLayout ? path.join(releaseRoot, appBundleName) : path.join(releaseRoot, "OpenClawPro.command"),
     runtime: report,
     exfat: exfatReport
   }, null, 2));
