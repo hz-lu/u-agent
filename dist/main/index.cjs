@@ -2607,6 +2607,11 @@ electron.app.setAppLogsPath(path$1.join(electronDataDir, "logs"));
 const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);
 function getAppRoot() {
   if (_appRoot) return _appRoot;
+  const envRoot = process.env.AGENT_HUB_ROOT?.trim();
+  if (envRoot) {
+    _appRoot = path$1.resolve(envRoot);
+    return _appRoot;
+  }
   if (!IS_DEV) {
     const exeDir = path$1.dirname(electron.app.getPath("exe"));
     const discovered = findPortableRootFrom(exeDir);
@@ -2628,7 +2633,8 @@ function getAppRoot() {
 }
 function getDataRoot() {
   if (_dataRoot) return _dataRoot;
-  _dataRoot = path$1.join(getAppRoot(), DIR_DATA);
+  const envDataRoot = process.env.AGENT_HUB_DATA_ROOT?.trim();
+  _dataRoot = envDataRoot ? path$1.resolve(envDataRoot) : path$1.join(getAppRoot(), DIR_DATA);
   return _dataRoot;
 }
 function appendDesktopCrashLog(kind, payload) {
