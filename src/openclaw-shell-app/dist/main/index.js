@@ -2553,6 +2553,26 @@ function getDataRoot() {
   _dataRoot = path$1.join(getAppRoot(), DIR_DATA);
   return _dataRoot;
 }
+function getPortableProcessEnv(extraEnv = {}) {
+  const systemRoot = path$1.join(getDataRoot(), ".system");
+  const home = path$1.join(systemRoot, "home");
+  const appData = path$1.join(systemRoot, "AppData", "Roaming");
+  const localAppData = path$1.join(systemRoot, "AppData", "Local");
+  const tmp = path$1.join(systemRoot, "tmp");
+  for (const dir of [home, appData, localAppData, tmp]) {
+    fs$1.mkdirSync(dir, { recursive: true });
+  }
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    TMP: tmp,
+    TEMP: tmp,
+    ...extraEnv
+  };
+}
 function appendDesktopCrashLog(kind, payload) {
   /* codex-desktop-crash-diagnostics */
   try {
@@ -3027,6 +3047,7 @@ async function extractRuntime() {
       }
       console.log("[runtime] tar failed, falling back to PowerShell...");
       const ps2 = child_process.spawn(psExe, ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force`], {
+        env: getPortableProcessEnv(),
         stdio: ["ignore", "pipe", "pipe"]
       });
       ps2.on("exit", (c) => c === 0 ? resolve() : reject(new Error(`exit code ${c}`)));
@@ -3036,6 +3057,7 @@ async function extractRuntime() {
       console.log("[runtime] tar spawn error:", err.message);
       clearInterval(ticker);
       const ps2 = child_process.spawn(psExe, ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force`], {
+        env: getPortableProcessEnv(),
         stdio: ["ignore", "pipe", "pipe"]
       });
       ps2.on("exit", (c) => c === 0 ? resolve() : reject(new Error(`exit code ${c}`)));
@@ -21253,6 +21275,7 @@ function runCmd(exe, args, options = {}) {
     encoding: options.encoding || "utf8",
     timeout: options.timeout || 5e3,
     windowsHide: true,
+    env: getPortableProcessEnv(options.env || {}),
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: options.maxBuffer || 1024 * 1024
   });
