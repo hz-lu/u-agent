@@ -21556,7 +21556,7 @@ function getVolumeSerialMac(appPath) {
   }
 }
 async function getAppDriveInfo() {
-  let targetPath = process.execPath;
+  let targetPath = process.env.AGENT_HUB_USB_ROOT?.trim() || process.execPath;
   let usingFallback = false;
   if (process.platform === "win32") {
     const match = targetPath.match(/^([A-Za-z]):/);

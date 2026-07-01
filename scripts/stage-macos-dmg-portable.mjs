@@ -9,6 +9,7 @@ const dmgSize = process.env.MACOS_DMG_SIZE || "4g";
 const buildRoot = path.resolve(process.env.MACOS_DMG_BUILD_ROOT || path.join(projectRoot, "release", "macos-dmg-build-root"));
 const releaseRoot = path.resolve(process.env.MACOS_DMG_RELEASE_ROOT || path.join(projectRoot, "release", "macos-dmg-usb-root"));
 const mountPoint = path.resolve(process.env.MACOS_DMG_MOUNT_POINT || path.join(projectRoot, "release", ".macos-dmg-mount"));
+const rootLauncherApp = path.join(releaseRoot, `${appName}.app`);
 const dmgPath = path.join(releaseRoot, `${appName}.dmg`);
 const sparsePath = path.join(releaseRoot, `${appName}.sparseimage`);
 
@@ -88,25 +89,14 @@ function preparePortableBuildRoot() {
   ensureDir(buildRoot, "exports");
   touch(buildRoot, "workspace/.gitkeep");
   touch(buildRoot, "exports/.gitkeep");
-  writeFile(buildRoot, "DMG-CONTENTS-MANIFEST.json", `${JSON.stringify({
-    ok: true,
-    layout: "writable-dmg-contents",
-    createdAt: new Date().toISOString(),
-    app: `${appName}.app`,
-    runtime: "runtime",
-    data: "data",
-    skills: "skills",
-    extensions: "extensions",
-    workspace: "workspace",
-    exports: "exports"
-  }, null, 2)}\n`);
 }
 
-function writeRootLauncher() {
-  writeFile(releaseRoot, `${appName}.command`, [
+function rootLauncherScript() {
+  return [
     "#!/bin/bash",
     "set -euo pipefail",
-    "USB_ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"",
+    "APP_BUNDLE_DIR=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)\"",
+    "USB_ROOT=\"$(cd \"$APP_BUNDLE_DIR/..\" && pwd)\"",
     `APP_NAME="${appName}"`,
     `DMG_PATH="$USB_ROOT/${appName}.dmg"`,
     `MOUNT_DIR="$USB_ROOT/.${appName}-Mount"`,
@@ -131,6 +121,7 @@ function writeRootLauncher() {
     "  if [ -d \"$src\" ]; then",
     "    ditto \"$src\" \"$dst\"",
     "  fi",
+    "  true",
     "}",
     "",
     "sync_exports_out() {",
@@ -138,6 +129,7 @@ function writeRootLauncher() {
     "  [ -d \"$PORTABLE_ROOT/exports\" ] && ditto \"$PORTABLE_ROOT/exports\" \"$USB_ROOT/Exported-Files\"",
     "  [ -d \"$PORTABLE_ROOT/data/.agent-hub/exports\" ] && ditto \"$PORTABLE_ROOT/data/.agent-hub/exports\" \"$USB_ROOT/Exported-Files/agent-hub\"",
     "  [ -d \"$PORTABLE_ROOT/data/.hermes/exports\" ] && ditto \"$PORTABLE_ROOT/data/.hermes/exports\" \"$USB_ROOT/Exported-Files/hermes\"",
+    "  true",
     "}",
     "",
     "sync_into_dmg \"$USB_ROOT/Add-Skills-Here\" \"$PORTABLE_ROOT/skills\"",
@@ -166,29 +158,42 @@ function writeRootLauncher() {
     "sync_exports_out",
     "hdiutil detach \"$MOUNT_DIR\" >/dev/null || hdiutil detach \"$MOUNT_DIR\" -force >/dev/null || true",
     ""
-  ].join("\n"), 0o755);
+  ].join("\n");
 }
 
-function writeRootReadme() {
-  writeFile(releaseRoot, "README-MACOS-DMG-PORTABLE.md", [
-    "# OpenClawPro macOS U盘可写 DMG 便携版",
-    "",
-    "把本目录内所有内容复制到 exFAT U 盘根目录后，双击 `OpenClawPro.command` 启动。",
-    "",
-    "## 根目录文件",
-    "- `OpenClawPro.command`：启动器，会挂载可写 DMG 并启动程序。",
-    "- `OpenClawPro.dmg`：完整程序、runtime、data、skills、extensions 所在的可写磁盘镜像。",
-    "- `Add-Skills-Here/`：手动新增 skill 放这里，启动时会同步进 DMG 内的 `skills/`。",
-    "- `Add-Plugins-Here/`：手动新增插件放这里，启动时会同步进 DMG 内的 `extensions/`。",
-    "- `My-Files/`：大文件、用户材料放这里，不复制进 DMG，只通过软链接给程序读取。",
-    "- `Exported-Files/`：程序退出后会把 DMG 内的导出结果同步到这里。",
-    "",
-    "## 使用注意",
-    "- 正常退出 OpenClawPro 后再弹出 U 盘。",
-    "- 不要在程序运行或 DMG 仍挂载时直接拔 U 盘。",
-    "- 如果 macOS 阻止打开，可右键打开 `OpenClawPro.command`，或执行 `xattr -dr com.apple.quarantine /Volumes/<U盘名>`。",
+function writeRootLauncherApp() {
+  fs.rmSync(rootLauncherApp, { recursive: true, force: true });
+  const contentsRoot = path.join(rootLauncherApp, "Contents");
+  const macosRoot = path.join(contentsRoot, "MacOS");
+  fs.mkdirSync(macosRoot, { recursive: true });
+  writeFile(rootLauncherApp, "Contents/Info.plist", [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+    "<plist version=\"1.0\">",
+    "<dict>",
+    "  <key>CFBundleExecutable</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundleIdentifier</key>",
+    "  <string>com.openclawpro.agenthub.launcher</string>",
+    "  <key>CFBundleName</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundleDisplayName</key>",
+    `  <string>${appName}</string>`,
+    "  <key>CFBundlePackageType</key>",
+    "  <string>APPL</string>",
+    "  <key>CFBundleShortVersionString</key>",
+    "  <string>2.0.0</string>",
+    "  <key>CFBundleVersion</key>",
+    "  <string>2.0.0</string>",
+    "  <key>LSMinimumSystemVersion</key>",
+    "  <string>11.0</string>",
+    "  <key>NSHighResolutionCapable</key>",
+    "  <true/>",
+    "</dict>",
+    "</plist>",
     ""
   ].join("\n"));
+  writeFile(rootLauncherApp, `Contents/MacOS/${appName}`, rootLauncherScript(), 0o755);
 }
 
 function createWritableDmg() {
@@ -218,40 +223,17 @@ function createWritableDmg() {
   fs.rmSync(mountPoint, { recursive: true, force: true });
 }
 
-function writeReleaseManifest() {
-  const stat = fs.statSync(dmgPath);
-  writeFile(releaseRoot, "DMG-USB-MANIFEST.json", `${JSON.stringify({
-    ok: true,
-    layout: "usb-root-writable-dmg",
-    createdAt: new Date().toISOString(),
-    dmg: `${appName}.dmg`,
-    dmgSize,
-    dmgBytes: stat.size,
-    launcher: `${appName}.command`,
-    externalDirs: [
-      "Add-Skills-Here",
-      "Add-Plugins-Here",
-      "My-Files",
-      "Exported-Files"
-    ],
-    mountedPortableRoot: `.${appName}-Mount`
-  }, null, 2)}\n`);
-}
-
 function main() {
   if (process.platform !== "darwin") fail("stage:macos-dmg:rw must be run on macOS.");
   fs.rmSync(releaseRoot, { recursive: true, force: true });
   fs.mkdirSync(releaseRoot, { recursive: true });
   for (const dir of ["Add-Skills-Here", "Add-Plugins-Here", "My-Files", "Exported-Files"]) {
     ensureDir(releaseRoot, dir);
-    touch(releaseRoot, `${dir}/.gitkeep`);
   }
 
   preparePortableBuildRoot();
   createWritableDmg();
-  writeRootLauncher();
-  writeRootReadme();
-  writeReleaseManifest();
+  writeRootLauncherApp();
   fs.rmSync(buildRoot, { recursive: true, force: true });
 
   console.log(JSON.stringify({
@@ -259,7 +241,7 @@ function main() {
     releaseRoot,
     dmgPath,
     dmgSize,
-    launcher: path.join(releaseRoot, `${appName}.command`)
+    launcher: rootLauncherApp
   }, null, 2));
 }
 

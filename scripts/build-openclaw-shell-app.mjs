@@ -43,6 +43,10 @@ mainSource = mainSource.replace(
   "function loadActivationPage() {\n  if (!mainWindow$1) {",
   "function loadActivationPage() {\n  if (process.env.OPENCLAW_DEV_SKIP_LICENSE === \"1\") {\n    const indexPath = path$1.join(__dirname, \"..\", \"assets\", \"main\", \"index.html\");\n    console.log(\"[loadActivationPage] DEV license skip: loading\", indexPath);\n    mainWindow$1?.loadFile(indexPath);\n    return;\n  }\n  if (!mainWindow$1) {"
 );
+mainSource = mainSource.replace(
+  "async function getAppDriveInfo() {\n  let targetPath = process.execPath;",
+  "async function getAppDriveInfo() {\n  let targetPath = process.env.AGENT_HUB_USB_ROOT?.trim() || process.execPath;"
+);
 mainSource = mainSource.replaceAll(
   'path$1.join(__dirname, "..", "preload", "index.js")',
   'path$1.join(__dirname, "..", "preload", "index.cjs")'
