@@ -3,8 +3,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const releaseRoot = path.resolve(process.env.MACOS_RELEASE_ROOT || path.join(projectRoot, "release", "macos-portable-staging"));
 const platformId = process.env.MACOS_PORTABLE_PLATFORM || (process.arch === "arm64" ? "macos-arm64" : "macos-x64");
+const exfatCompat = process.env.MACOS_EXFAT_COMPAT === "1";
+const releaseName = exfatCompat ? "macos-portable-exfat-staging" : "macos-portable-staging";
+const releaseRoot = path.resolve(process.env.MACOS_RELEASE_ROOT || path.join(projectRoot, "release", releaseName));
 const appName = "OpenClawPro";
 const sourceMacosRoot = path.join(projectRoot, "macos");
 const requiredRuntimePaths = [
@@ -189,6 +191,98 @@ function writeLauncher() {
   fs.chmodSync(launcher, 0o755);
 }
 
+function collectSymlinks(root) {
+  const links = [];
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      const stat = fs.lstatSync(full);
+      if (stat.isSymbolicLink()) {
+        links.push(full);
+      } else if (stat.isDirectory()) {
+        stack.push(full);
+      }
+    }
+  }
+  return links.sort();
+}
+
+function materializeSymlink(linkPath) {
+  const realPath = fs.realpathSync(linkPath);
+  const stat = fs.statSync(realPath);
+  fs.rmSync(linkPath, { recursive: true, force: true });
+  if (stat.isDirectory()) {
+    fs.cpSync(realPath, linkPath, { recursive: true, dereference: true, verbatimSymlinks: false });
+  } else {
+    fs.copyFileSync(realPath, linkPath);
+    try {
+      fs.chmodSync(linkPath, stat.mode);
+    } catch {
+    }
+  }
+}
+
+function chmodTree(root, mode = 0o755) {
+  if (!fs.existsSync(root)) return;
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop();
+    const stat = fs.lstatSync(current);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(current)) stack.push(path.join(current, entry));
+    } else if (stat.isFile()) {
+      try {
+        fs.chmodSync(current, mode);
+      } catch {
+      }
+    }
+  }
+}
+
+function clearQuarantine(root) {
+  const result = spawnSync("xattr", ["-dr", "com.apple.quarantine", root], {
+    encoding: "utf8",
+    windowsHide: true
+  });
+  return {
+    ok: result.status === 0,
+    stderr: (result.stderr || "").trim()
+  };
+}
+
+function makeExfatCompatible() {
+  const symlinksBefore = collectSymlinks(releaseRoot);
+  for (const link of symlinksBefore) materializeSymlink(link);
+  const symlinksAfter = collectSymlinks(releaseRoot);
+  const executableRoots = [
+    path.join(releaseRoot, "OpenClawPro.command"),
+    path.join(releaseRoot, "macos", `${appName}.app`, "Contents", "MacOS"),
+    path.join(releaseRoot, "runtime", platformId, "node", "bin"),
+    path.join(releaseRoot, "runtime", platformId, "openclaw", "bin"),
+    path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", ".bin"),
+    path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", "openclaw", "node_modules", ".bin"),
+    path.join(releaseRoot, "runtime", platformId, "HermesPortable", "python", "bin"),
+    path.join(releaseRoot, "runtime", platformId, "HermesPortable", "venv", "bin")
+  ];
+  for (const item of executableRoots) chmodTree(item);
+  const quarantine = clearQuarantine(releaseRoot);
+  const report = {
+    ok: symlinksAfter.length === 0,
+    mode: "exfat",
+    materializedSymlinks: symlinksBefore.length,
+    remainingSymlinks: symlinksAfter.map((item) => path.relative(releaseRoot, item)),
+    executableRoots: executableRoots
+      .filter((item) => fs.existsSync(item))
+      .map((item) => path.relative(releaseRoot, item)),
+    quarantine
+  };
+  writeFile("EXFAT-COMPATIBILITY.json", `${JSON.stringify(report, null, 2)}\n`);
+  if (!report.ok) fail(`exFAT compatibility failed; remaining symlinks:\n${report.remainingSymlinks.join("\n")}`);
+  return report;
+}
+
 function verifyWechatPlugin() {
   const source = path.join(releaseRoot, "extensions", "openclaw-weixin");
   const target = path.join(releaseRoot, "data", ".openclaw", "extensions", "openclaw-weixin");
@@ -213,7 +307,7 @@ function runtimeReport() {
   return { platformId, ok: missing.length === 0, required, missing };
 }
 
-function writeReleaseDocs(report) {
+function writeReleaseDocs(report, exfatReport = null) {
   writeFile("README-MACOS-PORTABLE.md", [
     "# OpenClawPro Agent Hub macOS Portable",
     "",
@@ -230,6 +324,13 @@ function writeReleaseDocs(report) {
     report.ok ? "- runtime 检查通过。" : "- runtime 仍不完整，OpenClaw/Hermes 进程会在启动时显示缺失项。",
     ...report.missing.map((item) => `  - 缺少 ${item}`),
     "",
+    "## exFAT 兼容",
+    exfatReport
+      ? `- 已启用 exFAT 兼容：已实体化 ${exfatReport.materializedSymlinks} 个符号链接，剩余符号链接 ${exfatReport.remainingSymlinks.length} 个。`
+      : "- 当前目录保留 macOS 原生符号链接。如果要拷到 exFAT U 盘，请使用 `npm run stage:macos-portable:exfat` 生成兼容目录。",
+    "- 如果 macOS 阻止打开，请右键打开一次，或在终端执行 `xattr -dr com.apple.quarantine <目录>`。",
+    "- 如果双击 `.command` 没反应，请在终端执行 `bash <目录>/OpenClawPro.command`。",
+    "",
     "首次测试可先确认 UI、授权页、模型配置页面、日志和环境检查页面是否正常。要完整测试 OpenClaw Gateway 与 Hermes，需要补齐上面的 runtime 文件。",
     ""
   ].join("\n"));
@@ -241,7 +342,8 @@ function writeReleaseDocs(report) {
     includesRuntime: report.ok,
     excludesUserData: true,
     start: ["OpenClawPro.command", "macos/OpenClawPro.app"],
-    runtime: report
+    runtime: report,
+    exfat: exfatReport
   }, null, 2)}\n`);
 }
 
@@ -261,14 +363,16 @@ function main() {
   writeCleanData();
   verifyWechatPlugin();
   writeLauncher();
+  const exfatReport = exfatCompat ? makeExfatCompatible() : null;
   const report = runtimeReport();
-  writeReleaseDocs(report);
+  writeReleaseDocs(report, exfatReport);
   console.log(JSON.stringify({
     ok: true,
     releaseRoot,
     app: path.join(releaseRoot, "macos", `${appName}.app`),
     launcher: path.join(releaseRoot, "OpenClawPro.command"),
-    runtime: report
+    runtime: report,
+    exfat: exfatReport
   }, null, 2));
 }
 
