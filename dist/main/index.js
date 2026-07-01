@@ -2754,6 +2754,7 @@ function updateModelsField(config, modelsData) {
     providerMap[providerName].models.push({
       id: modelId,
       name: modelId,
+      ...(model.isCifuDefault === true || model.isCifuDefault === 1 ? { isCifuDefault: 1 } : {}),
       input: ["text", "image"],
       contextWindow: 128e3,
       maxTokens: 4096

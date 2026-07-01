@@ -274,6 +274,7 @@ export class OpenClawRuntime implements AgentRuntime {
               {
                 id: cifuModelName,
                 name: cifuModelName,
+                isCifuDefault: 1,
                 input: ["text", "image"],
                 contextWindow: 128000,
                 maxTokens: 4096
