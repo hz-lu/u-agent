@@ -59,6 +59,10 @@ function touch(relPath) {
 function createOpenClawConfig() {
   const modelRef = `${cifuProvider}/${cifuModelName}`;
   return {
+    meta: {
+      lastTouchedVersion: "2026.6.5",
+      lastTouchedAt: new Date().toISOString()
+    },
     gateway: {
       mode: "local",
       bind: "loopback",

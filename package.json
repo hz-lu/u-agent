@@ -27,6 +27,7 @@
     "stage:windows-portable:slim": "cross-env WINDOWS_RUNTIME_PROFILE=slim node scripts/stage-windows-portable-test.mjs",
     "stage:macos-portable": "node scripts/stage-macos-portable-test.mjs",
     "stage:macos-portable:exfat": "cross-env MACOS_EXFAT_COMPAT=1 node scripts/stage-macos-portable-test.mjs",
+    "stage:macos-usb-root:exfat": "cross-env MACOS_EXFAT_COMPAT=1 MACOS_USB_ROOT_LAYOUT=1 node scripts/stage-macos-portable-test.mjs",
     "release:windows-dir": "node scripts/stage-windows-release-dir.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",

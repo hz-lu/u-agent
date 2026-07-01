@@ -180,7 +180,7 @@ const checks = {
   hermesMacX64Runtime: exists("runtime/macos-x64/HermesPortable/venv/bin/hermes") || exists("runtime/HermesPortable-macos-x64/venv/bin/hermes"),
   hermesLinuxX64Runtime: exists("runtime/linux-x64/HermesPortable/venv/bin/hermes") || exists("runtime/HermesPortable-linux-x64/venv/bin/hermes"),
   hermesLinuxArm64Runtime: exists("runtime/linux-arm64/HermesPortable/venv/bin/hermes") || exists("runtime/HermesPortable-linux-arm64/venv/bin/hermes"),
-  macLauncher: exists("OpenClawPro.command") || exists("macos/OpenClawPro.app"),
+  macLauncher: exists("OpenClawPro.command") || exists("OpenClawPro.app") || exists("macos/OpenClawPro.app"),
   linuxLauncher: exists("OpenClawPro.sh") || exists("linux/OpenClawPro"),
   universalManifest: anyExists([
     "RELEASE-MANIFEST.json",

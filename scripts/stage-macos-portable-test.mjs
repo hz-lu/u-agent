@@ -5,10 +5,14 @@ import { spawnSync } from "node:child_process";
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const platformId = process.env.MACOS_PORTABLE_PLATFORM || (process.arch === "arm64" ? "macos-arm64" : "macos-x64");
 const exfatCompat = process.env.MACOS_EXFAT_COMPAT === "1";
-const releaseName = exfatCompat ? "macos-portable-exfat-staging" : "macos-portable-staging";
+const usbRootLayout = process.env.MACOS_USB_ROOT_LAYOUT === "1";
+const releaseName = usbRootLayout
+  ? (exfatCompat ? "macos-usb-root-exfat" : "macos-usb-root")
+  : (exfatCompat ? "macos-portable-exfat-staging" : "macos-portable-staging");
 const releaseRoot = path.resolve(process.env.MACOS_RELEASE_ROOT || path.join(projectRoot, "release", releaseName));
 const appName = "OpenClawPro";
 const sourceMacosRoot = path.join(projectRoot, "macos");
+const appBundleName = `${appName}.app`;
 const requiredRuntimePaths = [
   `runtime/${platformId}/node/bin/node`,
   `runtime/${platformId}/openclaw/bin/openclaw`,
@@ -60,6 +64,16 @@ function copyFile(source, target) {
   fs.copyFileSync(source, target);
 }
 
+function copyMacosShell() {
+  const sourceAppBundle = path.join(sourceMacosRoot, appBundleName);
+  if (usbRootLayout) {
+    copyDir(sourceAppBundle, path.join(releaseRoot, appBundleName));
+    copyFile(path.join(sourceMacosRoot, "BUILD-MANIFEST.json"), path.join(releaseRoot, "MACOS-SHELL-BUILD-MANIFEST.json"));
+    return;
+  }
+  copyDir(sourceMacosRoot, path.join(releaseRoot, "macos"));
+}
+
 function writeFile(relPath, content) {
   const target = path.join(releaseRoot, relPath);
   assertInside(releaseRoot, target);
@@ -76,6 +90,10 @@ function createOpenClawConfig() {
   const cifuModelName = "请填写模型名称";
   const modelRef = `${cifuProvider}/${cifuModelName}`;
   return {
+    meta: {
+      lastTouchedVersion: "2026.6.5",
+      lastTouchedAt: new Date().toISOString()
+    },
     gateway: {
       mode: "local",
       bind: "loopback",
@@ -180,12 +198,13 @@ function writeCleanData() {
 
 function writeLauncher() {
   const launcher = path.join(releaseRoot, "OpenClawPro.command");
+  const appRelPath = usbRootLayout ? appBundleName : path.join("macos", appBundleName);
   fs.writeFileSync(launcher, [
     "#!/bin/bash",
     "set -e",
     "DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"",
     "export AGENT_HUB_ROOT=\"$DIR\"",
-    "open \"$DIR/macos/OpenClawPro.app\"",
+    `open "$DIR/${appRelPath}"`,
     ""
   ].join("\n"), "utf8");
   fs.chmodSync(launcher, 0o755);
@@ -258,7 +277,7 @@ function makeExfatCompatible() {
   const symlinksAfter = collectSymlinks(releaseRoot);
   const executableRoots = [
     path.join(releaseRoot, "OpenClawPro.command"),
-    path.join(releaseRoot, "macos", `${appName}.app`, "Contents", "MacOS"),
+    path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName), "Contents", "MacOS"),
     path.join(releaseRoot, "runtime", platformId, "node", "bin"),
     path.join(releaseRoot, "runtime", platformId, "openclaw", "bin"),
     path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", ".bin"),
@@ -308,13 +327,16 @@ function runtimeReport() {
 }
 
 function writeReleaseDocs(report, exfatReport = null) {
+  const appPath = usbRootLayout ? appBundleName : `macos/${appBundleName}`;
   writeFile("README-MACOS-PORTABLE.md", [
     "# OpenClawPro Agent Hub macOS Portable",
     "",
-    "这是 macOS 便携测试目录。双击 `OpenClawPro.command` 或 `macos/OpenClawPro.app` 启动。",
+    usbRootLayout
+      ? "这是 macOS U 盘根目录布局。把本目录内的所有内容复制到 U 盘根目录后，双击 `OpenClawPro.command` 或 `OpenClawPro.app` 启动。"
+      : "这是 macOS 便携测试目录。双击 `OpenClawPro.command` 或 `macos/OpenClawPro.app` 启动。",
     "",
     "## 当前目录",
-    "- `macos/OpenClawPro.app`：macOS Electron 程序壳。",
+    `- \`${appPath}\`：macOS Electron 程序壳。`,
     "- `runtime/`：macOS OpenClaw/Hermes/Node/Python 运行时目录。",
     "- `skills/`：OpenClaw 与 Hermes 共用技能目录。",
     "- `extensions/`：离线插件目录。",
@@ -337,11 +359,12 @@ function writeReleaseDocs(report, exfatReport = null) {
   writeFile("RELEASE-MANIFEST.json", `${JSON.stringify({
     ok: true,
     platform: platformId,
+    layout: usbRootLayout ? "usb-root" : "portable-staging",
     releaseRoot,
     createdAt: new Date().toISOString(),
     includesRuntime: report.ok,
     excludesUserData: true,
-    start: ["OpenClawPro.command", "macos/OpenClawPro.app"],
+    start: ["OpenClawPro.command", appPath],
     runtime: report,
     exfat: exfatReport
   }, null, 2)}\n`);
@@ -355,7 +378,8 @@ function main() {
   fs.rmSync(releaseRoot, { recursive: true, force: true });
   fs.mkdirSync(releaseRoot, { recursive: true });
   for (const name of ["macos", "runtime", "skills", "extensions"]) removeChild(name);
-  copyDir(sourceMacosRoot, path.join(releaseRoot, "macos"));
+  removeChild(appBundleName);
+  copyMacosShell();
   copyDir(path.join(projectRoot, "runtime"), path.join(releaseRoot, "runtime"));
   copyFile(path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"), path.join(releaseRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"));
   copyDir(path.join(projectRoot, "skills"), path.join(releaseRoot, "skills"));
@@ -369,7 +393,8 @@ function main() {
   console.log(JSON.stringify({
     ok: true,
     releaseRoot,
-    app: path.join(releaseRoot, "macos", `${appName}.app`),
+    layout: usbRootLayout ? "usb-root" : "portable-staging",
+    app: path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName)),
     launcher: path.join(releaseRoot, "OpenClawPro.command"),
     runtime: report,
     exfat: exfatReport
