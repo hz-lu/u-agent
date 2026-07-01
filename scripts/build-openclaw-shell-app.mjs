@@ -47,6 +47,10 @@ mainSource = mainSource.replace(
   "async function getAppDriveInfo() {\n  let targetPath = process.execPath;",
   "async function getAppDriveInfo() {\n  let targetPath = process.env.AGENT_HUB_USB_ROOT?.trim() || process.execPath;"
 );
+mainSource = mainSource.replace(
+  "function getLicensePath() {\n  return path$1.join(getAppRoot(), FILE_LICENSE);\n}",
+  "function getLicensePath() {\n  const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();\n  const licenseRoot = usbRoot ? path$1.resolve(usbRoot) : getAppRoot();\n  return path$1.join(licenseRoot, FILE_LICENSE);\n}"
+);
 mainSource = mainSource.replaceAll(
   'path$1.join(__dirname, "..", "preload", "index.js")',
   'path$1.join(__dirname, "..", "preload", "index.cjs")'

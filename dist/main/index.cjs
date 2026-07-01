@@ -2686,7 +2686,9 @@ function getOpenClawEntry() {
   return path$1.join(getOpenClawPackageRoot(runtimeRoot), FILE_OPENCLAW_MJS);
 }
 function getLicensePath() {
-  return path$1.join(getAppRoot(), FILE_LICENSE);
+  const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();
+  const licenseRoot = usbRoot ? path$1.resolve(usbRoot) : getAppRoot();
+  return path$1.join(licenseRoot, FILE_LICENSE);
 }
 function createLicenseFile() {
   const filePath = getLicensePath();
