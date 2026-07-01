@@ -12,6 +12,7 @@ const mountPoint = path.resolve(process.env.MACOS_DMG_MOUNT_POINT || path.join(p
 const rootLauncherApp = path.join(releaseRoot, `${appName}.app`);
 const dmgPath = path.join(releaseRoot, `${appName}.dmg`);
 const sparsePath = path.join(releaseRoot, `${appName}.sparseimage`);
+const launcherSource = path.join(projectRoot, "scripts", "macos-root-launcher.c");
 
 function fail(message) {
   console.error(message);
@@ -164,8 +165,13 @@ function rootLauncherScript() {
     "export AGENT_HUB_EXTERNAL_FILES=\"$USB_ROOT/My-Files\"",
     "export AGENT_HUB_EXPORTS=\"$USB_ROOT/Exported-Files\"",
     "",
-    "echo \"launch app: $PORTABLE_ROOT/$APP_NAME.app\"",
-    "open -W \"$PORTABLE_ROOT/$APP_NAME.app\"",
+    "INNER_EXE=\"$PORTABLE_ROOT/$APP_NAME.app/Contents/MacOS/$APP_NAME\"",
+    "if [ ! -x \"$INNER_EXE\" ]; then",
+    "  show_error \"OpenClawPro 内部程序不存在或不可执行：$INNER_EXE\"",
+    "  exit 1",
+    "fi",
+    "echo \"launch app: $INNER_EXE\"",
+    "\"$INNER_EXE\"",
     "echo \"app exited; syncing exports\"",
     "sync_exports_out",
     "hdiutil detach \"$MOUNT_DIR\" >/dev/null || hdiutil detach \"$MOUNT_DIR\" -force >/dev/null || true",
@@ -178,7 +184,9 @@ function writeRootLauncherApp() {
   fs.rmSync(rootLauncherApp, { recursive: true, force: true });
   const contentsRoot = path.join(rootLauncherApp, "Contents");
   const macosRoot = path.join(contentsRoot, "MacOS");
+  const resourcesRoot = path.join(contentsRoot, "Resources");
   fs.mkdirSync(macosRoot, { recursive: true });
+  fs.mkdirSync(resourcesRoot, { recursive: true });
   writeFile(rootLauncherApp, "Contents/Info.plist", [
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
@@ -206,7 +214,17 @@ function writeRootLauncherApp() {
     "</plist>",
     ""
   ].join("\n"));
-  writeFile(rootLauncherApp, `Contents/MacOS/${appName}`, rootLauncherScript(), 0o755);
+  writeFile(rootLauncherApp, "Contents/Resources/launcher.sh", rootLauncherScript(), 0o755);
+  run("clang", [
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-mmacosx-version-min=11.0",
+    launcherSource,
+    "-o",
+    path.join(macosRoot, appName)
+  ]);
+  fs.chmodSync(path.join(macosRoot, appName), 0o755);
 }
 
 function createWritableDmg() {
