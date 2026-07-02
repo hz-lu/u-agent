@@ -21521,10 +21521,38 @@ function isRunningFromUSB(appPath) {
     return false;
   }
 }
+function getMacDiskInfoValue(info, label) {
+  const match = info.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "m"));
+  return match && match[1] ? match[1].trim() : null;
+}
+function getMacUsbSerialFromIoreg(wholeDisk) {
+  try {
+    const ioregOutput = child_process.execFileSync("ioreg", ["-r", "-c", "IOUSBMassStorageInterfaceNub", "-l", "-w0"], {
+      encoding: "utf8",
+      timeout: 5e3
+    });
+    const sections = ioregOutput.split(/\n(?=\+-o )/);
+    const serials = [];
+    for (const section of sections) {
+      const serialMatch = section.match(/"(?:kUSBSerialNumberString|USB Serial Number)"\s*=\s*"([^"]+)"/);
+      if (!serialMatch || !serialMatch[1].trim()) continue;
+      const serial2 = serialMatch[1].trim();
+      if (wholeDisk && section.includes(`"BSD Name" = "${wholeDisk}"`)) {
+        return serial2;
+      }
+      serials.push(serial2);
+    }
+    const uniqueSerials = [...new Set(serials)];
+    return uniqueSerials.length === 1 ? uniqueSerials[0] : null;
+  } catch (error) {
+    console.error("[usbSerial] getMacUsbSerialFromIoreg failed:", error.message);
+    return null;
+  }
+}
 function getVolumeSerialMac(appPath) {
   try {
     const targetPath = appPath || process.execPath;
-    const dfOutput = child_process.execSync(`df "${targetPath}"`, { encoding: "utf8" });
+    const dfOutput = child_process.execFileSync("df", [targetPath], { encoding: "utf8" });
     const lines = dfOutput.trim().split("\n");
     if (lines.length < 2) return null;
     const fields = lines[1].trim().split(/\s+/);
@@ -21534,12 +21562,17 @@ function getVolumeSerialMac(appPath) {
     if (!mountPoint.startsWith("/Volumes/") || mountPoint === "/") {
       return null;
     }
-    const diskInfo = child_process.execSync(`diskutil info "${device}"`, { encoding: "utf8" });
+    const diskInfo = child_process.execFileSync("diskutil", ["info", device], { encoding: "utf8" });
     const serialMatch = diskInfo.match(/Volume Serial Number:\s*(.+)/);
     if (serialMatch && serialMatch[1].trim()) {
       return serialMatch[1].trim();
     }
-    const uuidMatch = diskInfo.match(/Device UUID:\s*(.+)/);
+    const wholeDisk = getMacDiskInfoValue(diskInfo, "Part of Whole") || path$1.basename(device);
+    const usbSerial = getMacUsbSerialFromIoreg(wholeDisk);
+    if (usbSerial) {
+      return usbSerial;
+    }
+    const uuidMatch = diskInfo.match(/(?:Device|Volume) UUID:\s*(.+)/);
     if (uuidMatch && uuidMatch[1].trim()) {
       return uuidMatch[1].trim();
     }
