@@ -19759,6 +19759,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   const OPENCLAW_INLINE_ATTACHMENT_MAX = 1536 * 1024;
   const OPENCLAW_TOTAL_INLINE_MAX = 2 * 1024 * 1024;
   const pendingOpenClawMessage = /* @__PURE__ */ ref(null);
+  const hasPendingOpenClawMessage = computed(() => !!pendingOpenClawMessage.value);
   let _flushingOpenClawQueue = false;
   async function connectToGateway() {
     const now = Date.now();
@@ -21212,7 +21213,15 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sk = ensureActiveSession();
     if (!sk || !text2?.trim() && !attachments?.length) return;
     if (text2?.trim() && handleCommand(text2.trim())) return;
-    const shouldQueue = !_isOpenClawSendPathAvailable() || sending.value;
+    if (sending.value) {
+      appendOpenClawNotice(sk, "OpenClaw 正在处理上一条消息，本条暂未发送。请等待当前回复完成后再发送，或点击停止后重新发送。", "done");
+      return;
+    }
+    if (pendingOpenClawMessage.value) {
+      appendOpenClawNotice(sk, "OpenClaw 尚未完全启动，上一条消息仍在等待发送。请等待启动完成，或点击停止后重新发送。", "done");
+      return;
+    }
+    const shouldQueue = !_isOpenClawSendPathAvailable();
     const validation = validateOpenClawPayload(text2, attachments, shouldQueue);
     const userMsg = {
       id: crypto.randomUUID(),
@@ -21245,10 +21254,6 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     };
     if (!_isOpenClawSendPathAvailable()) {
       queueOpenClawMessage(item, "OpenClaw 尚未完全启动");
-      return;
-    }
-    if (sending.value) {
-      queueOpenClawMessage(item, "OpenClaw 正在处理上一条消息");
       return;
     }
     await sendOpenClawToGateway(item);
@@ -21327,6 +21332,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     inputText,
     sending,
     currentRunId,
+    hasPendingOpenClawMessage,
     showCommandPalette,
     profile,
     // computed
@@ -25417,7 +25423,7 @@ const _sfc_main$c = {
     }
     function handleSend() {
       const text2 = localText.value.trim();
-      if (!canSend.value) return;
+      if (!canSend.value || props.sending) return;
       emit2("send", text2 || "", attachments.value.length ? [...attachments.value] : void 0);
       localText.value = "";
       emit2("update:modelValue", "");
@@ -25566,7 +25572,7 @@ const _sfc_main$c = {
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
             ]),
-            false && __props.sending ? (openBlock(), createElementBlock("button", {
+            __props.sending ? (openBlock(), createElementBlock("button", {
               key: 0,
               class: "send-btn stop-btn",
               onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("stop")),
@@ -25589,7 +25595,7 @@ const _sfc_main$c = {
             ])])) : (openBlock(), createElementBlock("button", {
               key: 1,
               class: "send-btn",
-              disabled: !canSend.value,
+              disabled: !canSend.value || __props.sending,
               onClick: handleSend,
               title: "发送"
             }, [..._cache[6] || (_cache[6] = [
@@ -26121,33 +26127,42 @@ const _sfc_main$9 = {
       aiAvatarImg: "",
       aiColor: "#4edea3"
     });
-    const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
+    const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending || store.hasPendingOpenClawMessage : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
     const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady);
     const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && store.isReady && !store.sending : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
-      if (!store.sending) return false;
-      const msgs = store.currentMessages;
-      if (!msgs.length) return false;
-      const last = msgs[msgs.length - 1];
-      return last.role === "user";
+      return !!store.sending || !!store.hasPendingOpenClawMessage;
     });
+    function isPlaceholderSessionModelId(modelId) {
+      const text2 = String(modelId || "").trim();
+      return !text2 || text2 === "cifu-tech-default" || text2.includes("请填写模型名称") || text2.toLowerCase() === "please-fill-model-name";
+    }
     const sessionModels = computed(
       () => modelsStore.selectedModels.map((m) => ({
         id: m.provider && m.model ? `${m.provider}/${m.model}` : m.value,
         name: m.label,
-        provider: m.provider || m.source
-      }))
+        provider: m.provider || m.source,
+        model: m.model,
+        value: m.value
+      })).filter((model) => !isPlaceholderSessionModelId(model.id || model.model || model.value))
     );
+    function firstRealSessionModelId() {
+      const found = sessionModels.value.find((model) => !isPlaceholderSessionModelId(model.id || model.model || model.value));
+      return found?.id || found?.model || null;
+    }
     const sessionCurrentModelId = computed(() => {
       const sk = store.activeSessionKey;
       if (sk && store.sessionModelMap[sk]) {
-        return store.sessionModelMap[sk];
+        const mapped = store.sessionModelMap[sk];
+        if (!isPlaceholderSessionModelId(mapped)) return mapped;
       }
       const current = modelsStore.currentModel?.value || modelsStore.currentModel;
-      if (current?.provider && current?.model) return `${current.provider}/${current.model}`;
-      return current?.value || null;
+      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
+      const currentValue = current?.value || null;
+      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
+      return firstRealSessionModelId();
     });
     let _storeInitDone = false;
     onMounted(() => {
@@ -26173,7 +26188,7 @@ const _sfc_main$9 = {
       loadingModels.value = false;
     }
     function handleNewSession() {
-      const modelId = modelsStore.currentModel?.value || null;
+      const modelId = sessionCurrentModelId.value || firstRealSessionModelId() || null;
       store.createSession(modelId);
     }
     function handleModelSelect(modelId) {
@@ -26514,7 +26529,7 @@ const _sfc_main$9 = {
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
-      const found = modelsStore.selectedModels.find((item) => item.value === selectedId || item.model === selectedId || item.label === selectedId) || modelsStore.selectedModels[0] || {};
+      const found = modelsStore.selectedModels.find((item) => item.value === selectedId || item.model === selectedId || item.label === selectedId || `${item.provider || ""}/${item.model || ""}` === selectedId) || modelsStore.selectedModels.find((item) => item?.provider && item?.model && item?.value !== "cifu-tech-default" && !isPlaceholderSessionModelId(item.model)) || {};
       const baseUrl = found.base || found.baseUrl || "";
       const provider = baseUrl ? "openai-api" : found.provider || (String(found.value || "").split("-")[0]) || "";
       return {
