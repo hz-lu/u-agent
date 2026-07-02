@@ -70,7 +70,11 @@ function copyDir(source, target) {
   if (!fs.existsSync(source)) fail(`Missing source directory: ${source}`);
   assertInside(releaseRoot, target);
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.cpSync(source, target, { recursive: true, verbatimSymlinks: true });
+  fs.cpSync(source, target, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (sourcePath) => !path.basename(sourcePath).startsWith("._")
+  });
 }
 
 function copyDirFiltered(source, target, filter) {
@@ -80,7 +84,7 @@ function copyDirFiltered(source, target, filter) {
   fs.cpSync(source, target, {
     recursive: true,
     verbatimSymlinks: true,
-    filter: (sourcePath) => filter(path.relative(source, sourcePath).replace(/\\/g, "/"), sourcePath)
+    filter: (sourcePath) => !path.basename(sourcePath).startsWith("._") && filter(path.relative(source, sourcePath).replace(/\\/g, "/"), sourcePath)
   });
 }
 
@@ -350,6 +354,7 @@ function shouldCopyOpenClawPath(relPath) {
   }
   const parts = relPath.split("/");
   const name = parts[parts.length - 1];
+  if (name.startsWith("._")) return false;
   if (name === ".DS_Store" || name === ".gitkeep") return false;
   if (parts.includes(".bin")) return false;
   if (parts.includes("docs")) return false;
@@ -373,6 +378,7 @@ function shouldCopyHermesPath(relPath) {
   if (!relPath) return true;
   const parts = relPath.split("/");
   const name = parts[parts.length - 1];
+  if (name.startsWith("._")) return false;
   if (name === ".DS_Store" || name === ".gitkeep") return false;
   if (parts.includes("__pycache__")) return false;
   if (parts.some((part) => part === "test" || part === "tests" || part === "__tests__")) return false;

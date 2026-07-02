@@ -179,6 +179,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcStartHermes: (options) => electron.ipcRenderer.invoke("hermes:start", options),
   ipcStopHermes: () => electron.ipcRenderer.invoke("hermes:stop"),
   ipcGetHermesStatus: () => electron.ipcRenderer.invoke("hermes:getStatus"),
+  ipcVerifyHermesEnvironment: () => electron.ipcRenderer.invoke("hermes:verifyEnvironment"),
   ipcStartHermesDashboard: (options) => electron.ipcRenderer.invoke("hermes:startDashboard", options),
   ipcStartHermesApiServer: (options) => electron.ipcRenderer.invoke("hermes:startApiServer", options),
   ipcOpenHermesConfig: () => electron.ipcRenderer.invoke("hermes:openConfig"),

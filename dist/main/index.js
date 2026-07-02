@@ -517,12 +517,69 @@ class HermesManager {
     this._lastStatusSnapshot = null;
     this._lastStatusAt = 0;
     this._statusRefreshInFlight = null;
+    this._lastAppleDoubleCleanupAt = 0;
+    this._lastAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
   }
   getHermesDataRoot() {
     return path$1.join(getAppRoot(), "data", ".hermes");
   }
   getHermesLogsRoot() {
     return path$1.join(this.getHermesDataRoot(), "logs");
+  }
+  cleanupAppleDoubleFiles(rootDirs = null, options = {}) {
+    if (process.platform !== "darwin") return { removed: 0, errors: [] };
+    const force = options?.force === true;
+    const throttleMs = Number.isFinite(Number(options?.throttleMs)) ? Number(options.throttleMs) : 5 * 60 * 1000;
+    const usesDefaultRoots = !(Array.isArray(rootDirs) && rootDirs.length);
+    const now = Date.now();
+    if (usesDefaultRoots && !force && throttleMs > 0 && this._lastAppleDoubleCleanupAt && now - this._lastAppleDoubleCleanupAt < throttleMs) {
+      return { ...(this._lastAppleDoubleCleanup || { removed: 0, errors: [] }), skipped: true };
+    }
+    const roots = Array.isArray(rootDirs) && rootDirs.length ? rootDirs : [this.getHermesDataRoot(), this.getPortableRoot()];
+    const result = { removed: 0, errors: [] };
+    const stack = [];
+    const seenRoots = /* @__PURE__ */ new Set();
+    for (const rootDir of roots) {
+      const normalized = path$1.resolve(rootDir);
+      if (seenRoots.has(normalized)) continue;
+      seenRoots.add(normalized);
+      stack.push(normalized);
+    }
+    while (stack.length) {
+      const dir = stack.pop();
+      if (!dir || !fs$1.existsSync(dir)) continue;
+      let entries = [];
+      try {
+        entries = fs$1.readdirSync(dir, { withFileTypes: true });
+      } catch (err) {
+        result.errors.push((err?.message || String(err)) + ": " + dir);
+        continue;
+      }
+      for (const entry of entries) {
+        const full = path$1.join(dir, entry.name);
+        if (entry.name.startsWith("._")) {
+          try {
+            fs$1.rmSync(full, { recursive: true, force: true });
+            result.removed += 1;
+          } catch (err) {
+            result.errors.push((err?.message || String(err)) + ": " + full);
+          }
+          continue;
+        }
+        if (entry.isDirectory()) stack.push(full);
+      }
+    }
+    if (result.removed || result.errors.length) {
+      this.writeLauncherLog(result.errors.length ? "stderr" : "system", "[macos-metadata] removed=" + result.removed + " errors=" + result.errors.length + " roots=" + [...seenRoots].join(", ") + (result.errors.length ? "\n" + result.errors.slice(0, 5).join("\n") : ""));
+    }
+    if (usesDefaultRoots) {
+      this._lastAppleDoubleCleanupAt = now;
+      this._lastAppleDoubleCleanup = result;
+    }
+    return result;
+  }
+  cleanupWritableAppleDoubleFiles() {
+    return this.cleanupAppleDoubleFiles([this.getHermesDataRoot()], { force: true, throttleMs: 0 });
   }
   writeLauncherLog(type, msg) {
     const text = String(msg || "").trimEnd();
@@ -608,6 +665,7 @@ class HermesManager {
     const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
     return {
       ...process.env,
+      COPYFILE_DISABLE: "1",
       HOME: home,
       USERPROFILE: home,
       XDG_CONFIG_HOME: path$1.join(data, "config"),
@@ -627,6 +685,8 @@ class HermesManager {
   }
   syncOpenClawSkillsToHermes(options = {}) {
     const silent = options?.silent !== false;
+    this.cleanupWritableAppleDoubleFiles();
+    this.cleanupAppleDoubleFiles(null, { force: options?.forceMetadataCleanup === true });
     const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
     const openClawTargetRoot = path$1.join(hermesSkillsRoot, "openclaw");
     const manifestPath = path$1.join(openClawTargetRoot, ".openclaw_sync_manifest.json");
@@ -662,6 +722,7 @@ class HermesManager {
       return candidate;
     }
     function shouldCopySkillPath(rootDir, sourcePath) {
+      if (path$1.basename(sourcePath).startsWith("._")) return false;
       const rel = path$1.relative(rootDir, sourcePath).replace(/\\/g, "/");
       const excluded = new Set([".git", ".github", ".hub", ".archive", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"]);
       return !rel.split("/").some((part) => excluded.has(part));
@@ -670,6 +731,7 @@ class HermesManager {
       const rows = [];
       if (!rootDir || !fs$1.existsSync(rootDir)) return rows;
       for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {
+        if (entry.name.startsWith("._")) continue;
         const full = path$1.join(rootDir, entry.name);
         if (entry.isDirectory()) {
           const skillFile = path$1.join(full, "SKILL.md");
@@ -763,6 +825,10 @@ class HermesManager {
         fs$1.mkdirSync(openClawTargetRoot, { recursive: true });
         const keepNames = new Set(sources.map((item) => item.targetName.toLowerCase()).concat(["description.md", ".openclaw_sync_manifest.json"]));
         for (const entry of fs$1.readdirSync(openClawTargetRoot, { withFileTypes: true })) {
+          if (entry.name.startsWith("._")) {
+            fs$1.rmSync(path$1.join(openClawTargetRoot, entry.name), { recursive: true, force: true });
+            continue;
+          }
           if (keepNames.has(entry.name.toLowerCase())) continue;
           fs$1.rmSync(path$1.join(openClawTargetRoot, entry.name), { recursive: true, force: true });
         }
@@ -998,6 +1064,8 @@ class HermesManager {
   }
   verifyHermesMemory(options = {}) {
     const silent = options?.silent !== false;
+    this.cleanupWritableAppleDoubleFiles();
+    this.cleanupAppleDoubleFiles(null, { force: options?.forceMetadataCleanup === true });
     const data = path$1.join(getAppRoot(), "data", ".hermes");
     const memoryDir = path$1.join(data, "memories");
     const configPath = path$1.join(data, "config.yaml");
@@ -1155,6 +1223,7 @@ class HermesManager {
   }
   snapshot(options = {}) {
     const fast = options?.fast === true;
+    const macosMetadataCleanup = fast ? { removed: 0, errors: [] } : this.cleanupAppleDoubleFiles();
     const root = this.getPortableRoot();
     const hermesBin = this.getHermesBin();
     const python = this.getPortablePython();
@@ -1169,6 +1238,7 @@ class HermesManager {
       function walk(dir) {
         if (!fs$1.existsSync(dir)) return;
         for (const entry of fs$1.readdirSync(dir, { withFileTypes: true })) {
+          if (entry.name.startsWith("._")) continue;
           const full = path$1.join(dir, entry.name);
           if (entry.isDirectory()) {
             if (fs$1.existsSync(path$1.join(full, "SKILL.md")) || fs$1.existsSync(path$1.join(full, "DESCRIPTION.md"))) seen.add(path$1.relative(rootDir, full).replace(/\\/g, "/"));
@@ -1245,8 +1315,17 @@ class HermesManager {
       modelBridgeReady: !!primaryModel,
       modelBridge: primaryModel || "未配置 OpenClaw 当前模型",
       lastError: this.lastError,
-      launcherLogPath: path$1.join(this.getHermesLogsRoot(), "launcher.log")
+      launcherLogPath: path$1.join(this.getHermesLogsRoot(), "launcher.log"),
+      macosMetadataCleanup
     };
+  }
+  verifyEnvironment() {
+    const cleanup = this.cleanupAppleDoubleFiles(null, { force: true });
+    const writableCleanup = this.cleanupWritableAppleDoubleFiles();
+    const memoryReport = this.verifyHermesMemory({ silent: true, forceMetadataCleanup: false });
+    const skillsReport = this.syncOpenClawSkillsToHermes({ silent: true, forceMetadataCleanup: false });
+    const snapshot = this.snapshot({ fast: false, forceMetadataCleanup: false });
+    return { ...snapshot, macosMetadataCleanup: { ...cleanup, writableRemoved: writableCleanup.removed, writableErrors: writableCleanup.errors }, memoryReport, skillsReport };
   }
   emitStatus() {
     safeSend("hermes-status", this.snapshot({ fast: true }));
@@ -1269,6 +1348,7 @@ class HermesManager {
     }
   }
   async start(options = {}) {
+    this.cleanupAppleDoubleFiles(null, { force: options?.forceMetadataCleanup === true });
     const root = this.getPortableRoot();
     const configServer = path$1.join(root, "lib", "config_server.py");
     const python = path$1.join(root, "venv", "Scripts", "python.exe");
@@ -1416,6 +1496,7 @@ class HermesManager {
     }
   }
   spawnHermes(args, label, envPatch = {}) {
+    this.cleanupAppleDoubleFiles();
     const root = this.getPortableRoot();
     const defaultEnvPatch = label === "dashboard" ? { HERMES_WEB_DIST: path$1.join(root, "hermes-agent", "hermes_cli", "web_dist") } : {};
     const hermesCommand = this.getHermesCommand(args);
@@ -1659,6 +1740,8 @@ class HermesManager {
     if (!fs$1.existsSync(hermesCommand.command)) {
       return { ok: false, error: "Hermes CLI runtime not found: " + hermesCommand.command };
     }
+    this.cleanupWritableAppleDoubleFiles();
+    this.cleanupAppleDoubleFiles();
     function readJsonSafe(filePath) {
       try {
         if (!fs$1.existsSync(filePath)) return null;
@@ -23305,6 +23388,9 @@ function registerIPCHandlers({ gateway }) {
   });
   electron.ipcMain.handle("hermes:getStatus", async () => {
     return await getHermesManager().getStatus({ fast: true });
+  });
+  electron.ipcMain.handle("hermes:verifyEnvironment", async () => {
+    return getHermesManager().verifyEnvironment();
   });
   electron.ipcMain.handle("hermes:getLogs", async (_, options = {}) => {
     const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(300, Number(options.limit))) : 100;

@@ -13088,11 +13088,13 @@ function useEnvCheck() {
       updateItem(id, { status: "checking", statusText: "检测中", detail: "" });
     }
     try {
-      const status = await window.uclaw.ipcGetHermesStatus();
+      const status = window.uclaw.ipcVerifyHermesEnvironment ? await window.uclaw.ipcVerifyHermesEnvironment() : await window.uclaw.ipcGetHermesStatus();
       updateItem("hermes-python", status?.pythonReady ? { status: "pass", statusText: "正常", detail: status.pythonBin || "Portable Python 已就绪" } : { status: "fail", statusText: "缺失", detail: status?.pythonBin || "未找到 portable python" });
       updateItem("hermes-node", status?.nodeReady ? { status: "pass", statusText: "正常", detail: status.nodeBin || "Portable Node.js 已就绪" } : { status: "warn", statusText: "未找到", detail: status?.nodeBin || "Hermes Node runtime 待补齐" });
       updateItem("hermes-cli", status?.hermesReady && status?.sourceReady ? { status: "pass", statusText: "正常", detail: status.hermesBin || "Hermes CLI 已就绪" } : { status: "fail", statusText: "缺失", detail: status?.lastError || status?.hermesBin || "Hermes CLI 或源码不完整" });
-      updateItem("hermes-data", status?.dataReady && status?.configDirReady ? { status: "pass", statusText: "零痕迹", detail: status.dataRoot || "data/.hermes" } : { status: "warn", statusText: "待初始化", detail: status?.dataRoot || "首次启动后创建 U 盘数据目录" });
+      const cleaned = status?.macosMetadataCleanup?.removed || 0;
+      const cleanupText = cleaned ? `；已清理 macOS 元数据 ${cleaned} 个` : "";
+      updateItem("hermes-data", status?.dataReady && status?.configDirReady ? { status: "pass", statusText: "零痕迹", detail: (status.dataRoot || "data/.hermes") + cleanupText } : { status: "warn", statusText: "待初始化", detail: status?.dataRoot || "首次启动后创建 U 盘数据目录" });
       updateItem("hermes-model", status?.modelBridgeReady ? { status: "pass", statusText: "已桥接", detail: status.modelBridge } : { status: "warn", statusText: "未配置", detail: "在模型配置页应用模型后，Hermes 自动复用" });
       updateItem("hermes-memory", status?.memoryReady && status?.memoryWritable ? { status: "pass", statusText: "可读写", detail: `MEMORY ${status.memoryEntryCount || 0} 条；USER ${status.userMemoryEntryCount || 0} 条。报告：${status.memoryReportPath || "未生成"}` } : { status: "warn", statusText: "待验证", detail: status?.memoryReportPath || status?.memoryPath || "请启动 Hermes 后重新检查" });
       updateItem("hermes-skill-growth", status?.skillGrowthReady ? { status: "pass", statusText: "已闭环", detail: status.skillGrowthReportPath || "growth report ready" } : { status: "warn", statusText: "待验证", detail: status?.skillGrowthReportPath || "运行 verify:hermes-skill-growth 后显示结果" });
