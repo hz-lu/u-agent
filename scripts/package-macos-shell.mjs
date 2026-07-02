@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { ensureMacIcon } from "./lib/macos-icon.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const distRoot = path.join(projectRoot, "dist");
@@ -48,8 +49,12 @@ function writeInfoPlist() {
     .replace(/<key>CFBundleExecutable<\/key>\s*<string>[^<]*<\/string>/, `<key>CFBundleExecutable</key>\n\t<string>${appName}</string>`)
     .replace(/<key>CFBundleIdentifier<\/key>\s*<string>[^<]*<\/string>/, "<key>CFBundleIdentifier</key>\n\t<string>com.openclawpro.agenthub</string>")
     .replace(/<key>CFBundleName<\/key>\s*<string>[^<]*<\/string>/, `<key>CFBundleName</key>\n\t<string>${appName}</string>`)
-    .replace(/<key>CFBundleIconFile<\/key>\s*<string>[^<]*<\/string>/, "<key>CFBundleIconFile</key>\n\t<string>electron.icns</string>");
+    .replace(/<key>CFBundleIconFile<\/key>\s*<string>[^<]*<\/string>/, "<key>CFBundleIconFile</key>\n\t<string>icon.icns</string>");
   fs.writeFileSync(plistPath, plist, "utf8");
+}
+
+function copyMacIcon() {
+  fs.copyFileSync(ensureMacIcon(projectRoot), path.join(appResources, "icon.icns"));
 }
 
 function renameExecutable() {
@@ -102,6 +107,7 @@ function main() {
   fs.mkdirSync(macosRoot, { recursive: true });
   fs.cpSync(electronApp, appBundle, { recursive: true, verbatimSymlinks: true });
   renameExecutable();
+  copyMacIcon();
   writeInfoPlist();
 
   fs.rmSync(appRoot, { recursive: true, force: true });

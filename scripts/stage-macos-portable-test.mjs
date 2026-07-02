@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { ensureMacIcon } from "./lib/macos-icon.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const platformId = process.env.MACOS_PORTABLE_PLATFORM || (process.arch === "arm64" ? "macos-arm64" : "macos-x64");
@@ -52,6 +53,15 @@ function removeChild(name) {
   const target = path.join(releaseRoot, name);
   assertInside(releaseRoot, target);
   fs.rmSync(target, { recursive: true, force: true });
+}
+
+function removeReleaseRoot() {
+  fs.rmSync(releaseRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 250
+  });
 }
 
 function copyDir(source, target) {
@@ -136,6 +146,7 @@ function writeRootLauncherApp(sourceAppBundle) {
   fs.mkdirSync(macosRoot, { recursive: true });
   fs.mkdirSync(resourcesRoot, { recursive: true });
   copyDir(sourceAppBundle, path.join(resourcesRoot, innerAppBundleName));
+  fs.copyFileSync(ensureMacIcon(projectRoot), path.join(resourcesRoot, "icon.icns"));
   writeFile(path.join(appBundleName, "Contents", "Info.plist"), [
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
     "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
@@ -149,6 +160,8 @@ function writeRootLauncherApp(sourceAppBundle) {
     `  <string>${appName}</string>`,
     "  <key>CFBundleDisplayName</key>",
     `  <string>${appName}</string>`,
+    "  <key>CFBundleIconFile</key>",
+    "  <string>icon.icns</string>",
     "  <key>CFBundlePackageType</key>",
     "  <string>APPL</string>",
     "  <key>CFBundleShortVersionString</key>",
@@ -642,7 +655,7 @@ function main() {
     fail("stage:macos-portable must be run on macOS.");
   }
   run("npm", ["run", "package:macos-shell"]);
-  fs.rmSync(releaseRoot, { recursive: true, force: true });
+  removeReleaseRoot();
   fs.mkdirSync(releaseRoot, { recursive: true });
   for (const name of ["macos", "runtime", "skills", "extensions"]) removeChild(name);
   removeChild(appBundleName);
