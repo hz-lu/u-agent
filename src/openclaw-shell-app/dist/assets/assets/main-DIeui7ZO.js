@@ -25572,7 +25572,7 @@ const _sfc_main$c = {
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
             ]),
-            false && __props.sending ? (openBlock(), createElementBlock("button", {
+            __props.sending && !canSend.value ? (openBlock(), createElementBlock("button", {
               key: 0,
               class: "send-btn stop-btn",
               onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("stop")),
