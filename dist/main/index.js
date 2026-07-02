@@ -598,7 +598,8 @@ class HermesManager {
     const venvScripts = process.platform === "win32" ? path$1.join(root, "venv", "Scripts") : path$1.join(root, "venv", "bin");
     const venvSitePackages = findPythonSitePackages(root);
     const sourceRoot = path$1.join(root, "hermes-agent");
-    const platformNodeDir = process.platform === "win32" ? path$1.join(root, "node") : path$1.join(getActiveRuntimeDir(), "node", "bin");
+    const sharedNode = path$1.join(getActiveRuntimeDir(), "node");
+    const platformNodeDir = process.platform === "win32" ? path$1.join(root, "node") : fs$1.existsSync(sharedNode) && fs$1.statSync(sharedNode).isFile() ? path$1.dirname(sharedNode) : path$1.join(sharedNode, "bin");
     const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : platformNodeDir;
     const pythonDir = path$1.dirname(this.getPortablePython());
     for (const dir of [data, home, path$1.join(data, "config"), path$1.join(data, "cache"), path$1.join(data, "logs"), path$1.join(data, "memories"), path$1.join(data, "skills"), path$1.join(data, "tmp")]) {
@@ -1157,9 +1158,10 @@ class HermesManager {
     const root = this.getPortableRoot();
     const hermesBin = this.getHermesBin();
     const python = this.getPortablePython();
-    const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : path$1.join(root, "node");
-    const nodeBin = process.platform === "win32" ? path$1.join(nodeDir, "node.exe") : path$1.join(nodeDir, "bin", "node");
-    const npmBin = process.platform === "win32" ? path$1.join(nodeDir, "npm.cmd") : path$1.join(nodeDir, "bin", "npm");
+    const sharedNode = path$1.join(getActiveRuntimeDir(), "node");
+    const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : process.platform === "win32" ? path$1.join(root, "node") : fs$1.existsSync(sharedNode) && fs$1.statSync(sharedNode).isFile() ? path$1.dirname(sharedNode) : path$1.join(sharedNode, "bin");
+    const nodeBin = process.platform === "win32" ? path$1.join(nodeDir, "node.exe") : fs$1.existsSync(sharedNode) && fs$1.statSync(sharedNode).isFile() ? sharedNode : path$1.join(nodeDir, "node");
+    const npmBin = process.platform === "win32" ? path$1.join(nodeDir, "npm.cmd") : path$1.join(nodeDir, "npm");
     const data = path$1.join(getAppRoot(), "data", ".hermes");
     const skillsRoot = path$1.join(data, "skills");
     function countHermesSkills(rootDir) {
@@ -3056,8 +3058,8 @@ function getNodeBin() {
 async function extractRuntime() {
   const runtimeSrc = path$1.join(getAppRoot(), DIR_RUNTIME);
   const runtimeMarker = path$1.join(RUNTIME_DIR, ".extracted");
-  const runtimeHasCli = fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd"));
-  const runtimeHasNode = fs$1.existsSync(path$1.join(RUNTIME_DIR, "node.exe"));
+  const runtimeHasCli = fs$1.existsSync(getOpenClawPath());
+  const runtimeHasNode = fs$1.existsSync(getOpenClawNodePath(getActiveRuntimeDir()));
   if (runtimeHasCli && runtimeHasNode) {
     /* codex-portable-runtime-ready-skip */
     const repair = repairOpenClawRuntimeTemplates(getActiveRuntimeDir());
@@ -3072,7 +3074,7 @@ async function extractRuntime() {
     console.log("[runtime] Runtime source and target are identical; skipping self-extraction");
     return;
   }
-  if (fs$1.existsSync(RUNTIME_DIR) && !fs$1.existsSync(path$1.join(RUNTIME_DIR, ".extracted")) && !fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd"))) {
+  if (fs$1.existsSync(RUNTIME_DIR) && !fs$1.existsSync(path$1.join(RUNTIME_DIR, ".extracted")) && !fs$1.existsSync(getOpenClawPath())) {
     console.log("[runtime] Broken local runtime detected, skipping startup cleanup to avoid blocking on slow USB storage");
   }
   if (fs$1.existsSync(path$1.join(RUNTIME_DIR, ".extracted"))) {
@@ -3161,7 +3163,7 @@ async function extractRuntime() {
       }
     }
   }
-  const criticalFiles = ["openclaw.cmd", "node.exe"];
+  const criticalFiles = process.platform === "win32" ? ["openclaw.cmd", "node.exe"] : ["openclaw", "node"];
   repairOpenClawRuntimeTemplates(RUNTIME_DIR);
   const missingFiles = criticalFiles.filter((f) => !fs$1.existsSync(path$1.join(RUNTIME_DIR, f)));
   if (missingFiles.length > 0) {
@@ -3204,13 +3206,18 @@ function getOpenClawRuntimeBinDir() {
   if (fs$1.existsSync(packagedBin)) return packagedBin;
   return runtimeRoot;
 }
+function getOpenClawNodePath(runtimeRoot = getActiveRuntimeDir()) {
+  if (process.platform === "win32") return path$1.join(runtimeRoot, "node.exe");
+  const rootNode = path$1.join(runtimeRoot, "node");
+  if (fs$1.existsSync(rootNode) && fs$1.statSync(rootNode).isFile()) return rootNode;
+  return path$1.join(runtimeRoot, "node", "bin", "node");
+}
 function getOpenClawRuntimeDiagnosis() {
   const appRoot = getAppRoot();
   const runtimeRoot = getActiveRuntimeDir();
-  const rootRuntime = RUNTIME_DIR;
-  const isWindowsRuntime = process.platform === "win32" || runtimeRoot === rootRuntime;
+  const isWindowsRuntime = process.platform === "win32";
   const binDir = getOpenClawRuntimeBinDir();
-  const nodePath = isWindowsRuntime ? path$1.join(runtimeRoot, "node.exe") : path$1.join(runtimeRoot, "node", "bin", "node");
+  const nodePath = getOpenClawNodePath(runtimeRoot);
   const cliPath = isWindowsRuntime ? path$1.join(runtimeRoot, "openclaw.cmd") : path$1.join(binDir, "openclaw");
   const packageRoot = getOpenClawPackageRoot(runtimeRoot);
   const entry = path$1.join(packageRoot, "openclaw.mjs");
@@ -3555,11 +3562,7 @@ function createGatewayManager() {
         const http22 = require("http");
         const portOpen = await checkTcpPortOpen(port, 350);
         if (portOpen && !resolved) {
-          gatewayRunning = true;
           sendBootPhase("waiting-ready", "Gateway 端口已打开", "Gateway 端口已打开，正在等待 health 和 WebSocket 就绪...", progress);
-          sendGatewayStatus(true);
-          resolved = true;
-          if (onFirstResult) onFirstResult({ success: true, pendingReady: true, portOpen: true });
         }
         const result = await new Promise((res, rej) => {
           const req = http22.get(`http://127.0.0.1:${port}/health`, { timeout: 900 }, (resp) => {
@@ -3695,9 +3698,10 @@ function createGatewayManager() {
   }
   async function startGateway(port = GATEWAY_DEFAULT_PORT) {
     if (gatewayProc) {
-      sendBootPhase("done", "启动成功", "Gateway 已在运行中", 100);
-      sendGatewayStatus(true);
-      return Promise.resolve({ success: true, already: true });
+      sendBootPhase("waiting-ready", "等待就绪", "Gateway 进程已在运行中，正在确认 health 状态...", 60);
+      return new Promise((resolve) => {
+        pollGatewayHealth(port, (result) => resolve({ ...result, already: true }));
+      });
     }
     const runtimeDiag = getOpenClawRuntimeDiagnosis();
     if (!runtimeDiag.ok) {
@@ -3748,8 +3752,7 @@ function createGatewayManager() {
         text.split("\n").forEach((line) => {
           if (line.trim()) sendGatewayLog("stdout", line.trim());
           if (line.includes("[gateway] listening on") || line.includes("gateway ready") || line.includes("http server listening")) {
-            gatewayRunning = true;
-            sendGatewayStatus(true);
+            sendBootPhase("waiting-ready", "Gateway 已启动", "Gateway 已输出启动日志，正在确认 health 状态...", 70);
           }
         });
       });
@@ -3780,7 +3783,7 @@ function createGatewayManager() {
               const delay = Math.min(5e3 * global._gwRestartHistory.length, 15e3);
               console.log(`[gateway] auto-restart in ${delay / 1e3}s (attempt ${global._gwRestartHistory.length}/3)`);
               sendGatewayLog("stderr", `⚠️ Gateway 崩溃，${delay / 1e3}秒后自动重启 (第${global._gwRestartHistory.length}次)...`);
-              sendGatewayStatus(true);
+              sendGatewayStatus(false, classified.title);
               sendBootPhase("waiting-ready", "自动重启", `${delay / 1e3}秒后重启...`, 30);
               setTimeout(() => {
                 if (!gatewayRunning && true) {

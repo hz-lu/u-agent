@@ -16,11 +16,13 @@ const appName = "OpenClawPro";
 const sourceMacosRoot = path.join(projectRoot, "macos");
 const appBundleName = `${appName}.app`;
 const innerAppBundleName = `${appName}-Runtime.app`;
+const openclawTemplateNames = ["AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"];
 const requiredRuntimePaths = [
   "runtime/node",
   "runtime/openclaw",
   "runtime/node_modules/openclaw/openclaw.mjs",
   "runtime/node_modules/openclaw/dist",
+  ...openclawTemplateNames.map((name) => `runtime/node_modules/openclaw/src/agents/templates/${name}`),
   "runtime/HermesPortable/venv/bin/hermes",
   "runtime/HermesPortable/venv/bin/python",
   "runtime/HermesPortable/hermes-agent/pyproject.toml"
@@ -342,6 +344,10 @@ function copyNodeRuntime(sourcePlatformRoot, targetRuntimeRoot) {
 
 function shouldCopyOpenClawPath(relPath) {
   if (!relPath) return true;
+  if (relPath === "src" || relPath === "src/agents" || relPath === "src/agents/templates") return true;
+  if (relPath.startsWith("src/agents/templates/")) {
+    return openclawTemplateNames.includes(path.basename(relPath));
+  }
   const parts = relPath.split("/");
   const name = parts[parts.length - 1];
   if (name === ".DS_Store" || name === ".gitkeep") return false;
@@ -349,8 +355,8 @@ function shouldCopyOpenClawPath(relPath) {
   if (parts.includes("docs")) return false;
   if (parts.includes("scripts") && !relPath.startsWith("node_modules/")) return false;
   if (parts.includes("patches")) return false;
-  if (parts.includes("src")) return false;
-  if (parts.includes("skills")) return false;
+  if (parts.includes("src") && !relPath.startsWith("node_modules/")) return false;
+  if (parts.includes("skills") && !relPath.startsWith("node_modules/")) return false;
   if (parts.some((part) => part === "test" || part === "tests" || part === "__tests__")) return false;
   if (name === "README" || name.startsWith("README.")) return false;
   if (name === "CHANGELOG" || name.startsWith("CHANGELOG.")) return false;

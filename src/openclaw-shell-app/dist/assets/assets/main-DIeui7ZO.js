@@ -13657,7 +13657,7 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     provider: "cifu",
     api: "openai-completions",
     locked: true,
-    isCifuDefault: true
+    isCifuDefault: 1
   };
   const allModels = /* @__PURE__ */ ref([]);
   const selectedModels = /* @__PURE__ */ ref([]);
@@ -13666,19 +13666,28 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     () => selectedModels.value.find((item) => item.isCurrent) || null
   );
   function isCifuModel(model) {
-    const label = String(model?.label || "").trim();
-    return !!model && (model.isCifuDefault || model.value === cifuDefaultModel.value || label === "词符科技");
+    return !!model && (model.isCifuDefault === true || model.isCifuDefault === 1);
   }
   function buildCifuLabel(modelName) {
     const cleanName = String(modelName || "").trim() || "请填写模型名称";
     return "词符科技 / " + cleanName;
   }
+  function isLegacyCifuDefaultDuplicate(model) {
+    if (!model || isCifuModel(model)) return false;
+    const provider = String(model?.provider || "").trim();
+    const modelName = String(model?.model || "").trim();
+    const label = String(model?.label || "").trim();
+    const value = String(model?.value || "").trim();
+    return provider === "cifu" && modelName === cifuDefaultModel.model && (label === buildCifuLabel(cifuDefaultModel.model) || value === `cifu-${cifuDefaultModel.model}` || value === cifuDefaultModel.value);
+  }
   function normalizeSelectedModels(models) {
     const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
     const input = Array.isArray(models) ? models : [];
-    const cifuExisting = input.find(isCifuModel);
-    const others = input.filter((model) => model && !isCifuModel(model) && model.source !== removedSource);
-    const hasCurrent = input.some((model) => model?.isCurrent);
+    const legacyCifuCurrent = input.some((model) => isLegacyCifuDefaultDuplicate(model) && model?.isCurrent);
+    const cleanedInput = input.filter((model) => !isLegacyCifuDefaultDuplicate(model));
+    const cifuExisting = cleanedInput.find(isCifuModel);
+    const others = cleanedInput.filter((model) => model && !isCifuModel(model) && model.source !== removedSource);
+    const hasCurrent = cleanedInput.some((model) => model?.isCurrent);
     let cifuModelName = String(cifuExisting?.model || "").trim();
     if (!cifuModelName || cifuModelName === String(cifuExisting?.label || "").trim()) cifuModelName = cifuDefaultModel.model;
     const cifu = {
@@ -13686,9 +13695,13 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
       key: cifuExisting?.key || cifuDefaultModel.key,
       model: cifuModelName,
       label: buildCifuLabel(cifuModelName),
-      isCurrent: cifuExisting?.isCurrent || (!hasCurrent && others.length === 0)
+      isCurrent: cifuExisting?.isCurrent || legacyCifuCurrent || (!hasCurrent && others.length === 0)
     };
-    return [cifu, ...others.map((model) => ({ ...model, locked: !!model.locked, isCifuDefault: !!model.isCifuDefault }))];
+    return [cifu, ...others.map((model) => {
+      const next = { ...model, locked: !!model.locked };
+      if (model.isCifuDefault === true || model.isCifuDefault === 1) next.isCifuDefault = 1;
+      return next;
+    })];
   }
   function setAllModels(models) {
     allModels.value = models;
@@ -13713,7 +13726,8 @@ function modelsFromOpenClawConfig(config) {
       const modelName = model?.id || model?.name;
       if (!modelName) continue;
       const source = provider === "custom" ? "custom" : "recommend";
-      const value = source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
+      const isCifuDefault = model?.isCifuDefault === true || model?.isCifuDefault === 1;
+      const value = isCifuDefault ? "cifu-tech-default" : source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
       const labelPrefix = source === "custom" ? "" : provider === "cifu" ? "词符科技" : provider;
       result.push({
         label: labelPrefix ? `${labelPrefix} / ${modelName}` : modelName,
@@ -13724,7 +13738,8 @@ function modelsFromOpenClawConfig(config) {
         model: modelName,
         provider,
         api: providerConfig?.api || "openai-completions",
-        isCurrent: primary === `${provider}/${modelName}`
+        isCurrent: primary === `${provider}/${modelName}`,
+        ...(isCifuDefault ? { locked: true, isCifuDefault: 1 } : {})
       });
     }
   }
@@ -13965,7 +13980,7 @@ const _sfc_main$u = {
         }
         const nextModelName = editModelName.value.trim() || "请填写模型名称";
         modelsStore.setSelectedModels(
-          modelsStore.selectedModels.map((item) => item.value === originalValue ? { ...item, key: editKey.value.trim(), model: nextModelName, label: buildModelLabel("recommend", "cifu", nextModelName, item.label), provider: "cifu", source: "recommend", locked: true, isCifuDefault: true } : item)
+          modelsStore.selectedModels.map((item) => item.value === originalValue ? { ...item, key: editKey.value.trim(), model: nextModelName, label: buildModelLabel("recommend", "cifu", nextModelName, item.label), provider: "cifu", source: "recommend", locked: true, isCifuDefault: 1 } : item)
         );
         cancelEditModel();
         showRestartCardNotice();
