@@ -27666,7 +27666,12 @@ const _sfc_main$5 = {
       }
     }
     function onMinimize() {
-      window.uclaw?.ipcMinimize();
+      if (window.uclaw?.ipcMinimize) window.uclaw.ipcMinimize();
+      else window.uclaw?.ipcSend?.("window-minimize");
+    }
+    function onToggleMaximize() {
+      if (window.uclaw?.ipcToggleMaximize) window.uclaw.ipcToggleMaximize();
+      else window.uclaw?.ipcSend?.("window-toggle-maximize");
     }
     function onClose() {
       window.uclaw?.ipcClose();
@@ -27718,10 +27723,17 @@ const _sfc_main$5 = {
             createBaseVNode("span", { class: "iconfont icon-clawzuixiaohua" }, null, -1)
           ])]),
           createBaseVNode("button", {
+            class: "win-btn win-btn-maximize",
+            onClick: onToggleMaximize,
+            title: "最大化/还原"
+          }, [..._cache[3] || (_cache[3] = [
+            createBaseVNode("span", { class: "window-maximize-glyph" }, "□", -1)
+          ])]),
+          createBaseVNode("button", {
             class: "win-btn win-btn-close",
             onClick: onClose,
             title: "关闭"
-          }, [..._cache[3] || (_cache[3] = [
+          }, [..._cache[4] || (_cache[4] = [
             createBaseVNode("span", { class: "iconfont icon-clawguanbi1" }, null, -1)
           ])])
         ])

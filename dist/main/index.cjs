@@ -23730,6 +23730,12 @@ function registerIPCHandlers({ gateway }) {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) win.minimize();
   });
+  electron.ipcMain.on("window-toggle-maximize", () => {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
+  });
   electron.ipcMain.on("window-close", () => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) win.close();
