@@ -6,6 +6,7 @@ const projectRoot = path.resolve(import.meta.dirname, "..");
 const platformId = process.env.MACOS_PORTABLE_PLATFORM || (process.arch === "arm64" ? "macos-arm64" : "macos-x64");
 const exfatCompat = process.env.MACOS_EXFAT_COMPAT === "1";
 const usbRootLayout = process.env.MACOS_USB_ROOT_LAYOUT === "1";
+const runtimeProfile = process.env.MACOS_RUNTIME_PROFILE || "slim";
 const releaseName = usbRootLayout
   ? (exfatCompat ? "macos-usb-root-exfat" : "macos-usb-root")
   : (exfatCompat ? "macos-portable-exfat-staging" : "macos-portable-staging");
@@ -15,11 +16,13 @@ const sourceMacosRoot = path.join(projectRoot, "macos");
 const appBundleName = `${appName}.app`;
 const innerAppBundleName = `${appName}-Runtime.app`;
 const requiredRuntimePaths = [
-  `runtime/${platformId}/node/bin/node`,
-  `runtime/${platformId}/openclaw/bin/openclaw`,
-  `runtime/${platformId}/openclaw/node_modules/openclaw/dist`,
-  `runtime/${platformId}/HermesPortable/venv/bin/hermes`,
-  `runtime/${platformId}/HermesPortable/venv/bin/python`
+  "runtime/node",
+  "runtime/openclaw",
+  "runtime/node_modules/openclaw/openclaw.mjs",
+  "runtime/node_modules/openclaw/dist",
+  "runtime/HermesPortable/venv/bin/hermes",
+  "runtime/HermesPortable/venv/bin/python",
+  "runtime/HermesPortable/hermes-agent/pyproject.toml"
 ];
 
 function fail(message) {
@@ -58,11 +61,30 @@ function copyDir(source, target) {
   fs.cpSync(source, target, { recursive: true, verbatimSymlinks: true });
 }
 
+function copyDirFiltered(source, target, filter) {
+  if (!fs.existsSync(source)) fail(`Missing source directory: ${source}`);
+  assertInside(releaseRoot, target);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.cpSync(source, target, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (sourcePath) => filter(path.relative(source, sourcePath).replace(/\\/g, "/"), sourcePath)
+  });
+}
+
 function copyFile(source, target) {
   if (!fs.existsSync(source)) fail(`Missing source file: ${source}`);
   assertInside(releaseRoot, target);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(source, target);
+}
+
+function writeRuntimeFile(relPath, content, mode = 0o644) {
+  const target = path.join(releaseRoot, "runtime", relPath);
+  assertInside(path.join(releaseRoot, "runtime"), target);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content, "utf8");
+  fs.chmodSync(target, mode);
 }
 
 function copyMacosShell() {
@@ -292,6 +314,149 @@ function writeLauncher() {
   fs.chmodSync(launcher, 0o755);
 }
 
+function copyNodeRuntime(sourcePlatformRoot, targetRuntimeRoot) {
+  const nodeRoot = path.join(sourcePlatformRoot, "node");
+  if (runtimeProfile === "full") {
+    copyDir(nodeRoot, path.join(targetRuntimeRoot, "node-runtime"));
+    copyFile(path.join(nodeRoot, "bin", "node"), path.join(targetRuntimeRoot, "node"));
+    fs.chmodSync(path.join(targetRuntimeRoot, "node"), 0o755);
+    return;
+  }
+
+  copyFile(path.join(nodeRoot, "bin", "node"), path.join(targetRuntimeRoot, "node"));
+  fs.chmodSync(path.join(targetRuntimeRoot, "node"), 0o755);
+}
+
+function shouldCopyOpenClawPath(relPath) {
+  if (!relPath) return true;
+  const parts = relPath.split("/");
+  const name = parts[parts.length - 1];
+  if (name === ".DS_Store" || name === ".gitkeep") return false;
+  if (parts.includes(".bin")) return false;
+  if (parts.includes("docs")) return false;
+  if (parts.includes("scripts") && !relPath.startsWith("node_modules/")) return false;
+  if (parts.includes("patches")) return false;
+  if (parts.includes("src")) return false;
+  if (parts.includes("skills")) return false;
+  if (parts.some((part) => part === "test" || part === "tests" || part === "__tests__")) return false;
+  if (name === "README" || name.startsWith("README.")) return false;
+  if (name === "CHANGELOG" || name.startsWith("CHANGELOG.")) return false;
+  if (name === "LICENSE" || name.startsWith("LICENSE.")) return false;
+  if (name === "NOTICE" || name.startsWith("NOTICE.")) return false;
+  if (name.endsWith(".md") || name.endsWith(".markdown")) return false;
+  if (name.endsWith(".d.ts") || name.endsWith(".ts")) return false;
+  if (name.includes(".test.") || name.includes(".spec.")) return false;
+  if (name.endsWith(".map") || name.endsWith(".tsbuildinfo")) return false;
+  return true;
+}
+
+function shouldCopyHermesPath(relPath) {
+  if (!relPath) return true;
+  const parts = relPath.split("/");
+  const name = parts[parts.length - 1];
+  if (name === ".DS_Store" || name === ".gitkeep") return false;
+  if (parts.includes("__pycache__")) return false;
+  if (parts.some((part) => part === "test" || part === "tests" || part === "__tests__")) return false;
+  if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
+  if (name.endsWith(".pyi")) return false;
+  if (name.endsWith(".log") || name.endsWith(".tmp")) return false;
+  if (parts[0] === "python" && (parts[1] === "include" || parts[1] === "share")) return false;
+  if (parts[0] === "venv" && parts[1] === "include") return false;
+  if (parts[0] === "venv" && parts.includes("dist-info") && (name === "RECORD" || name === "INSTALLER" || name === "REQUESTED")) return false;
+  if (parts[0] !== "hermes-agent") return true;
+
+  const excludedTopLevel = new Set([
+    ".git",
+    ".github",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "build",
+    "docs",
+    "infographic",
+    "nix",
+    "optional-mcps",
+    "optional-skills",
+    "packaging",
+    "tests",
+    "ui-tui",
+    "website"
+  ]);
+  if (excludedTopLevel.has(parts[1])) return false;
+  if (parts[1] === "web" && parts[2] && parts[2] !== "dist") return false;
+  if (parts[1] === "apps") return false;
+  if (parts[1] === "scripts" && parts[2] === "tests") return false;
+  return true;
+}
+
+function rewriteHermesVenvScripts(root) {
+  const binDir = path.join(root, "venv", "bin");
+  if (!fs.existsSync(binDir)) return;
+  const pythonWrapper = [
+    "#!/bin/sh",
+    "DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
+    "ROOT=\"$(CDPATH= cd -- \"$DIR/../..\" && pwd)\"",
+    "export PYTHONHOME=\"$ROOT/python\"",
+    "export PYTHONPATH=\"$ROOT/venv/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}\"",
+    "exec \"$ROOT/python/bin/python3.12\" \"$@\"",
+    ""
+  ].join("\n");
+  for (const name of ["python", "python3", "python3.12"]) {
+    const filePath = path.join(binDir, name);
+    fs.rmSync(filePath, { force: true });
+    fs.writeFileSync(filePath, pythonWrapper, "utf8");
+    fs.chmodSync(filePath, 0o755);
+  }
+  for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
+    const filePath = path.join(binDir, entry.name);
+    if (!entry.isFile()) continue;
+    if (entry.name === "python" || entry.name === "python3" || entry.name === "python3.12") continue;
+    const buffer = fs.readFileSync(filePath);
+    if (!buffer.subarray(0, 2).equals(Buffer.from("#!"))) continue;
+    const text = buffer.toString("utf8");
+    if (!text.startsWith("#!") || !text.includes("/python")) continue;
+    const body = text.split("\n").slice(1).join("\n");
+    fs.writeFileSync(filePath, `#!/usr/bin/env python3\n${body}`, "utf8");
+    fs.chmodSync(filePath, 0o755);
+  }
+  fs.writeFileSync(path.join(root, "venv", "pyvenv.cfg"), [
+    "home = ../../python/bin",
+    "include-system-site-packages = false",
+    "version = 3.12.13",
+    "executable = ../../python/bin/python3.12",
+    "command = portable",
+    ""
+  ].join("\n"), "utf8");
+}
+
+function writeRootOpenClawCommand() {
+  writeRuntimeFile("openclaw", [
+    "#!/bin/sh",
+    "DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
+    "exec \"$DIR/node\" \"$DIR/node_modules/openclaw/openclaw.mjs\" \"$@\"",
+    ""
+  ].join("\n"), 0o755);
+}
+
+function stageMacosRuntime() {
+  const sourcePlatformRoot = path.join(projectRoot, "runtime", platformId);
+  const targetRuntimeRoot = path.join(releaseRoot, "runtime");
+  const openclawPackage = path.join(sourcePlatformRoot, "openclaw", "node_modules", "openclaw");
+  const hermesRoot = path.join(sourcePlatformRoot, "HermesPortable");
+
+  if (!fs.existsSync(sourcePlatformRoot)) fail(`Missing macOS runtime root: ${sourcePlatformRoot}`);
+  fs.rmSync(targetRuntimeRoot, { recursive: true, force: true });
+  fs.mkdirSync(targetRuntimeRoot, { recursive: true });
+
+  copyNodeRuntime(sourcePlatformRoot, targetRuntimeRoot);
+  copyDirFiltered(openclawPackage, path.join(targetRuntimeRoot, "node_modules", "openclaw"), shouldCopyOpenClawPath);
+  writeRootOpenClawCommand();
+  copyDirFiltered(hermesRoot, path.join(targetRuntimeRoot, "HermesPortable"), shouldCopyHermesPath);
+  rewriteHermesVenvScripts(path.join(targetRuntimeRoot, "HermesPortable"));
+  copyFile(path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"), path.join(targetRuntimeRoot, "PORTABLE-RUNTIME-MANIFEST.json"));
+}
+
 function collectSymlinks(root) {
   const links = [];
   const stack = [root];
@@ -311,7 +476,13 @@ function collectSymlinks(root) {
 }
 
 function materializeSymlink(linkPath) {
-  const realPath = fs.realpathSync(linkPath);
+  let realPath;
+  try {
+    realPath = fs.realpathSync(linkPath);
+  } catch {
+    fs.rmSync(linkPath, { recursive: true, force: true });
+    return;
+  }
   const stat = fs.statSync(realPath);
   fs.rmSync(linkPath, { recursive: true, force: true });
   if (stat.isDirectory()) {
@@ -360,12 +531,10 @@ function makeExfatCompatible() {
   const executableRoots = [
     path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName), "Contents", "MacOS"),
     path.join(releaseRoot, appBundleName, "Contents", "Resources", innerAppBundleName, "Contents", "MacOS"),
-    path.join(releaseRoot, "runtime", platformId, "node", "bin"),
-    path.join(releaseRoot, "runtime", platformId, "openclaw", "bin"),
-    path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", ".bin"),
-    path.join(releaseRoot, "runtime", platformId, "openclaw", "node_modules", "openclaw", "node_modules", ".bin"),
-    path.join(releaseRoot, "runtime", platformId, "HermesPortable", "python", "bin"),
-    path.join(releaseRoot, "runtime", platformId, "HermesPortable", "venv", "bin")
+    path.join(releaseRoot, "runtime"),
+    path.join(releaseRoot, "runtime", "node_modules", "openclaw", "node_modules", ".bin"),
+    path.join(releaseRoot, "runtime", "HermesPortable", "python", "bin"),
+    path.join(releaseRoot, "runtime", "HermesPortable", "venv", "bin")
   ];
   for (const item of executableRoots) chmodTree(item);
   const quarantine = clearQuarantine(releaseRoot);
@@ -406,6 +575,7 @@ function verifyWechatPlugin() {
 }
 
 function readManifestRequiredPaths() {
+  return requiredRuntimePaths;
   const manifestPath = path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json");
   if (!fs.existsSync(manifestPath)) return requiredRuntimePaths;
   try {
@@ -477,8 +647,7 @@ function main() {
   for (const name of ["macos", "runtime", "skills", "extensions"]) removeChild(name);
   removeChild(appBundleName);
   copyMacosShell();
-  copyDir(path.join(projectRoot, "runtime"), path.join(releaseRoot, "runtime"));
-  copyFile(path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"), path.join(releaseRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"));
+  stageMacosRuntime();
   copyDir(path.join(projectRoot, "skills"), path.join(releaseRoot, "skills"));
   copyDir(path.join(projectRoot, "extensions"), path.join(releaseRoot, "extensions"));
   writeCleanData();
