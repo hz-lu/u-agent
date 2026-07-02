@@ -2686,6 +2686,11 @@ electron.app.setAppLogsPath(path$1.join(electronDataDir, "logs"));
 const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);
 function getAppRoot() {
   if (_appRoot) return _appRoot;
+  const envRoot = process.env.AGENT_HUB_ROOT?.trim();
+  if (envRoot) {
+    _appRoot = path$1.resolve(envRoot);
+    return _appRoot;
+  }
   if (!IS_DEV) {
     const exeDir = path$1.dirname(electron.app.getPath("exe"));
     const discovered = findPortableRootFrom(exeDir);
@@ -2707,7 +2712,8 @@ function getAppRoot() {
 }
 function getDataRoot() {
   if (_dataRoot) return _dataRoot;
-  _dataRoot = path$1.join(getAppRoot(), DIR_DATA);
+  const envDataRoot = process.env.AGENT_HUB_DATA_ROOT?.trim();
+  _dataRoot = envDataRoot ? path$1.resolve(envDataRoot) : path$1.join(getAppRoot(), DIR_DATA);
   return _dataRoot;
 }
 function appendDesktopCrashLog(kind, payload) {
@@ -2765,7 +2771,9 @@ function getOpenClawEntry() {
   return path$1.join(getOpenClawPackageRoot(runtimeRoot), FILE_OPENCLAW_MJS);
 }
 function getLicensePath() {
-  return path$1.join(getAppRoot(), FILE_LICENSE);
+  const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();
+  const licenseRoot = usbRoot ? path$1.resolve(usbRoot) : getAppRoot();
+  return path$1.join(licenseRoot, FILE_LICENSE);
 }
 function createLicenseFile() {
   const filePath = getLicensePath();

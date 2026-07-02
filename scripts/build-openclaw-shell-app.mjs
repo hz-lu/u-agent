@@ -47,18 +47,24 @@ mainSource = mainSource.replace(
   "async function getAppDriveInfo() {\n  let targetPath = process.execPath;",
   "async function getAppDriveInfo() {\n  let targetPath = process.env.AGENT_HUB_USB_ROOT?.trim() || process.execPath;"
 );
-mainSource = mainSource.replace(
-  "function getAppRoot() {\n  if (_appRoot) return _appRoot;",
-  "function getAppRoot() {\n  if (_appRoot) return _appRoot;\n  const envRoot = process.env.AGENT_HUB_ROOT?.trim();\n  if (envRoot) {\n    _appRoot = path$1.resolve(envRoot);\n    return _appRoot;\n  }"
-);
-mainSource = mainSource.replace(
-  "function getDataRoot() {\n  if (_dataRoot) return _dataRoot;\n  _dataRoot = path$1.join(getAppRoot(), DIR_DATA);\n  return _dataRoot;\n}",
-  "function getDataRoot() {\n  if (_dataRoot) return _dataRoot;\n  const envDataRoot = process.env.AGENT_HUB_DATA_ROOT?.trim();\n  _dataRoot = envDataRoot ? path$1.resolve(envDataRoot) : path$1.join(getAppRoot(), DIR_DATA);\n  return _dataRoot;\n}"
-);
-mainSource = mainSource.replace(
-  "function getLicensePath() {\n  return path$1.join(getAppRoot(), FILE_LICENSE);\n}",
-  "function getLicensePath() {\n  const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();\n  const licenseRoot = usbRoot ? path$1.resolve(usbRoot) : getAppRoot();\n  return path$1.join(licenseRoot, FILE_LICENSE);\n}"
-);
+if (!mainSource.includes("process.env.AGENT_HUB_ROOT")) {
+  mainSource = mainSource.replace(
+    "function getAppRoot() {\n  if (_appRoot) return _appRoot;",
+    "function getAppRoot() {\n  if (_appRoot) return _appRoot;\n  const envRoot = process.env.AGENT_HUB_ROOT?.trim();\n  if (envRoot) {\n    _appRoot = path$1.resolve(envRoot);\n    return _appRoot;\n  }"
+  );
+}
+if (!mainSource.includes("process.env.AGENT_HUB_DATA_ROOT")) {
+  mainSource = mainSource.replace(
+    "function getDataRoot() {\n  if (_dataRoot) return _dataRoot;\n  _dataRoot = path$1.join(getAppRoot(), DIR_DATA);\n  return _dataRoot;\n}",
+    "function getDataRoot() {\n  if (_dataRoot) return _dataRoot;\n  const envDataRoot = process.env.AGENT_HUB_DATA_ROOT?.trim();\n  _dataRoot = envDataRoot ? path$1.resolve(envDataRoot) : path$1.join(getAppRoot(), DIR_DATA);\n  return _dataRoot;\n}"
+  );
+}
+if (!mainSource.includes("const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();")) {
+  mainSource = mainSource.replace(
+    "function getLicensePath() {\n  return path$1.join(getAppRoot(), FILE_LICENSE);\n}",
+    "function getLicensePath() {\n  const usbRoot = process.env.AGENT_HUB_USB_ROOT?.trim();\n  const licenseRoot = usbRoot ? path$1.resolve(usbRoot) : getAppRoot();\n  return path$1.join(licenseRoot, FILE_LICENSE);\n}"
+  );
+}
 mainSource = mainSource.replaceAll(
   'path$1.join(__dirname, "..", "preload", "index.js")',
   'path$1.join(__dirname, "..", "preload", "index.cjs")'
