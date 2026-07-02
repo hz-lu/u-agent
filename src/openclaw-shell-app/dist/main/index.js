@@ -22587,6 +22587,11 @@ function readGatewayAuthFromConfig() {
     return {};
   }
 }
+function getGatewayWebUrl() {
+  const auth = readGatewayAuthFromConfig();
+  const port = Number(auth.port || GATEWAY_DEFAULT_PORT);
+  return auth.token ? `http://127.0.0.1:${port}/?token=${encodeURIComponent(auth.token)}` : `http://127.0.0.1:${port}/`;
+}
 function gatewayRpcViaMain(method, params = {}, options = {}) {
   return new Promise((resolve, reject) => {
     const auth = readGatewayAuthFromConfig();
@@ -22764,7 +22769,7 @@ function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
   electron.ipcMain.handle("open-dashboard", () => {
     if (gateway.isGatewayReady()) {
-      electron.shell.openExternal(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/?token=newToken`);
+      electron.shell.openExternal(getGatewayWebUrl());
     }
   });
   let chatWindow = null;
@@ -23299,8 +23304,7 @@ function registerIPCHandlers({ gateway }) {
       await gateway.restartGateway();
       setTimeout(() => {
         if (gateway.isGatewayReady()) {
-          const token = runtimeStore.gatewayToken || "uclawKey";
-          electron.shell.openExternal(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/?token=newToken`);
+          electron.shell.openExternal(getGatewayWebUrl());
         }
       }, 100);
       return { ok: true, port: GATEWAY_DEFAULT_PORT };

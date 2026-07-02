@@ -19390,6 +19390,12 @@ function useChatWs() {
       _stopHeartbeat();
       _clearChallengeTimer();
       if (!intentionalClose) {
+        const reason = String(event?.reason || "");
+        if (/token|auth|unauthor/i.test(reason) && authRetryCount < 2) {
+          authRetryCount++;
+          _refreshCredentialsAndReconnect();
+          return;
+        }
         _scheduleReconnect();
       } else {
         reconnectState = "idle";
@@ -19779,6 +19785,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     teardownWsConnection();
     connectToGateway();
   }
+  function handleOpenClawConfigChanged() {
+    sending.value = false;
+    currentRunId.value = null;
+    reconnect();
+    setTimeout(() => flushOpenClawQueue(), 1200);
+  }
   function _isGatewayAvailable() {
     return !!gatewayStore.gatewayReady;
   }
@@ -19827,6 +19839,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   watch(() => gatewayStore.running, (running) => {
     if (!running) {
+      sending.value = false;
+      currentRunId.value = null;
       teardownWsConnection();
       failOpenClawQueue("\u005f\u005fOPENCLAW_STOPPED\u005f\u005f");
     }
@@ -19836,11 +19850,15 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
         connectToGateway();
       }
+    } else if (!ready) {
+      sending.value = false;
+      currentRunId.value = null;
     }
   });
   if (_isGatewayAvailable() && wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
     connectToGateway();
   }
+  window.addEventListener("uclaw-openclaw-config-updated", handleOpenClawConfigChanged);
   function setupWsConnection(config) {
     if (_wsSetupDone) {
       _unsubs.forEach((fn) => fn());
@@ -20966,7 +20984,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         console.warn("[aiChat] OpenClaw send timeout: no reply event in 45 seconds");
         sending.value = false;
         currentRunId.value = null;
-        appendOpenClawNotice(sk, "OpenClaw 已收到请求，正在同步回复。可以先继续使用其它功能，稍后回到本会话查看。", "done");
+        updateOpenClawMessage(sk, item.userMessageId, { status: "error" });
+        appendOpenClawNotice(sk, "OpenClaw 45 秒内没有返回回复，已释放发送队列。请确认模型配置有效，或重启 Gateway 后重新发送。", "error");
         scheduleOpenClawHistorySync(sk);
         setTimeout(() => flushOpenClawQueue(), 0);
       }
@@ -20974,6 +20993,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const { sendText, sendAtts } = buildOpenClawSendPayload(item.text, item.attachments);
     try {
       let result;
+      let usedIpcFallback = false;
       if (_isWsReady()) {
         result = await _ws?.chatSend(sk, sendText, sendAtts);
       } else {
@@ -20982,11 +21002,18 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         const response = await api.gatewayChatSend({ sessionKey: sk, message: sendText, attachments: sendAtts, timeoutMs: 15e3 });
         if (!response?.ok) throw new Error(response?.error || "OpenClaw Gateway 发送失败");
         result = response.result;
+        usedIpcFallback = true;
         scheduleOpenClawHistorySync(sk);
       }
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send response | runId=", result?.runId);
       if (result?.runId) currentRunId.value = result.runId;
+      scheduleOpenClawHistorySync(sk);
+      if (usedIpcFallback && !_isWsReady()) {
+        sending.value = false;
+        currentRunId.value = null;
+        setTimeout(() => flushOpenClawQueue(), 0);
+      }
       return true;
     } catch (e) {
       clearTimeout(timeoutId);
@@ -27892,7 +27919,9 @@ const _sfc_main = {
           console.warn("[models] skip malformed model config:", e?.message || e);
           return;
         }
-        window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").catch((e) => {
+        window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").then(() => {
+          window.dispatchEvent(new CustomEvent("uclaw-openclaw-config-updated"));
+        }).catch((e) => {
           console.warn("[models] write OpenClaw config failed:", e?.message || e);
         });
       }, 800);
