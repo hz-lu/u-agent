@@ -20685,6 +20685,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const api = getApi();
     if (api?.saveChatMessagesBulk) {
       const clean = JSON.parse(JSON.stringify(/* @__PURE__ */ toRaw(finalMsgs)));
+      for (const msg of clean) delete msg._localOnly;
       api.saveChatMessagesBulk(sessionKey, clean).catch((e) => {
         console.error("[aiChat] persist failed for", sessionKey, e);
       });
@@ -20702,6 +20703,27 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const localMutatedAt = _localMessageMutatedAt[sessionKey] || 0;
     const current = messagesMap.value[sessionKey] || [];
     return !(localMutatedAt > loadStartedAt && current.length);
+  }
+  function _isSameOpenClawMessage(a, b) {
+    if (!a || !b) return false;
+    if (a.id && b.id && a.id === b.id) return true;
+    const ac = String(a.content || "").trim();
+    const bc = String(b.content || "").trim();
+    if (!ac || !bc || ac !== bc || a.role !== b.role) return false;
+    const at = Number(a.timestamp || 0);
+    const bt = Number(b.timestamp || 0);
+    return at > 0 && bt > 0 && Math.abs(at - bt) < 3e5;
+  }
+  function mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit = 200) {
+    const localMsgs = messagesMap.value[sessionKey] || [];
+    if (!localMsgs.length) return remoteMsgs.slice(-limit);
+    const merged = remoteMsgs.slice();
+    for (const local of localMsgs) {
+      const isLocalOnly = local._localOnly || local.status === "queued" || local.status === "streaming" || local._streaming === true;
+      const exists = merged.some((remote) => _isSameOpenClawMessage(local, remote));
+      if (isLocalOnly && !exists) merged.push(local);
+    }
+    return _mergeToolResults(merged).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).slice(-limit);
   }
   async function refreshSessions() {
     const now = Date.now();
@@ -20761,7 +20783,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (remoteResult !== null) {
         const remoteRaw = remoteResult?.messages || remoteResult || [];
         if (remoteRaw.length) {
-          const msgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
+          const remoteMsgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
+          const msgs = mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit);
           if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
           if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
             _historyInflight.delete(sessionKey);
@@ -20782,7 +20805,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       try {
         const localMsgs = await api.loadChatMessages(sessionKey, limit);
         if (localMsgs && localMsgs.length) {
-          const msgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
+          const remoteMsgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
+          const msgs = mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit);
           if (CHAT_DEBUG) console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
           if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
             _historyInflight.delete(sessionKey);
@@ -20908,7 +20932,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       files: [],
       tools: [],
       timestamp: Date.now(),
-      status
+      status,
+      _localOnly: true
     };
     messagesMap.value[sessionKey] = [...messagesMap.value[sessionKey] || [], notice];
     _localMessageMutatedAt[sessionKey] = Date.now();
@@ -21234,7 +21259,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       tools: [],
       attachments: attachments || [],
       timestamp: Date.now(),
-      status: validation.ok ? "done" : "error"
+      status: validation.ok ? "done" : "error",
+      _localOnly: true
     };
     const msgs = messagesMap.value[sk] || [];
     messagesMap.value[sk] = [...msgs, userMsg];
@@ -21259,10 +21285,20 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     await sendOpenClawToGateway(item);
   }
   function abortMessage() {
-    if (activeSessionKey.value) {
-      _ws?.chatAbort(activeSessionKey.value, currentRunId.value);
+    const sk = activeSessionKey.value;
+    if (sk) {
+      const runId = currentRunId.value;
+      _ws?.chatAbort(sk, runId);
+      const msgs = messagesMap.value[sk] || [];
+      const idx = runId ? msgs.findIndex((m) => m.runId === runId && m.role === "assistant") : msgs.findIndex((m) => m.role === "assistant" && (m.status === "streaming" || m._streaming === true));
+      if (idx >= 0) {
+        const next = msgs.slice();
+        next[idx] = { ...next[idx], status: "error", _streaming: false };
+        messagesMap.value[sk] = next;
+      }
       sending.value = false;
       currentRunId.value = null;
+      appendOpenClawNotice(sk, "已停止当前 OpenClaw 任务。", "done");
     }
     failOpenClawQueue("已停止当前生成，待发送消息也已取消。");
   }
