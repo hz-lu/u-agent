@@ -25423,7 +25423,7 @@ const _sfc_main$c = {
     }
     function handleSend() {
       const text2 = localText.value.trim();
-      if (!canSend.value || props.sending) return;
+      if (!canSend.value) return;
       emit2("send", text2 || "", attachments.value.length ? [...attachments.value] : void 0);
       localText.value = "";
       emit2("update:modelValue", "");
@@ -25572,7 +25572,7 @@ const _sfc_main$c = {
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
             ]),
-            __props.sending ? (openBlock(), createElementBlock("button", {
+            false && __props.sending ? (openBlock(), createElementBlock("button", {
               key: 0,
               class: "send-btn stop-btn",
               onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("stop")),
@@ -25595,7 +25595,7 @@ const _sfc_main$c = {
             ])])) : (openBlock(), createElementBlock("button", {
               key: 1,
               class: "send-btn",
-              disabled: !canSend.value || __props.sending,
+              disabled: !canSend.value,
               onClick: handleSend,
               title: "发送"
             }, [..._cache[6] || (_cache[6] = [
