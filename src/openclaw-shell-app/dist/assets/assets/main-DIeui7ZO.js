@@ -20973,6 +20973,53 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     return { sendText, sendAtts };
   }
+  function isPlaceholderOpenClawModelId(modelId) {
+    const text2 = String(modelId || "").trim();
+    return !text2 || text2.includes("\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0") || text2.toLowerCase() === "please-fill-model-name";
+  }
+  function resolveOpenClawModelId(modelId) {
+    if (modelId && typeof modelId === "object") {
+      if (modelId.provider && modelId.model && !isPlaceholderOpenClawModelId(modelId.model)) return `${modelId.provider}/${modelId.model}`;
+      return resolveOpenClawModelId(modelId.value || modelId.id || modelId.model || "");
+    }
+    const raw = String(modelId || "").trim();
+    if (!raw || isPlaceholderOpenClawModelId(raw)) return null;
+    try {
+      const modelsStore = useModelsStore();
+      const matched = modelsStore.selectedModels.find((item) => item?.value === raw || item?.model === raw || item?.label === raw || `${item?.provider || ""}/${item?.model || ""}` === raw);
+      if (matched?.provider && matched?.model && !isPlaceholderOpenClawModelId(matched.model)) {
+        return `${matched.provider}/${matched.model}`;
+      }
+    } catch {
+    }
+    return raw;
+  }
+  function getPreferredOpenClawModelId(sessionKey) {
+    try {
+      const modelsStore = useModelsStore();
+      const preferred = modelsStore.currentModel?.value || modelsStore.currentModel?.model || modelsStore.currentModel || null;
+      const resolved = resolveOpenClawModelId(preferred);
+      if (resolved) return resolved;
+    } catch {
+    }
+    return resolveOpenClawModelId(sessionModelMap.value[sessionKey] || currentModel.value);
+  }
+  async function ensureOpenClawSessionModel(sessionKey) {
+    const desired = getPreferredOpenClawModelId(sessionKey);
+    if (!desired) return;
+    const current = resolveOpenClawModelId(sessionModelMap.value[sessionKey]);
+    if (current === desired) return;
+    sessionModelMap.value[sessionKey] = desired;
+    if (_isWsReady()) {
+      await _ws?.chatSend(sessionKey, "/model " + desired);
+      return;
+    }
+    const api = getApi();
+    if (api?.gatewayChatSend) {
+      const response = await api.gatewayChatSend({ sessionKey, message: "/model " + desired, timeoutMs: 8e3 });
+      if (!response?.ok) throw new Error(response?.error || "OpenClaw model switch failed");
+    }
+  }
   async function sendOpenClawToGateway(item) {
     const sk = item.sessionKey;
     if (!_isOpenClawSendPathAvailable()) return false;
@@ -20994,6 +21041,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     try {
       let result;
       let usedIpcFallback = false;
+      await ensureOpenClawSessionModel(sk);
       if (_isWsReady()) {
         result = await _ws?.chatSend(sk, sendText, sendAtts);
       } else {
@@ -21238,8 +21286,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function switchModel(modelId) {
     const sk = activeSessionKey.value;
     if (sk) {
-      sessionModelMap.value[sk] = modelId;
-      _ws?.chatSend(sk, "/model " + modelId);
+      const resolved = resolveOpenClawModelId(modelId);
+      if (!resolved) return;
+      sessionModelMap.value[sk] = resolved;
+      _ws?.chatSend(sk, "/model " + resolved);
     }
   }
   function getSessionModel(sessionKey) {
@@ -26074,9 +26124,9 @@ const _sfc_main$9 = {
     });
     const sessionModels = computed(
       () => modelsStore.selectedModels.map((m) => ({
-        id: m.value,
+        id: m.provider && m.model ? `${m.provider}/${m.model}` : m.value,
         name: m.label,
-        provider: m.source
+        provider: m.provider || m.source
       }))
     );
     const sessionCurrentModelId = computed(() => {
@@ -26084,7 +26134,9 @@ const _sfc_main$9 = {
       if (sk && store.sessionModelMap[sk]) {
         return store.sessionModelMap[sk];
       }
-      return modelsStore.currentModel?.value || null;
+      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
+      if (current?.provider && current?.model) return `${current.provider}/${current.model}`;
+      return current?.value || null;
     });
     let _storeInitDone = false;
     onMounted(() => {

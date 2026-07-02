@@ -2745,19 +2745,24 @@ function updateModelsField(config, modelsData) {
   const { models } = modelsData;
   const customModelDefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
   if (!config.models) config.models = { mode: "replace", providers: {} };
-  if (!config.models.providers) config.models.providers = {};
+  config.models.providers = {};
   if (!config.agents) config.agents = {};
   if (!config.agents.defaults) config.agents.defaults = {};
   if (!config.agents.defaults.model) config.agents.defaults.model = {};
-  if (!config.agents.defaults.models) config.agents.defaults.models = {};
+  config.agents.defaults.models = {};
   if (!config.agents.defaults.compaction) config.agents.defaults.compaction = {};
   const providerMap = {};
   let currentModel = null;
   const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
-  for (const model of models) {
+  const isPlaceholderModelName = (value) => {
+    const text = String(value || "").trim();
+    return !text || text === "\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0" || text.toLowerCase() === "please-fill-model-name";
+  };
+  for (const model of Array.isArray(models) ? models : []) {
     if (model.source === removedSource) continue;
     const providerName = model.provider;
     const modelId = model.model || model.value;
+    if (isPlaceholderModelName(modelId)) continue;
     if (!providerName || !modelId) continue;
     if (model.isCurrent) {
       currentModel = `${providerName}/${modelId}`;

@@ -7,7 +7,6 @@ const releaseRoot = path.resolve(process.env.WINDOWS_RELEASE_ROOT || "D:\\share\
 const runtimeSource = process.env.WINDOWS_RELEASE_RUNTIME_SOURCE
   ? path.resolve(process.env.WINDOWS_RELEASE_RUNTIME_SOURCE)
   : "F:\\runtime";
-const cifuModelName = "请填写模型名称";
 const cifuProvider = "cifu";
 const weixinPluginId = "openclaw-weixin";
 const rootLauncherName = "OpenClawPro U盘便携版.exe";
@@ -57,7 +56,6 @@ function touch(relPath) {
 }
 
 function createOpenClawConfig() {
-  const modelRef = `${cifuProvider}/${cifuModelName}`;
   return {
     gateway: {
       mode: "local",
@@ -87,32 +85,13 @@ function createOpenClawConfig() {
     },
     models: {
       mode: "replace",
-      providers: {
-        [cifuProvider]: {
-          apiKey: "123456",
-          baseUrl: "https://token.51cifu.com/v1",
-          api: "openai-completions",
-          models: [
-            {
-              id: cifuModelName,
-              name: cifuModelName,
-              input: ["text", "image"],
-              contextWindow: 128000,
-              maxTokens: 4096
-            }
-          ]
-        }
-      }
+      providers: {}
     },
     agents: {
       defaults: {
         compaction: { mode: "safeguard" },
-        model: { primary: modelRef },
-        models: {
-          [modelRef]: {
-            alias: modelRef
-          }
-        }
+        model: {},
+        models: {}
       }
     },
     plugins: {
