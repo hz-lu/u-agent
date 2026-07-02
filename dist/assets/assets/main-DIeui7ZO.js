@@ -20707,6 +20707,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isSameOpenClawMessage(a, b) {
     if (!a || !b) return false;
     if (a.id && b.id && a.id === b.id) return true;
+    if (a.role === "user" || b.role === "user") return false;
     const ac = String(a.content || "").trim();
     const bc = String(b.content || "").trim();
     if (!ac || !bc || ac !== bc || a.role !== b.role) return false;
