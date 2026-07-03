@@ -7263,6 +7263,11 @@ h2[data-v-51d25953] {
   background: rgba(255, 255, 255, 0.1);
   color: var(--text-primary, #fff);
 }
+.menu-bar .window-maximize-glyph[data-v-fabb0d5b] {
+  font-size: 17px;
+  line-height: 1;
+  transform: translateY(-1px);
+}
 .menu-bar .win-btn-close[data-v-fabb0d5b]:hover {
   background: #e81123;
   color: #fff;

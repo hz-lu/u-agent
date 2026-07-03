@@ -11,7 +11,9 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
     }
   },
   ipcSend: (channel, ...args) => electron.ipcRenderer.send(channel, ...args),
-  // 鑷畾涔夌獥鍙ｆ帶鍒?  ipcMinimize: () => electron.ipcRenderer.send("window-minimize"),
+  // Window controls
+  ipcMinimize: () => electron.ipcRenderer.send("window-minimize"),
+  ipcToggleMaximize: () => electron.ipcRenderer.send("window-toggle-maximize"),
   ipcClose: () => electron.ipcRenderer.send("window-close"),
   ipcOpenDashboard: () => electron.ipcRenderer.invoke("open-dashboard"),
   ipcOpenChatWindow: () => electron.ipcRenderer.invoke("open-chat-window"),

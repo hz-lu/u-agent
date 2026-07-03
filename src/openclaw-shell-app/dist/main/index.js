@@ -2716,6 +2716,26 @@ function getDataRoot() {
   _dataRoot = envDataRoot ? path$1.resolve(envDataRoot) : path$1.join(getAppRoot(), DIR_DATA);
   return _dataRoot;
 }
+function getPortableProcessEnv(extraEnv = {}) {
+  const systemRoot = path$1.join(getDataRoot(), ".system");
+  const home = path$1.join(systemRoot, "home");
+  const appData = path$1.join(systemRoot, "AppData", "Roaming");
+  const localAppData = path$1.join(systemRoot, "AppData", "Local");
+  const tmp = path$1.join(systemRoot, "tmp");
+  for (const dir of [home, appData, localAppData, tmp]) {
+    fs$1.mkdirSync(dir, { recursive: true });
+  }
+  return {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: appData,
+    LOCALAPPDATA: localAppData,
+    TMP: tmp,
+    TEMP: tmp,
+    ...extraEnv
+  };
+}
 function appendDesktopCrashLog(kind, payload) {
   /* codex-desktop-crash-diagnostics */
   try {
@@ -2885,19 +2905,24 @@ function updateModelsField(config, modelsData) {
   const { models } = modelsData;
   const customModelDefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
   if (!config.models) config.models = { mode: "replace", providers: {} };
-  if (!config.models.providers) config.models.providers = {};
+  config.models.providers = {};
   if (!config.agents) config.agents = {};
   if (!config.agents.defaults) config.agents.defaults = {};
   if (!config.agents.defaults.model) config.agents.defaults.model = {};
-  if (!config.agents.defaults.models) config.agents.defaults.models = {};
+  config.agents.defaults.models = {};
   if (!config.agents.defaults.compaction) config.agents.defaults.compaction = {};
   const providerMap = {};
   let currentModel = null;
   const removedSource = String.fromCharCode(111, 102, 102, 105, 99, 105, 97, 108);
-  for (const model of models) {
+  const isPlaceholderModelName = (value) => {
+    const text = String(value || "").trim();
+    return !text || text === "\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0" || text.toLowerCase() === "please-fill-model-name";
+  };
+  for (const model of Array.isArray(models) ? models : []) {
     if (model.source === removedSource) continue;
     const providerName = model.provider;
     const modelId = model.model || model.value;
+    if (isPlaceholderModelName(modelId)) continue;
     if (!providerName || !modelId) continue;
     if (model.isCurrent) {
       currentModel = `${providerName}/${modelId}`;
@@ -2914,6 +2939,7 @@ function updateModelsField(config, modelsData) {
     providerMap[providerName].models.push({
       id: modelId,
       name: modelId,
+      ...(model.isCifuDefault === true || model.isCifuDefault === 1 ? { isCifuDefault: 1 } : {}),
       input: ["text", "image"],
       contextWindow: 128e3,
       maxTokens: 4096
@@ -3192,6 +3218,7 @@ async function extractRuntime() {
       }
       console.log("[runtime] tar failed, falling back to PowerShell...");
       const ps2 = child_process.spawn(psExe, ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force`], {
+        env: getPortableProcessEnv(),
         stdio: ["ignore", "pipe", "pipe"]
       });
       ps2.on("exit", (c) => c === 0 ? resolve() : reject(new Error(`exit code ${c}`)));
@@ -3201,6 +3228,7 @@ async function extractRuntime() {
       console.log("[runtime] tar spawn error:", err.message);
       clearInterval(ticker);
       const ps2 = child_process.spawn(psExe, ["-NoProfile", "-NonInteractive", "-Command", `Expand-Archive -Path '${zipPath}' -DestinationPath '${destPath}' -Force`], {
+        env: getPortableProcessEnv(),
         stdio: ["ignore", "pipe", "pipe"]
       });
       ps2.on("exit", (c) => c === 0 ? resolve() : reject(new Error(`exit code ${c}`)));
@@ -21463,6 +21491,7 @@ function runCmd(exe, args, options = {}) {
     encoding: options.encoding || "utf8",
     timeout: options.timeout || 5e3,
     windowsHide: true,
+    env: getPortableProcessEnv(options.env || {}),
     stdio: ["ignore", "pipe", "pipe"],
     maxBuffer: options.maxBuffer || 1024 * 1024
   });
@@ -22808,6 +22837,11 @@ function readGatewayAuthFromConfig() {
     return {};
   }
 }
+function getGatewayWebUrl() {
+  const auth = readGatewayAuthFromConfig();
+  const port = Number(auth.port || GATEWAY_DEFAULT_PORT);
+  return auth.token ? `http://127.0.0.1:${port}/?token=${encodeURIComponent(auth.token)}` : `http://127.0.0.1:${port}/`;
+}
 function gatewayRpcViaMain(method, params = {}, options = {}) {
   return new Promise((resolve, reject) => {
     const auth = readGatewayAuthFromConfig();
@@ -22985,7 +23019,7 @@ function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
   electron.ipcMain.handle("open-dashboard", () => {
     if (gateway.isGatewayReady()) {
-      electron.shell.openExternal(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/?token=newToken`);
+      electron.shell.openExternal(getGatewayWebUrl());
     }
   });
   let chatWindow = null;
@@ -23523,8 +23557,7 @@ function registerIPCHandlers({ gateway }) {
       await gateway.restartGateway();
       setTimeout(() => {
         if (gateway.isGatewayReady()) {
-          const token = runtimeStore.gatewayToken || "uclawKey";
-          electron.shell.openExternal(`http://127.0.0.1:${GATEWAY_DEFAULT_PORT}/?token=newToken`);
+          electron.shell.openExternal(getGatewayWebUrl());
         }
       }, 100);
       return { ok: true, port: GATEWAY_DEFAULT_PORT };
@@ -23971,6 +24004,12 @@ function registerIPCHandlers({ gateway }) {
   electron.ipcMain.on("window-minimize", () => {
     const win = getMainWindow();
     if (win && !win.isDestroyed()) win.minimize();
+  });
+  electron.ipcMain.on("window-toggle-maximize", () => {
+    const win = getMainWindow();
+    if (!win || win.isDestroyed()) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
   });
   electron.ipcMain.on("window-close", () => {
     const win = getMainWindow();

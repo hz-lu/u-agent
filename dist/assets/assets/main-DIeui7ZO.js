@@ -13675,6 +13675,10 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     const cleanName = String(modelName || "").trim() || "请填写模型名称";
     return "词符科技 / " + cleanName;
   }
+  function isPlaceholderModelName(modelName) {
+    const cleanName = String(modelName || "").trim();
+    return !cleanName || cleanName === "请填写模型名称" || cleanName.toLowerCase() === "please-fill-model-name";
+  }
   function isLegacyCifuDefaultDuplicate(model) {
     if (!model || isCifuModel(model)) return false;
     const provider = String(model?.provider || "").trim();
@@ -13693,18 +13697,27 @@ const useModelsStore = /* @__PURE__ */ defineStore("models", () => {
     const hasCurrent = cleanedInput.some((model) => model?.isCurrent);
     let cifuModelName = String(cifuExisting?.model || "").trim();
     if (!cifuModelName || cifuModelName === String(cifuExisting?.label || "").trim()) cifuModelName = cifuDefaultModel.model;
+    const cifuCanBeCurrent = !isPlaceholderModelName(cifuModelName);
+    const hasOtherCurrent = others.some((model) => model?.isCurrent);
     const cifu = {
       ...cifuDefaultModel,
       key: cifuExisting?.key || cifuDefaultModel.key,
       model: cifuModelName,
       label: buildCifuLabel(cifuModelName),
-      isCurrent: cifuExisting?.isCurrent || legacyCifuCurrent || (!hasCurrent && others.length === 0)
+      isCurrent: cifuCanBeCurrent && (cifuExisting?.isCurrent || legacyCifuCurrent || (!hasCurrent && others.length === 0))
     };
-    return [cifu, ...others.map((model) => {
+    const normalizedOthers = others.map((model) => {
       const next = { ...model, locked: !!model.locked };
       if (model.isCifuDefault === true || model.isCifuDefault === 1) next.isCifuDefault = 1;
       return next;
-    })];
+    });
+    if (!cifu.isCurrent && !hasOtherCurrent && normalizedOthers.length) {
+      normalizedOthers[0] = { ...normalizedOthers[0], isCurrent: true };
+    }
+    if (cifuCanBeCurrent && !normalizedOthers.some((model) => model?.isCurrent) && (cifuExisting?.isCurrent || legacyCifuCurrent || normalizedOthers.length === 0)) {
+      cifu.isCurrent = true;
+    }
+    return [cifu, ...normalizedOthers];
   }
   function setAllModels(models) {
     allModels.value = models;
@@ -19393,6 +19406,12 @@ function useChatWs() {
       _stopHeartbeat();
       _clearChallengeTimer();
       if (!intentionalClose) {
+        const reason = String(event?.reason || "");
+        if (/token|auth|unauthor/i.test(reason) && authRetryCount < 2) {
+          authRetryCount++;
+          _refreshCredentialsAndReconnect();
+          return;
+        }
         _scheduleReconnect();
       } else {
         reconnectState = "idle";
@@ -19738,12 +19757,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   const _historyInflight = /* @__PURE__ */ new Set();
   const _historyLastLoadedAt = {};
   const _localMessageMutatedAt = {};
-  const OPENCLAW_QUEUE_MAX = 3;
   const OPENCLAW_TEXT_MAX = 12e3;
   const OPENCLAW_ATTACHMENT_MAX = 3;
   const OPENCLAW_INLINE_ATTACHMENT_MAX = 1536 * 1024;
   const OPENCLAW_TOTAL_INLINE_MAX = 2 * 1024 * 1024;
-  const queuedOpenClawMessages = /* @__PURE__ */ ref([]);
+  const pendingOpenClawMessage = /* @__PURE__ */ ref(null);
+  const hasPendingOpenClawMessage = computed(() => !!pendingOpenClawMessage.value);
   let _flushingOpenClawQueue = false;
   async function connectToGateway() {
     const now = Date.now();
@@ -19781,6 +19800,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function reconnect() {
     teardownWsConnection();
     connectToGateway();
+  }
+  function handleOpenClawConfigChanged() {
+    sending.value = false;
+    currentRunId.value = null;
+    reconnect();
+    setTimeout(() => flushOpenClawQueue(), 1200);
   }
   function _isGatewayAvailable() {
     return !!gatewayStore.gatewayReady;
@@ -19830,6 +19855,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   watch(() => gatewayStore.running, (running) => {
     if (!running) {
+      sending.value = false;
+      currentRunId.value = null;
       teardownWsConnection();
       failOpenClawQueue("\u005f\u005fOPENCLAW_STOPPED\u005f\u005f");
     }
@@ -19839,11 +19866,15 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
         connectToGateway();
       }
+    } else if (!ready) {
+      sending.value = false;
+      currentRunId.value = null;
     }
   });
   if (_isGatewayAvailable() && wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
     connectToGateway();
   }
+  window.addEventListener("uclaw-openclaw-config-updated", handleOpenClawConfigChanged);
   function setupWsConnection(config) {
     if (_wsSetupDone) {
       _unsubs.forEach((fn) => fn());
@@ -20657,6 +20688,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const api = getApi();
     if (api?.saveChatMessagesBulk) {
       const clean = JSON.parse(JSON.stringify(/* @__PURE__ */ toRaw(finalMsgs)));
+      for (const msg of clean) delete msg._localOnly;
       api.saveChatMessagesBulk(sessionKey, clean).catch((e) => {
         console.error("[aiChat] persist failed for", sessionKey, e);
       });
@@ -20674,6 +20706,28 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const localMutatedAt = _localMessageMutatedAt[sessionKey] || 0;
     const current = messagesMap.value[sessionKey] || [];
     return !(localMutatedAt > loadStartedAt && current.length);
+  }
+  function _isSameOpenClawMessage(a, b) {
+    if (!a || !b) return false;
+    if (a.id && b.id && a.id === b.id) return true;
+    if (a.role === "user" || b.role === "user") return false;
+    const ac = String(a.content || "").trim();
+    const bc = String(b.content || "").trim();
+    if (!ac || !bc || ac !== bc || a.role !== b.role) return false;
+    const at = Number(a.timestamp || 0);
+    const bt = Number(b.timestamp || 0);
+    return at > 0 && bt > 0 && Math.abs(at - bt) < 3e5;
+  }
+  function mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit = 200) {
+    const localMsgs = messagesMap.value[sessionKey] || [];
+    if (!localMsgs.length) return remoteMsgs.slice(-limit);
+    const merged = remoteMsgs.slice();
+    for (const local of localMsgs) {
+      const isLocalOnly = local._localOnly || local.status === "queued" || local.status === "streaming" || local._streaming === true;
+      const exists = merged.some((remote) => _isSameOpenClawMessage(local, remote));
+      if (isLocalOnly && !exists) merged.push(local);
+    }
+    return _mergeToolResults(merged).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0)).slice(-limit);
   }
   async function refreshSessions() {
     const now = Date.now();
@@ -20733,7 +20787,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (remoteResult !== null) {
         const remoteRaw = remoteResult?.messages || remoteResult || [];
         if (remoteRaw.length) {
-          const msgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
+          const remoteMsgs = _mergeToolResults(remoteRaw.map(normalizeMessage)).slice(-limit);
+          const msgs = mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit);
           if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] loadSessionMessages Gateway 加载 | msgs数量=", msgs.length);
           if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
             _historyInflight.delete(sessionKey);
@@ -20754,7 +20809,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       try {
         const localMsgs = await api.loadChatMessages(sessionKey, limit);
         if (localMsgs && localMsgs.length) {
-          const msgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
+          const remoteMsgs = _mergeToolResults(localMsgs.map((m) => ({ ...m }))).slice(-limit);
+          const msgs = mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit);
           if (CHAT_DEBUG) console.log("[aiChat] 使用本地 JSONL 兜底 | session:", sessionKey, "消息数:", msgs.length);
           if (!_canReplaceMessagesFromHistory(sessionKey, loadStartedAt)) {
             _historyInflight.delete(sessionKey);
@@ -20880,7 +20936,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       files: [],
       tools: [],
       timestamp: Date.now(),
-      status
+      status,
+      _localOnly: true
     };
     messagesMap.value[sessionKey] = [...messagesMap.value[sessionKey] || [], notice];
     _localMessageMutatedAt[sessionKey] = Date.now();
@@ -20924,28 +20981,25 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     return { ok: true };
   }
   function queueOpenClawMessage(item, reason = "OpenClaw 正在准备中") {
-    if (queuedOpenClawMessages.value.length >= OPENCLAW_QUEUE_MAX) {
-      updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "error" });
-      appendOpenClawNotice(item.sessionKey, `OpenClaw 待发送队列已满（最多 ${OPENCLAW_QUEUE_MAX} 条）。请等待前面的消息处理完成后再发送。`, "error");
-      return false;
+    const previous = pendingOpenClawMessage.value;
+    if (previous && previous.userMessageId !== item.userMessageId) {
+      updateOpenClawMessage(previous.sessionKey, previous.userMessageId, { status: "done" });
     }
-    queuedOpenClawMessages.value = [...queuedOpenClawMessages.value, item];
+    pendingOpenClawMessage.value = item;
     updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "queued" });
-    appendOpenClawNotice(item.sessionKey, `${reason}，这条消息已进入待发送队列。OpenClaw 就绪后会自动按顺序发送。`, "done");
+    appendOpenClawNotice(item.sessionKey, `${reason}。已记录最新一条消息，OpenClaw 完全就绪后会自动发送；继续输入会替换这条待发送内容。`, "done");
     if (_isGatewayAvailable() && wsStatus.value !== "ready" && wsStatus.value !== "connecting") {
       connectToGateway();
     }
     return true;
   }
   function failOpenClawQueue(reason) {
-    if (!queuedOpenClawMessages.value.length) return;
-    const items = queuedOpenClawMessages.value;
-    queuedOpenClawMessages.value = [];
-    for (const item of items) {
-      updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "error" });
-      const message = reason === "__OPENCLAW_STOPPED__" ? "OpenClaw 已停止运行，待发送消息没有继续发送。请重新启动后再发送。" : reason || "待发送消息已取消。";
-      appendOpenClawNotice(item.sessionKey, message, "error");
-    }
+    const item = pendingOpenClawMessage.value;
+    if (!item) return;
+    pendingOpenClawMessage.value = null;
+    updateOpenClawMessage(item.sessionKey, item.userMessageId, { status: "error" });
+    const message = reason === "__OPENCLAW_STOPPED__" ? "OpenClaw 已停止运行，最新待发送消息没有继续发送。请重新启动后再发送。" : reason || "最新待发送消息已取消。";
+    appendOpenClawNotice(item.sessionKey, message, "error");
   }
   function buildOpenClawSendPayload(text2, attachments) {
     const imageAtts = attachments?.filter((a) => a.type === "image" && a.content) || [];
@@ -20958,6 +21012,56 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sendAtts = imageAtts.length ? imageAtts.map((a) => ({ type: a.type, mimeType: a.mimeType, content: a.content, fileName: a.fileName })) : void 0;
     return { sendText, sendAtts };
   }
+  function isPlaceholderOpenClawModelId(modelId) {
+    const text2 = String(modelId || "").trim();
+    return !text2 || text2.includes("\u8bf7\u586b\u5199\u6a21\u578b\u540d\u79f0") || text2.toLowerCase() === "please-fill-model-name";
+  }
+  function resolveOpenClawModelId(modelId) {
+    if (modelId && typeof modelId === "object") {
+      if (modelId.provider && modelId.model && !isPlaceholderOpenClawModelId(modelId.model)) return `${modelId.provider}/${modelId.model}`;
+      return resolveOpenClawModelId(modelId.value || modelId.id || modelId.model || "");
+    }
+    const raw = String(modelId || "").trim();
+    if (!raw || raw === "cifu-tech-default" || isPlaceholderOpenClawModelId(raw)) return null;
+    try {
+      const modelsStore = useModelsStore();
+      const matched = modelsStore.selectedModels.find((item) => item?.value === raw || item?.model === raw || item?.label === raw || `${item?.provider || ""}/${item?.model || ""}` === raw);
+      if (matched?.provider && matched?.model && !isPlaceholderOpenClawModelId(matched.model)) {
+        return `${matched.provider}/${matched.model}`;
+      }
+      if (matched) return null;
+    } catch {
+    }
+    return raw;
+  }
+  function getPreferredOpenClawModelId(sessionKey) {
+    try {
+      const modelsStore = useModelsStore();
+      const preferred = modelsStore.currentModel?.value || modelsStore.currentModel?.model || modelsStore.currentModel || null;
+      const resolved = resolveOpenClawModelId(preferred);
+      if (resolved) return resolved;
+      const firstReal = modelsStore.selectedModels.find((item) => item?.provider && item?.model && item?.value !== "cifu-tech-default" && !isPlaceholderOpenClawModelId(item.model));
+      if (firstReal) return `${firstReal.provider}/${firstReal.model}`;
+    } catch {
+    }
+    return resolveOpenClawModelId(sessionModelMap.value[sessionKey] || currentModel.value);
+  }
+  async function ensureOpenClawSessionModel(sessionKey) {
+    const desired = getPreferredOpenClawModelId(sessionKey);
+    if (!desired) return;
+    const current = resolveOpenClawModelId(sessionModelMap.value[sessionKey]);
+    if (current === desired) return;
+    sessionModelMap.value[sessionKey] = desired;
+    if (_isWsReady()) {
+      await _ws?.chatSend(sessionKey, "/model " + desired);
+      return;
+    }
+    const api = getApi();
+    if (api?.gatewayChatSend) {
+      const response = await api.gatewayChatSend({ sessionKey, message: "/model " + desired, timeoutMs: 8e3 });
+      if (!response?.ok) throw new Error(response?.error || "OpenClaw model switch failed");
+    }
+  }
   async function sendOpenClawToGateway(item) {
     const sk = item.sessionKey;
     if (!_isOpenClawSendPathAvailable()) return false;
@@ -20969,7 +21073,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         console.warn("[aiChat] OpenClaw send timeout: no reply event in 45 seconds");
         sending.value = false;
         currentRunId.value = null;
-        appendOpenClawNotice(sk, "OpenClaw 已收到请求，正在同步回复。可以先继续使用其它功能，稍后回到本会话查看。", "done");
+        updateOpenClawMessage(sk, item.userMessageId, { status: "error" });
+        appendOpenClawNotice(sk, "OpenClaw 45 秒内没有返回回复，已释放当前发送状态。请确认模型配置有效，或重启 Gateway 后重新发送。", "error");
         scheduleOpenClawHistorySync(sk);
         setTimeout(() => flushOpenClawQueue(), 0);
       }
@@ -20977,6 +21082,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const { sendText, sendAtts } = buildOpenClawSendPayload(item.text, item.attachments);
     try {
       let result;
+      let usedIpcFallback = false;
+      await ensureOpenClawSessionModel(sk);
       if (_isWsReady()) {
         result = await _ws?.chatSend(sk, sendText, sendAtts);
       } else {
@@ -20985,11 +21092,18 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         const response = await api.gatewayChatSend({ sessionKey: sk, message: sendText, attachments: sendAtts, timeoutMs: 15e3 });
         if (!response?.ok) throw new Error(response?.error || "OpenClaw Gateway 发送失败");
         result = response.result;
+        usedIpcFallback = true;
         scheduleOpenClawHistorySync(sk);
       }
       clearTimeout(timeoutId);
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] chat.send response | runId=", result?.runId);
       if (result?.runId) currentRunId.value = result.runId;
+      scheduleOpenClawHistorySync(sk);
+      if (usedIpcFallback && !_isWsReady()) {
+        sending.value = false;
+        currentRunId.value = null;
+        setTimeout(() => flushOpenClawQueue(), 0);
+      }
       return true;
     } catch (e) {
       clearTimeout(timeoutId);
@@ -21005,11 +21119,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (!_isOpenClawSendPathAvailable()) return;
     _flushingOpenClawQueue = true;
     try {
-      while (queuedOpenClawMessages.value.length && _isOpenClawSendPathAvailable() && !sending.value) {
-        const item = queuedOpenClawMessages.value[0];
-        queuedOpenClawMessages.value = queuedOpenClawMessages.value.slice(1);
+      const item = pendingOpenClawMessage.value;
+      if (item && _isOpenClawSendPathAvailable() && !sending.value) {
+        pendingOpenClawMessage.value = null;
         await sendOpenClawToGateway(item);
-        if (sending.value) break;
       }
     } finally {
       _flushingOpenClawQueue = false;
@@ -21129,7 +21242,15 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     const sk = ensureActiveSession();
     if (!sk || !text2?.trim() && !attachments?.length) return;
     if (text2?.trim() && handleCommand(text2.trim())) return;
-    const shouldQueue = !_isOpenClawSendPathAvailable() || sending.value;
+    if (sending.value) {
+      appendOpenClawNotice(sk, "OpenClaw 正在处理上一条消息，本条暂未发送。请等待当前回复完成后再发送，或点击停止后重新发送。", "done");
+      return;
+    }
+    if (pendingOpenClawMessage.value) {
+      appendOpenClawNotice(sk, "OpenClaw 尚未完全启动，上一条消息仍在等待发送。请等待启动完成，或点击停止后重新发送。", "done");
+      return;
+    }
+    const shouldQueue = !_isOpenClawSendPathAvailable();
     const validation = validateOpenClawPayload(text2, attachments, shouldQueue);
     const userMsg = {
       id: crypto.randomUUID(),
@@ -21142,7 +21263,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       tools: [],
       attachments: attachments || [],
       timestamp: Date.now(),
-      status: validation.ok ? "done" : "error"
+      status: validation.ok ? "done" : "error",
+      _localOnly: true
     };
     const msgs = messagesMap.value[sk] || [];
     messagesMap.value[sk] = [...msgs, userMsg];
@@ -21161,20 +21283,26 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       createdAt: Date.now()
     };
     if (!_isOpenClawSendPathAvailable()) {
-      queueOpenClawMessage(item, "OpenClaw 会话连接尚未就绪");
-      return;
-    }
-    if (sending.value) {
-      queueOpenClawMessage(item, "上一条 OpenClaw 消息仍在处理中");
+      queueOpenClawMessage(item, "OpenClaw 尚未完全启动");
       return;
     }
     await sendOpenClawToGateway(item);
   }
   function abortMessage() {
-    if (activeSessionKey.value) {
-      _ws?.chatAbort(activeSessionKey.value, currentRunId.value);
+    const sk = activeSessionKey.value;
+    if (sk) {
+      const runId = currentRunId.value;
+      _ws?.chatAbort(sk, runId);
+      const msgs = messagesMap.value[sk] || [];
+      const idx = runId ? msgs.findIndex((m) => m.runId === runId && m.role === "assistant") : msgs.findIndex((m) => m.role === "assistant" && (m.status === "streaming" || m._streaming === true));
+      if (idx >= 0) {
+        const next = msgs.slice();
+        next[idx] = { ...next[idx], status: "error", _streaming: false };
+        messagesMap.value[sk] = next;
+      }
       sending.value = false;
       currentRunId.value = null;
+      appendOpenClawNotice(sk, "已停止当前 OpenClaw 任务。", "done");
     }
     failOpenClawQueue("已停止当前生成，待发送消息也已取消。");
   }
@@ -21214,8 +21342,10 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function switchModel(modelId) {
     const sk = activeSessionKey.value;
     if (sk) {
-      sessionModelMap.value[sk] = modelId;
-      _ws?.chatSend(sk, "/model " + modelId);
+      const resolved = resolveOpenClawModelId(modelId);
+      if (!resolved) return;
+      sessionModelMap.value[sk] = resolved;
+      _ws?.chatSend(sk, "/model " + resolved);
     }
   }
   function getSessionModel(sessionKey) {
@@ -21242,6 +21372,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     inputText,
     sending,
     currentRunId,
+    hasPendingOpenClawMessage,
     showCommandPalette,
     profile,
     // computed
@@ -25481,7 +25612,7 @@ const _sfc_main$c = {
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
             ]),
-            false && __props.sending ? (openBlock(), createElementBlock("button", {
+            __props.sending && !canSend.value ? (openBlock(), createElementBlock("button", {
               key: 0,
               class: "send-btn stop-btn",
               onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("stop")),
@@ -26036,31 +26167,42 @@ const _sfc_main$9 = {
       aiAvatarImg: "",
       aiColor: "#4edea3"
     });
-    const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
+    const activeSending = computed(() => agentMode.value === "openclaw" ? store.sending || store.hasPendingOpenClawMessage : agentMode.value === "collab" ? collabSending.value : hermesSending.value);
     const gatewayAvailable = computed(() => store.isReady || gatewayStore.gatewayReady);
     const activeReady = computed(() => agentMode.value === "openclaw" ? store.isReady : agentMode.value === "collab" ? !collabSending.value && store.isReady && !store.sending : !hermesSending.value);
     const isWaitingForAi = computed(() => {
       if (agentMode.value === "hermes") return hermesSending.value;
       if (agentMode.value === "collab") return collabSending.value;
-      if (!store.sending) return false;
-      const msgs = store.currentMessages;
-      if (!msgs.length) return false;
-      const last = msgs[msgs.length - 1];
-      return last.role === "user";
+      return !!store.sending || !!store.hasPendingOpenClawMessage;
     });
+    function isPlaceholderSessionModelId(modelId) {
+      const text2 = String(modelId || "").trim();
+      return !text2 || text2 === "cifu-tech-default" || text2.includes("请填写模型名称") || text2.toLowerCase() === "please-fill-model-name";
+    }
     const sessionModels = computed(
       () => modelsStore.selectedModels.map((m) => ({
-        id: m.value,
+        id: m.provider && m.model ? `${m.provider}/${m.model}` : m.value,
         name: m.label,
-        provider: m.source
-      }))
+        provider: m.provider || m.source,
+        model: m.model,
+        value: m.value
+      })).filter((model) => !isPlaceholderSessionModelId(model.id || model.model || model.value))
     );
+    function firstRealSessionModelId() {
+      const found = sessionModels.value.find((model) => !isPlaceholderSessionModelId(model.id || model.model || model.value));
+      return found?.id || found?.model || null;
+    }
     const sessionCurrentModelId = computed(() => {
       const sk = store.activeSessionKey;
       if (sk && store.sessionModelMap[sk]) {
-        return store.sessionModelMap[sk];
+        const mapped = store.sessionModelMap[sk];
+        if (!isPlaceholderSessionModelId(mapped)) return mapped;
       }
-      return modelsStore.currentModel?.value || null;
+      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
+      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
+      const currentValue = current?.value || null;
+      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
+      return firstRealSessionModelId();
     });
     let _storeInitDone = false;
     onMounted(() => {
@@ -26086,7 +26228,7 @@ const _sfc_main$9 = {
       loadingModels.value = false;
     }
     function handleNewSession() {
-      const modelId = modelsStore.currentModel?.value || null;
+      const modelId = sessionCurrentModelId.value || firstRealSessionModelId() || null;
       store.createSession(modelId);
     }
     function handleModelSelect(modelId) {
@@ -26427,7 +26569,7 @@ const _sfc_main$9 = {
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
-      const found = modelsStore.selectedModels.find((item) => item.value === selectedId || item.model === selectedId || item.label === selectedId) || modelsStore.selectedModels[0] || {};
+      const found = modelsStore.selectedModels.find((item) => item.value === selectedId || item.model === selectedId || item.label === selectedId || `${item.provider || ""}/${item.model || ""}` === selectedId) || modelsStore.selectedModels.find((item) => item?.provider && item?.model && item?.value !== "cifu-tech-default" && !isPlaceholderSessionModelId(item.model)) || {};
       const baseUrl = found.base || found.baseUrl || "";
       const provider = baseUrl ? "openai-api" : found.provider || (String(found.value || "").split("-")[0]) || "";
       return {
@@ -27528,7 +27670,12 @@ const _sfc_main$5 = {
       }
     }
     function onMinimize() {
-      window.uclaw?.ipcMinimize();
+      if (window.uclaw?.ipcMinimize) window.uclaw.ipcMinimize();
+      else window.uclaw?.ipcSend?.("window-minimize");
+    }
+    function onToggleMaximize() {
+      if (window.uclaw?.ipcToggleMaximize) window.uclaw.ipcToggleMaximize();
+      else window.uclaw?.ipcSend?.("window-toggle-maximize");
     }
     function onClose() {
       window.uclaw?.ipcClose();
@@ -27580,10 +27727,17 @@ const _sfc_main$5 = {
             createBaseVNode("span", { class: "iconfont icon-clawzuixiaohua" }, null, -1)
           ])]),
           createBaseVNode("button", {
+            class: "win-btn win-btn-maximize",
+            onClick: onToggleMaximize,
+            title: "最大化/还原"
+          }, [..._cache[3] || (_cache[3] = [
+            createBaseVNode("span", { class: "window-maximize-glyph" }, "□", -1)
+          ])]),
+          createBaseVNode("button", {
             class: "win-btn win-btn-close",
             onClick: onClose,
             title: "关闭"
-          }, [..._cache[3] || (_cache[3] = [
+          }, [..._cache[4] || (_cache[4] = [
             createBaseVNode("span", { class: "iconfont icon-clawguanbi1" }, null, -1)
           ])])
         ])
@@ -27895,7 +28049,9 @@ const _sfc_main = {
           console.warn("[models] skip malformed model config:", e?.message || e);
           return;
         }
-        window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").catch((e) => {
+        window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").then(() => {
+          window.dispatchEvent(new CustomEvent("uclaw-openclaw-config-updated"));
+        }).catch((e) => {
           console.warn("[models] write OpenClaw config failed:", e?.message || e);
         });
       }, 800);
