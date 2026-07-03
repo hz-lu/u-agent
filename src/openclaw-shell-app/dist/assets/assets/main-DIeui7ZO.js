@@ -26234,7 +26234,16 @@ const _sfc_main$9 = {
       store.createSession(modelId);
     }
     function handleModelSelect(modelId) {
-      store.switchModel(modelId);
+      const selectedId = String(modelId || "").trim();
+      const matched = modelsStore.selectedModels.find((item) => item?.value === selectedId || item?.model === selectedId || item?.label === selectedId || `${item?.provider || ""}/${item?.model || ""}` === selectedId);
+      const resolvedId = matched?.provider && matched?.model ? `${matched.provider}/${matched.model}` : selectedId;
+      if (matched && resolvedId && !isPlaceholderSessionModelId(resolvedId)) {
+        modelsStore.setSelectedModels(
+          modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item === matched || item.value === matched.value || `${item.provider || ""}/${item.model || ""}` === resolvedId }))
+        );
+        window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model: matched } }));
+      }
+      store.switchModel(resolvedId || modelId);
     }
     function handleReconnect() {
       console.log("[AiChat] 手动重试连接...");
