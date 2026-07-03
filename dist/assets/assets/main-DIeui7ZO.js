@@ -21036,6 +21036,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     return raw;
   }
   function getPreferredOpenClawModelId(sessionKey) {
+    const sessionModel = resolveOpenClawModelId(sessionModelMap.value[sessionKey]);
+    if (sessionModel) return sessionModel;
     try {
       const modelsStore = useModelsStore();
       const preferred = modelsStore.currentModel?.value || modelsStore.currentModel?.model || modelsStore.currentModel || null;
@@ -26238,9 +26240,13 @@ const _sfc_main$9 = {
       const matched = modelsStore.selectedModels.find((item) => item?.value === selectedId || item?.model === selectedId || item?.label === selectedId || `${item?.provider || ""}/${item?.model || ""}` === selectedId);
       const resolvedId = matched?.provider && matched?.model ? `${matched.provider}/${matched.model}` : selectedId;
       if (matched && resolvedId && !isPlaceholderSessionModelId(resolvedId)) {
+        const nextModels = modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item === matched || item.value === matched.value || `${item.provider || ""}/${item.model || ""}` === resolvedId }));
         modelsStore.setSelectedModels(
-          modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item === matched || item.value === matched.value || `${item.provider || ""}/${item.model || ""}` === resolvedId }))
+          nextModels
         );
+        window.uclaw?.ipcWriteOpenClawConfig?.({ models: nextModels }, "model").catch((e) => {
+          console.warn("[models] write selected model from chat failed:", e?.message || e);
+        });
         window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model: matched } }));
       }
       store.switchModel(resolvedId || modelId);
