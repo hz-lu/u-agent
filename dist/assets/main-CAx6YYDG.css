@@ -6594,7 +6594,8 @@ html.light .history-empty[data-v-48c21956] {
   display: flex;
   flex-direction: column;
   background: var(--background);
-  width: 944px;
+  width: 100%;
+  min-width: 0;
 }
 .chat-layout[data-v-f16be7f3] {
   flex: 1;
