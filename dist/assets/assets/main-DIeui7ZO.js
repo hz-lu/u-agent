@@ -20711,13 +20711,18 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isSameOpenClawMessage(a, b) {
     if (!a || !b) return false;
     if (a.id && b.id && a.id === b.id) return true;
-    if (a.role === "user" || b.role === "user") return false;
     const ac = String(a.content || "").trim();
     const bc = String(b.content || "").trim();
     if (!ac || !bc || ac !== bc || a.role !== b.role) return false;
     const at = Number(a.timestamp || 0);
     const bt = Number(b.timestamp || 0);
-    return at > 0 && bt > 0 && Math.abs(at - bt) < 3e5;
+    if (at <= 0 || bt <= 0) return false;
+    const timeDiff = Math.abs(at - bt);
+    if (a.role === "user") {
+      if (a.idempotencyKey && b.idempotencyKey && a.idempotencyKey === b.idempotencyKey) return true;
+      return Boolean(a._localOnly || b._localOnly) && timeDiff < 5000;
+    }
+    return timeDiff < 3e5;
   }
   function mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit = 200) {
     const localMsgs = messagesMap.value[sessionKey] || [];

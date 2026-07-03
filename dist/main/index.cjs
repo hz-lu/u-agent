@@ -23689,6 +23689,35 @@ function registerIPCHandlers({ gateway }) {
   function sanitizeSessionKey(key) {
     return (key || "default").replace(/[:]/g, "-").replace(/[^a-zA-Z0-9_\-.]/g, "_");
   }
+  function isSamePersistedChatMessage(a, b) {
+    if (!a || !b) return false;
+    if (a.id && b.id && a.id === b.id) return true;
+    if (a.role !== b.role) return false;
+    const ac = String(a.content || "").trim();
+    const bc = String(b.content || "").trim();
+    if (!ac || !bc || ac !== bc) return false;
+    const at = Number(a.timestamp || 0);
+    const bt = Number(b.timestamp || 0);
+    if (at <= 0 || bt <= 0) return false;
+    const timeDiff = Math.abs(at - bt);
+    if (a.role === "user") {
+      if (a.idempotencyKey && b.idempotencyKey && a.idempotencyKey === b.idempotencyKey) return true;
+      return timeDiff < 5000;
+    }
+    return timeDiff < 3e5;
+  }
+  function dedupePersistedChatMessages(messages) {
+    const result = [];
+    for (const msg of Array.isArray(messages) ? messages : []) {
+      const idx = result.findIndex((existing) => isSamePersistedChatMessage(existing, msg));
+      if (idx >= 0) {
+        result[idx] = { ...result[idx], ...msg, id: result[idx].id || msg.id };
+      } else {
+        result.push(msg);
+      }
+    }
+    return result;
+  }
   electron.ipcMain.handle("save-chat-message", async (_, sessionKey, message) => {
     try {
       const dir = path$1.join(CHAT_DIR, sanitizeSessionKey(sessionKey));
@@ -23706,7 +23735,8 @@ function registerIPCHandlers({ gateway }) {
       const dir = path$1.join(CHAT_DIR, sanitizeSessionKey(sessionKey));
       fs$1.mkdirSync(dir, { recursive: true });
       const msgFile = path$1.join(dir, "messages.jsonl");
-      const lines = messages.map((m) => JSON.stringify(m)).join("\n") + "\n";
+      const cleanMessages = dedupePersistedChatMessages(messages);
+      const lines = cleanMessages.map((m) => JSON.stringify(m)).join("\n") + "\n";
       fs$1.writeFileSync(msgFile, lines);
       return true;
     } catch (e) {
@@ -23728,12 +23758,7 @@ function registerIPCHandlers({ gateway }) {
         } catch {
         }
       }
-      const seen = /* @__PURE__ */ new Map();
-      for (const m of messages) {
-        if (m.id) seen.set(m.id, m);
-        else seen.set(Math.random(), m);
-      }
-      const deduped = [...seen.values()];
+      const deduped = dedupePersistedChatMessages(messages);
       return limit ? deduped.slice(-limit) : deduped;
     } catch (e) {
       console.error("[chat-persist] load error:", e);
