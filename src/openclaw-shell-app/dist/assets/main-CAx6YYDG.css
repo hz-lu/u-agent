@@ -7516,7 +7516,7 @@ to {
   color: var(--text-secondary);
 }@font-face {
   font-family: "iconfont"; /* Project id 5166553 */
-  src: url("https://at.alicdn.com/t/c/font_5166553_u9vpb1kec7.woff2?t=1779089405166") format("woff2"), url("https://at.alicdn.com/t/c/font_5166553_u9vpb1kec7.woff?t=1779089405166") format("woff"), url("https://at.alicdn.com/t/c/font_5166553_u9vpb1kec7.ttf?t=1779089405166") format("truetype");
+  src: url("./font_5166553_u9vpb1kec7.woff2") format("woff2"), url("./font_5166553_u9vpb1kec7.woff") format("woff"), url("./font_5166553_u9vpb1kec7.ttf") format("truetype");
 }
 .iconfont {
   font-family: "iconfont" !important;

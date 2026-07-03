@@ -17,6 +17,9 @@ for (const required of [
   path.join(sourceDist, "preload", "index.js"),
   path.join(sourceDist, "assets", "assets", "main-DIeui7ZO.js"),
   path.join(sourceDist, "assets", "main-CAx6YYDG.css"),
+  path.join(sourceDist, "assets", "font_5166553_u9vpb1kec7.woff2"),
+  path.join(sourceDist, "assets", "font_5166553_u9vpb1kec7.woff"),
+  path.join(sourceDist, "assets", "font_5166553_u9vpb1kec7.ttf"),
   path.join(sourceDist, "assets", "main", "index.html"),
   path.join(sourceDist, "assets", "hermes-frame.html")
 ]) {
@@ -50,5 +53,10 @@ mainSource = mainSource.replaceAll(
 fs.writeFileSync(mainProcess, mainSource, "utf8");
 fs.writeFileSync(mainProcessCjs, mainSource, "utf8");
 fs.copyFileSync(preload, preloadCjs);
+
+const assetCss = fs.readFileSync(path.join(targetDist, "assets", "main-CAx6YYDG.css"), "utf8");
+if (assetCss.includes("at.alicdn.com")) {
+  throw new Error("Portable build must not depend on remote iconfont CDN assets.");
+}
 
 console.log(`Built OpenClaw shell app from ${path.relative(projectRoot, sourceApp)} to dist/.`);

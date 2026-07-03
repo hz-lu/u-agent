@@ -2365,7 +2365,7 @@ function createWindow(gateway) {
     minWidth: 800,
     minHeight: 600,
     title: APP_NAME,
-    maximizable: false,
+    maximizable: true,
     frame: false,
     icon: appIconPath,
     webPreferences: {
@@ -2375,7 +2375,7 @@ function createWindow(gateway) {
       devTools: IS_DEV
     },
     show: false,
-    backgroundColor: "#0a0a0a"
+    backgroundColor: "#f0f2f5"
   });
   createTray();
   mainWindow$1.on("close", (event) => {
