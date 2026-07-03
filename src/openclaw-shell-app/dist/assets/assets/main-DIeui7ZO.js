@@ -14205,6 +14205,7 @@ const _sfc_main$u = {
         modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item.value === model.value }))
       );
       if (isChanging) {
+        window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model } }));
         showRestartCardNotice();
       }
     }
@@ -26193,15 +26194,15 @@ const _sfc_main$9 = {
       return found?.id || found?.model || null;
     }
     const sessionCurrentModelId = computed(() => {
+      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
+      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
+      const currentValue = current?.value || null;
+      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
       const sk = store.activeSessionKey;
       if (sk && store.sessionModelMap[sk]) {
         const mapped = store.sessionModelMap[sk];
         if (!isPlaceholderSessionModelId(mapped)) return mapped;
       }
-      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
-      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
-      const currentValue = current?.value || null;
-      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
       return firstRealSessionModelId();
     });
     let _storeInitDone = false;
@@ -26217,6 +26218,7 @@ const _sfc_main$9 = {
     onMounted(() => {
       loadHermesSession();
       window.addEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      window.addEventListener("uclaw-active-model-changed", handleActiveModelChanged);
       if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
       if (hermesActiveTaskId.value) resumeHermesTask(hermesActiveTaskId.value, "hermes");
       if (collabActiveTaskId.value) resumeHermesTask(collabActiveTaskId.value, "collab");
@@ -26323,6 +26325,15 @@ const _sfc_main$9 = {
     }
     function handleHermesStateEvent() {
       nextTick(() => scrollToBottom(0));
+    }
+    function handleActiveModelChanged() {
+      const sk = store.activeSessionKey;
+      const modelId = sessionCurrentModelId.value || firstRealSessionModelId();
+      if (sk && modelId && !isPlaceholderSessionModelId(modelId)) {
+        store.sessionModelMap[sk] = modelId;
+        if (store.isReady) store.switchModel(modelId);
+      }
+      saveHermesSession();
     }
     function handleHermesChatProgress(payload) {
       const now = Date.now();
@@ -27042,6 +27053,7 @@ const _sfc_main$9 = {
     }
     onUnmounted(() => {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      window.removeEventListener("uclaw-active-model-changed", handleActiveModelChanged);
       if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
     });
     return (_ctx, _cache) => {
@@ -28050,6 +28062,8 @@ const _sfc_main = {
           return;
         }
         window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").then(() => {
+          const activeModel = payload.find((item) => item?.isCurrent) || null;
+          if (activeModel) window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model: activeModel } }));
           window.dispatchEvent(new CustomEvent("uclaw-openclaw-config-updated"));
         }).catch((e) => {
           console.warn("[models] write OpenClaw config failed:", e?.message || e);

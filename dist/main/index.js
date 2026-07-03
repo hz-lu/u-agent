@@ -2945,7 +2945,6 @@ function updateModelsField(config, modelsData) {
     providerMap[providerName].models.push({
       id: modelId,
       name: modelId,
-      ...(model.isCifuDefault === true || model.isCifuDefault === 1 ? { isCifuDefault: 1 } : {}),
       input: ["text", "image"],
       contextWindow: 128e3,
       maxTokens: 4096
@@ -3474,6 +3473,24 @@ function rewritePortableOpenClawConfigPaths() {
     if (!fs$1.existsSync(configPath)) return;
     const config = JSON.parse(fs$1.readFileSync(configPath, "utf8"));
     let changed = false;
+    let removedInvalidModelFields = false;
+    const providers = config?.models?.providers;
+    if (providers && typeof providers === "object") {
+      for (const providerConfig of Object.values(providers)) {
+        const providerModels = providerConfig?.models;
+        if (!Array.isArray(providerModels)) continue;
+        for (const model of providerModels) {
+          if (!model || typeof model !== "object") continue;
+          for (const key of ["isCifuDefault", "locked", "source", "value", "label", "provider", "key", "base", "url", "api"]) {
+            if (Object.prototype.hasOwnProperty.call(model, key)) {
+              delete model[key];
+              changed = true;
+              removedInvalidModelFields = true;
+            }
+          }
+        }
+      }
+    }
     const extraDirs = config?.skills?.load?.extraDirs;
     if (Array.isArray(extraDirs)) {
       const normalized = extraDirs.map((entry) => {
@@ -3504,7 +3521,19 @@ function rewritePortableOpenClawConfigPaths() {
         changed = true;
       }
     }
-    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+    if (changed) {
+      if (removedInvalidModelFields) {
+        const backupPath = `${configPath}.bak-invalid-model-fields-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+        try {
+          fs$1.copyFileSync(configPath, backupPath);
+          console.log("[portable] backed up OpenClaw config before model field cleanup:", backupPath);
+        } catch (backupErr) {
+          console.warn("[portable] failed to backup OpenClaw config before cleanup:", backupErr instanceof Error ? backupErr.message : String(backupErr));
+        }
+      }
+      fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+      if (removedInvalidModelFields) console.log("[portable] removed UI-only model fields from OpenClaw config");
+    }
   } catch (err) {
     console.warn("[portable] failed to rewrite OpenClaw config paths:", err instanceof Error ? err.message : String(err));
   }
