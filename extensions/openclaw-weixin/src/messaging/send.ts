@@ -13,6 +13,81 @@ function generateClientId(): string {
   return generateId("openclaw-weixin");
 }
 
+const SEND_RETRY_DELAYS_MS = [800, 2000];
+
+function isTransientSendError(err: unknown): boolean {
+  const anyErr = err as {
+    name?: string;
+    message?: string;
+    code?: string;
+    cause?: { code?: string; name?: string; message?: string };
+  };
+  const haystack = [
+    anyErr?.name,
+    anyErr?.message,
+    anyErr?.code,
+    anyErr?.cause?.name,
+    anyErr?.cause?.code,
+    anyErr?.cause?.message,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return [
+    "aborterror",
+    "fetch failed",
+    "econnreset",
+    "etimedout",
+    "timeout",
+    "socket",
+    "network",
+  ].some((needle) => haystack.includes(needle));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendMessageWithRetry(params: {
+  label: string;
+  to: string;
+  clientId: string;
+  opts: WeixinApiOptions;
+  body: SendMessageReq;
+}): Promise<void> {
+  const maxAttempts = SEND_RETRY_DELAYS_MS.length + 1;
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await sendMessageApi({
+        baseUrl: params.opts.baseUrl,
+        token: params.opts.token,
+        timeoutMs: params.opts.timeoutMs ?? 30_000,
+        body: params.body,
+      });
+      if (attempt > 1) {
+        logger.info(
+          `${params.label}: sent after retry attempt=${attempt} to=${params.to} clientId=${params.clientId}`,
+        );
+      }
+      return;
+    } catch (err) {
+      lastErr = err;
+      const transient = isTransientSendError(err);
+      const canRetry = transient && attempt < maxAttempts;
+      logger.warn(
+        `${params.label}: send attempt ${attempt}/${maxAttempts} failed to=${params.to} clientId=${params.clientId} transient=${String(transient)} err=${String(err)}`,
+      );
+      if (!canRetry) break;
+      await sleep(SEND_RETRY_DELAYS_MS[attempt - 1]);
+    }
+  }
+
+  throw lastErr;
+}
+
 /**
  * Convert markdown-formatted model reply to plain text for Weixin delivery.
  * Preserves newlines; strips markdown syntax.
@@ -95,10 +170,11 @@ export async function sendMessageWeixin(params: {
     clientId,
   });
   try {
-    await sendMessageApi({
-      baseUrl: opts.baseUrl,
-      token: opts.token,
-      timeoutMs: opts.timeoutMs,
+    await sendMessageWithRetry({
+      label: "sendMessageWeixin",
+      to,
+      clientId,
+      opts,
       body: req,
     });
   } catch (err) {
@@ -142,10 +218,11 @@ async function sendMediaItems(params: {
       },
     };
     try {
-      await sendMessageApi({
-        baseUrl: opts.baseUrl,
-        token: opts.token,
-        timeoutMs: opts.timeoutMs,
+      await sendMessageWithRetry({
+        label,
+        to,
+        clientId: lastClientId,
+        opts,
         body: req,
       });
     } catch (err) {
