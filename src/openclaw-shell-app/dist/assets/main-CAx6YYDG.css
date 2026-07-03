@@ -457,6 +457,7 @@ to {
 }
 .home-terminal[data-v-16de922d] {
   overflow: hidden;
+  min-width: 0;
 }
 .home-terminal-header[data-v-16de922d] {
   background: var(--surface);
@@ -487,6 +488,8 @@ to {
   overflow-y: auto;
   align-items: flex-start;
   justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
 }
 .home-no-logs[data-v-16de922d] {
   gap: 16px;
@@ -507,6 +510,12 @@ to {
 .home-log-line[data-v-16de922d] {
   margin-bottom: 2px;
   line-height: 0.8;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+  transition: none;
 }
 .home-log-time[data-v-16de922d] {
   color: #6b7280;
@@ -520,11 +529,17 @@ to {
 .home-log-message[data-v-16de922d] {
   color: #87898c;
   font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+  transition: none;
 }
 .home-env-checks[data-v-16de922d] {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 .home-env-check-card[data-v-16de922d] {
   padding: 12px;
@@ -7767,6 +7782,17 @@ to {
 }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+  overflow-x: hidden;
+}
+
+#app,
+.main-app-layout,
+.main-app-main-wrapper,
+.main-app-page-content,
+.home-home-view {
+  min-width: 0;
+  max-width: 100vw;
+  overflow-x: hidden;
 }
 
 .font-manrope {

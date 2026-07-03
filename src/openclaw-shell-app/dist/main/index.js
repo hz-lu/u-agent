@@ -3683,7 +3683,7 @@ function createGatewayManager() {
   function pollGatewayHealth(port, onFirstResult) {
     stopHealthPoll();
     let attempts = 0;
-    const maxAttempts = 60;
+    const maxAttempts = 180;
     let resolved = false;
     sendBootPhase("waiting-ready", "等待就绪", "正在等待 Gateway 响应...", 40);
     const check = async () => {
@@ -3706,7 +3706,7 @@ function createGatewayManager() {
           });
           req.on("error", rej);
           req.on("timeout", () => {
-            req.destroy();
+            req.destroy(new Error("timeout"));
             rej(new Error("timeout"));
           });
         });
@@ -3860,6 +3860,7 @@ function createGatewayManager() {
     return new Promise(async (resolve, reject) => {
       const env2 = getGatewayEnv();
       const cli = getOpenClawPath();
+      sendGatewayLog("stdout", `正在启动 OpenClaw Gateway: ${cli} gateway --allow-unconfigured`);
       if (isWin()) {
         const cmdExe = path$1.join(process.env.SystemRoot || "C:\\Windows", "System32", "cmd.exe");
         gatewayProc = child_process.spawn(cmdExe, ["/c", `"${cli}"`, "gateway", "--allow-unconfigured"], {
@@ -23548,8 +23549,15 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("start-gateway", async () => {
     try {
-      await gateway.startGateway();
-      return { ok: true };
+      const result = await gateway.startGateway();
+      if (result?.success === false) {
+        return {
+          ok: false,
+          error: result.errorDetail || result.error || "Gateway 启动失败",
+          errorAction: result.errorAction || ""
+        };
+      }
+      return { ok: true, ...result };
     } catch (err) {
       console.error(`启动 Gateway 失败:`, err);
       return { ok: false, error: err.message };
