@@ -2470,7 +2470,7 @@ function createWindow(gateway) {
       devTools: IS_DEV
     },
     show: false,
-    backgroundColor: "#0a0a0a"
+    backgroundColor: "#f0f2f5"
   });
   createTray();
   mainWindow$1.on("close", (event) => {
@@ -2494,12 +2494,14 @@ function createWindow(gateway) {
     console.log(`Window ready from renderer, closing splash and showing`);
     closeSplash();
     mainWindow$1.show();
+    mainWindow$1.focus();
   });
   setTimeout(() => {
     if (mainWindow$1 && !mainWindow$1.isDestroyed() && !mainWindow$1.isVisible()) {
       console.log("[startup] renderer ready timeout; showing main window and continuing startup in background");
       closeSplash();
       mainWindow$1.show();
+      mainWindow$1.focus();
     }
   }, 8e3);
   mainWindow$1.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
@@ -4056,6 +4058,14 @@ function setupLifecycle({ getGateway }) {
     cleanupPortableChildProcesses();
   });
   electron.app.on("activate", async () => {
+    const win = getMainWindow();
+    if (win && !win.isDestroyed()) {
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      return;
+    }
+    await createWindow();
   });
 }
 function bind$2(fn, thisArg) {
@@ -24417,6 +24427,7 @@ if (!electron.app.requestSingleInstanceLock()) {
     const win = getMainWindow();
     if (win) {
       if (win.isMinimized()) win.restore();
+      win.show();
       win.focus();
     }
   });

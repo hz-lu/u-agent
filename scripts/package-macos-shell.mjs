@@ -27,6 +27,10 @@ function run(command, args) {
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed`);
 }
 
+function runNodeScript(script) {
+  run(process.execPath, [path.join(projectRoot, script)]);
+}
+
 function assertFile(filePath, label = filePath) {
   if (!fs.existsSync(filePath)) fail(`Missing ${label}: ${filePath}`);
 }
@@ -99,7 +103,9 @@ function main() {
   if (process.platform !== "darwin") {
     fail("package:macos-shell must be run on macOS because it uses the local Electron.app bundle.");
   }
-  run("npm", ["run", "build"]);
+  runNodeScript("scripts/build-openclaw-shell-app.mjs");
+  run(process.execPath, ["--check", path.join(distRoot, "main", "index.cjs")]);
+  run(process.execPath, ["--check", path.join(distRoot, "preload", "index.cjs")]);
   assertBuildOutput();
   assertFile(electronApp, "local Electron.app");
 

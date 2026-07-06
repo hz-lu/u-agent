@@ -43,6 +43,10 @@ function run(command, args) {
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed`);
 }
 
+function runNodeScript(script) {
+  run(process.execPath, [path.join(projectRoot, script)]);
+}
+
 function assertInside(root, target) {
   const normalizedRoot = path.resolve(root);
   const normalizedTarget = path.resolve(target);
@@ -666,7 +670,7 @@ function main() {
   if (process.platform !== "darwin") {
     fail("stage:macos-portable must be run on macOS.");
   }
-  run("npm", ["run", "package:macos-shell"]);
+  runNodeScript("scripts/package-macos-shell.mjs");
   removeReleaseRoot();
   fs.mkdirSync(releaseRoot, { recursive: true });
   for (const name of ["macos", "runtime", "skills", "extensions"]) removeChild(name);
