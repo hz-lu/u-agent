@@ -14592,13 +14592,20 @@ const _sfc_main$t = {
     const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);
     const hermesSyncing = /* @__PURE__ */ ref(false);
     const hermesSyncMessage = /* @__PURE__ */ ref("");
+    const skillRefreshTimer = /* @__PURE__ */ ref(null);
+    async function refreshLocalSkills() {
+      await fetchAllSkills();
+    }
     async function syncHermesSkills() {
       hermesSyncing.value = true;
       hermesSyncMessage.value = "正在同步已启用技能到 Hermes...";
       try {
+        await fetchAllSkills();
         const result = await window.uclaw.ipcSyncHermesSkills();
         if (!result?.ok) throw new Error(result?.error || "同步失败");
-        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
+        const reloadResult = result.openClawReload || await window.uclaw?.reloadGateway?.();
+        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? "已请求" : "未完成"}；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
+        await fetchAllSkills();
       } catch (err) {
         hermesSyncMessage.value = "同步失败: " + (err?.message || err);
       } finally {
@@ -14631,6 +14638,18 @@ const _sfc_main$t = {
         console.error("toggle skill failed:", err);
       }
     }
+    function handleSkillVisibilityChange() {
+      if (!document.hidden) refreshLocalSkills();
+    }
+    onMounted(() => {
+      refreshLocalSkills();
+      skillRefreshTimer.value = window.setInterval(refreshLocalSkills, 15000);
+      document.addEventListener("visibilitychange", handleSkillVisibilityChange);
+    });
+    onUnmounted(() => {
+      if (skillRefreshTimer.value) window.clearInterval(skillRefreshTimer.value);
+      document.removeEventListener("visibilitychange", handleSkillVisibilityChange);
+    });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$t, [
         createBaseVNode("div", _hoisted_2$s, [
@@ -25351,6 +25370,7 @@ const _sfc_main$c = {
     const attachments = /* @__PURE__ */ ref([]);
     const dragOver = /* @__PURE__ */ ref(false);
     const dragCounter = /* @__PURE__ */ ref(0);
+    const isComposingInput = /* @__PURE__ */ ref(false);
     const textareaRef = /* @__PURE__ */ ref(null);
     const fileInputRef = /* @__PURE__ */ ref(null);
     const cmdWrapRef = /* @__PURE__ */ ref(null);
@@ -25386,12 +25406,19 @@ const _sfc_main$c = {
     }
     function handleKeydown(e) {
       if (e.key === "Enter" && !e.shiftKey) {
+        if (isComposingInput.value || e.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         handleSend();
       }
       if (e.key === "Escape") {
         showCmdMenu.value = false;
       }
+    }
+    function handleCompositionStart() {
+      isComposingInput.value = true;
+    }
+    function handleCompositionEnd() {
+      isComposingInput.value = false;
     }
     function handlePaste(e) {
       const items = e.clipboardData?.items;
@@ -25450,12 +25477,10 @@ const _sfc_main$c = {
         type: isImage ? "image" : "file",
         fileName: file.name,
         mimeType: file.type,
+        filePath: window.uclaw?.getFilePath(file) || file.path || null,
         preview: null,
         content: null
       };
-      if (!isImage) {
-        att.filePath = window.uclaw?.getFilePath(file) || file.path || null;
-      }
       attachments.value.push(att);
       if (!isImage) return;
       const reader = new FileReader();
@@ -25468,6 +25493,17 @@ const _sfc_main$c = {
     }
     function removeAttachment(i) {
       attachments.value.splice(i, 1);
+    }
+    function previewAttachment(att) {
+      if (!att) return;
+      if (att.preview) {
+        window.open(att.preview, "_blank");
+        return;
+      }
+      if (att.filePath) {
+        const url = "file://" + String(att.filePath).replace(/\\/g, "/").split("/").map((part, index) => index === 0 && part === "" ? "" : encodeURIComponent(part)).join("/");
+        window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, "_blank");
+      }
     }
     function handleSend() {
       const text2 = localText.value.trim();
@@ -25523,7 +25559,8 @@ const _sfc_main$c = {
             (openBlock(true), createElementBlock(Fragment, null, renderList(attachments.value, (att, i) => {
               return openBlock(), createElementBlock("div", {
                 key: i,
-                class: normalizeClass(["attachment-chip", { "is-image": att.type === "image" }])
+                class: normalizeClass(["attachment-chip", { "is-image": att.type === "image" }]),
+                onClick: ($event) => previewAttachment(att)
               }, [
                 att.type === "image" && att.preview ? (openBlock(), createElementBlock("img", {
                   key: 0,
@@ -25533,7 +25570,7 @@ const _sfc_main$c = {
                 createBaseVNode("span", _hoisted_6$7, toDisplayString(att.fileName || "文件"), 1),
                 createBaseVNode("button", {
                   class: "chip-remove",
-                  onClick: ($event) => removeAttachment(i)
+                  onClick: withModifiers(($event) => removeAttachment(i), ["stop"])
                 }, "✕", 8, _hoisted_7$7)
               ], 2);
             }), 128))
@@ -25616,6 +25653,8 @@ const _sfc_main$c = {
               rows: 1,
               onKeydown: handleKeydown,
               onInput: handleInput,
+              onCompositionstart: handleCompositionStart,
+              onCompositionend: handleCompositionEnd,
               onPaste: handlePaste
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
@@ -26673,9 +26712,32 @@ const _sfc_main$9 = {
       }
       return !!store.isReady;
     }
+    function normalizeHermesAttachments(attachments = []) {
+      return (Array.isArray(attachments) ? attachments : []).map((att, index) => ({
+        type: att?.type || "file",
+        fileName: att?.fileName || att?.name || `attachment-${index + 1}`,
+        mimeType: att?.mimeType || "",
+        filePath: att?.filePath || "",
+        preview: att?.preview || "",
+        content: att?.content || ""
+      })).filter((att) => att.filePath || att.content || att.preview || att.fileName);
+    }
+    function buildHermesMessageWithAttachments(content, attachments = []) {
+      const normalized = normalizeHermesAttachments(attachments);
+      if (!normalized.length) return { message: content, attachments: normalized };
+      const lines = normalized.map((att, index) => {
+        const location = att.filePath ? `路径：${att.filePath}` : att.content ? "内容：已附带图片 base64 数据" : "位置：仅有预览数据";
+        return `${index + 1}. ${att.fileName || "附件"} (${att.mimeType || att.type || "file"}) ${location}`;
+      });
+      return {
+        message: [content, "", "本轮用户上传了以下附件，请在需要读取文件、图片 OCR 或调用技能时优先使用这些附件：", ...lines].join("\n"),
+        attachments: normalized
+      };
+    }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content) return;
+      const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (hermesSending.value) {
         const recovered = await clearRecoveredHermesTask(hermesActiveTaskId.value, "hermes");
         if (hermesSending.value && !recovered) {
@@ -26715,8 +26777,9 @@ const _sfc_main$9 = {
           hermesRunState.value = "Hermes 已按需自动启动，正在生成回复。";
         }
         const result = await runHermesChatBackground({
-          message: content,
+          message: hermesMessage,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "hermes-ai-chat",
           ...getSelectedHermesModel()
         });
@@ -26751,6 +26814,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
+      const { message: hermesUserMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (!gatewayAvailable.value) {
         appendHermesAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
@@ -26787,7 +26851,7 @@ const _sfc_main$9 = {
           "要求：保留 OpenClaw 已完成的有效内容；指出必要风险；输出最终可执行答案。",
           "",
           "用户原始问题：",
-          content,
+          hermesUserMessage,
           "",
           "OpenClaw 草案：",
           draftText
@@ -26795,6 +26859,7 @@ const _sfc_main$9 = {
         const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "openclaw-hermes-collab",
           ...getSelectedHermesModel()
         });
@@ -26813,6 +26878,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessageV2(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
+      const { message: hermesUserMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (!gatewayAvailable.value) {
         appendCollabAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
@@ -26851,7 +26917,7 @@ const _sfc_main$9 = {
           "输出最终答案即可，不要写复核报告、不要列草案质量表，除非用户要求审稿。",
           "",
           "用户问题：",
-          content,
+          hermesUserMessage,
           "",
           "OpenClaw 内部草案：",
           draftText
@@ -26859,6 +26925,7 @@ const _sfc_main$9 = {
         const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "openclaw-hermes-collab",
           ...getSelectedHermesModel()
         });

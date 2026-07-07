@@ -44,7 +44,7 @@ for (const mainPath of [
   const source = read(mainPath);
   assert(!source.includes('chatCommand.args.join(" ")'), `${mainPath}: Hermes UI log must not print raw command args`);
   assert(source.includes("--oneshot [message redacted]"), `${mainPath}: Hermes UI log should redact oneshot message`);
-  assert(source.includes("messageLength=") && source.includes("String(message).length"), `${mainPath}: Hermes UI log should keep safe message length metadata`);
+  assert(source.includes("messageLength=") && (source.includes("String(message).length") || source.includes("String(effectiveMessage).length")), `${mainPath}: Hermes UI log should keep safe message length metadata`);
 }
 
 const restoreScript = read("scripts/restore-openclaw-shell.mjs");

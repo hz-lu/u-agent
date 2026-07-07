@@ -5098,6 +5098,109 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   fs.writeFileSync(rendererFile, rendererSource, "utf8");
 }
 
+function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+
+  if (!rendererSource.includes("isComposingInput")) {
+    rendererSource = rendererSource.replace(
+      "    const dragCounter = /* @__PURE__ */ ref(0);\n    const textareaRef = /* @__PURE__ */ ref(null);",
+      "    const dragCounter = /* @__PURE__ */ ref(0);\n    const isComposingInput = /* @__PURE__ */ ref(false);\n    const textareaRef = /* @__PURE__ */ ref(null);"
+    );
+    rendererSource = rendererSource.replace(
+      "    function handleKeydown(e) {\n      if (e.key === \"Enter\" && !e.shiftKey) {\n        e.preventDefault();\n        handleSend();\n      }\n      if (e.key === \"Escape\") {\n        showCmdMenu.value = false;\n      }\n    }",
+      "    function handleKeydown(e) {\n      if (e.key === \"Enter\" && !e.shiftKey) {\n        if (isComposingInput.value || e.isComposing || e.keyCode === 229) return;\n        e.preventDefault();\n        handleSend();\n      }\n      if (e.key === \"Escape\") {\n        showCmdMenu.value = false;\n      }\n    }\n    function handleCompositionStart() {\n      isComposingInput.value = true;\n    }\n    function handleCompositionEnd() {\n      isComposingInput.value = false;\n    }"
+    );
+    rendererSource = rendererSource.replace(
+      "              onKeydown: handleKeydown,\n              onInput: handleInput,\n              onPaste: handlePaste",
+      "              onKeydown: handleKeydown,\n              onInput: handleInput,\n              onCompositionstart: handleCompositionStart,\n              onCompositionend: handleCompositionEnd,\n              onPaste: handlePaste"
+    );
+  }
+
+  if (!rendererSource.includes("function previewAttachment(att)")) {
+    rendererSource = rendererSource.replace(
+      "        mimeType: file.type,\n        preview: null,\n        content: null\n      };\n      if (!isImage) {\n        att.filePath = window.uclaw?.getFilePath(file) || file.path || null;\n      }",
+      "        mimeType: file.type,\n        filePath: window.uclaw?.getFilePath(file) || file.path || null,\n        preview: null,\n        content: null\n      };"
+    );
+    rendererSource = rendererSource.replace(
+      "    function removeAttachment(i) {\n      attachments.value.splice(i, 1);\n    }\n    function handleSend() {",
+      "    function removeAttachment(i) {\n      attachments.value.splice(i, 1);\n    }\n    function previewAttachment(att) {\n      if (!att) return;\n      if (att.preview) {\n        window.open(att.preview, \"_blank\");\n        return;\n      }\n      if (att.filePath) {\n        const url = \"file://\" + String(att.filePath).replace(/\\\\/g, \"/\").split(\"/\").map((part, index) => index === 0 && part === \"\" ? \"\" : encodeURIComponent(part)).join(\"/\");\n        window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, \"_blank\");\n      }\n    }\n    function handleSend() {"
+    );
+    rendererSource = rendererSource.replace(
+      "                key: i,\n                class: normalizeClass([\"attachment-chip\", { \"is-image\": att.type === \"image\" }])\n              }, [",
+      "                key: i,\n                class: normalizeClass([\"attachment-chip\", { \"is-image\": att.type === \"image\" }]),\n                onClick: ($event) => previewAttachment(att)\n              }, ["
+    );
+    rendererSource = rendererSource.replace(
+      "                  class: \"chip-remove\",\n                  onClick: ($event) => removeAttachment(i)\n                }, \"✕\", 8, _hoisted_7$7)",
+      "                  class: \"chip-remove\",\n                  onClick: withModifiers(($event) => removeAttachment(i), [\"stop\"])\n                }, \"✕\", 8, _hoisted_7$7)"
+    );
+  }
+
+  if (!rendererSource.includes("function buildHermesMessageWithAttachments(content, attachments = [])")) {
+    rendererSource = rendererSource.replace(
+      "    async function sendHermesMessage(text2, attachments = []) {",
+      "    function normalizeHermesAttachments(attachments = []) {\n      return (Array.isArray(attachments) ? attachments : []).map((att, index) => ({\n        type: att?.type || \"file\",\n        fileName: att?.fileName || att?.name || `attachment-${index + 1}`,\n        mimeType: att?.mimeType || \"\",\n        filePath: att?.filePath || \"\",\n        preview: att?.preview || \"\",\n        content: att?.content || \"\"\n      })).filter((att) => att.filePath || att.content || att.preview || att.fileName);\n    }\n    function buildHermesMessageWithAttachments(content, attachments = []) {\n      const normalized = normalizeHermesAttachments(attachments);\n      if (!normalized.length) return { message: content, attachments: normalized };\n      const lines = normalized.map((att, index) => {\n        const location = att.filePath ? `路径：${att.filePath}` : att.content ? \"内容：已附带图片 base64 数据\" : \"位置：仅有预览数据\";\n        return `${index + 1}. ${att.fileName || \"附件\"} (${att.mimeType || att.type || \"file\"}) ${location}`;\n      });\n      return {\n        message: [content, \"\", \"本轮用户上传了以下附件，请在需要读取文件、图片 OCR 或调用技能时优先使用这些附件：\", ...lines].join(\"\\n\"),\n        attachments: normalized\n      };\n    }\n    async function sendHermesMessage(text2, attachments = []) {"
+    );
+    rendererSource = rendererSource.replace(
+      "      const content = (text2 || \"\").trim();\n      if (!content) return;",
+      "      const content = (text2 || \"\").trim();\n      if (!content) return;\n      const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);"
+    );
+    rendererSource = rendererSource.replace(
+      "          message: content,\n          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),\n          sessionId: \"hermes-ai-chat\",",
+      "          message: hermesMessage,\n          messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),\n          attachments: hermesAttachments,\n          sessionId: \"hermes-ai-chat\","
+    );
+  }
+
+  if (!rendererSource.includes("skillRefreshTimer")) {
+    rendererSource = rendererSource.replace(
+      "    const hermesSyncing = /* @__PURE__ */ ref(false);\n    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");\n    async function syncHermesSkills() {",
+      "    const hermesSyncing = /* @__PURE__ */ ref(false);\n    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");\n    const skillRefreshTimer = /* @__PURE__ */ ref(null);\n    async function refreshLocalSkills() {\n      await fetchAllSkills();\n    }\n    async function syncHermesSkills() {"
+    );
+    rendererSource = rendererSource.replace(
+      "      try {\n        const result = await window.uclaw.ipcSyncHermesSkills();",
+      "      try {\n        await fetchAllSkills();\n        const result = await window.uclaw.ipcSyncHermesSkills();"
+    );
+    rendererSource = rendererSource.replace(
+      "        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;",
+      "        const reloadResult = result.openClawReload || await window.uclaw?.reloadGateway?.();\n        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? \"已请求\" : \"未完成\"}；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;\n        await fetchAllSkills();"
+    );
+    const skillComponentStart = rendererSource.indexOf("const _sfc_main$t = {");
+    const skillComponentEnd = skillComponentStart >= 0 ? rendererSource.indexOf("const Skill = ", skillComponentStart) : -1;
+    if (skillComponentStart < 0 || skillComponentEnd < 0) throw new Error("Could not find Skill component while patching live skill refresh.");
+    const beforeSkill = rendererSource.slice(0, skillComponentStart);
+    const skillComponent = rendererSource.slice(skillComponentStart, skillComponentEnd).replace(
+      "    return (_ctx, _cache) => {",
+      "    function handleSkillVisibilityChange() {\n      if (!document.hidden) refreshLocalSkills();\n    }\n    onMounted(() => {\n      refreshLocalSkills();\n      skillRefreshTimer.value = window.setInterval(refreshLocalSkills, 15000);\n      document.addEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    onUnmounted(() => {\n      if (skillRefreshTimer.value) window.clearInterval(skillRefreshTimer.value);\n      document.removeEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    return (_ctx, _cache) => {"
+    );
+    rendererSource = beforeSkill + skillComponent + rendererSource.slice(skillComponentEnd);
+  }
+
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+
+  let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
+  if (!mainSource.includes("function buildHermesAttachmentContext(attachments = [])")) {
+    mainSource = mainSource.replace(
+      "    const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};",
+      "    function materializeHermesAttachment(att, index) {\n      const filePath = String(att?.filePath || \"\").trim();\n      const content = String(att?.content || \"\").trim();\n      if (filePath || !content) return filePath;\n      const uploadsDir = path$1.join(getAppRoot(), \"data\", \".hermes\", \"uploads\");\n      fs$1.mkdirSync(uploadsDir, { recursive: true });\n      const name = String(att?.fileName || `attachment-${index + 1}`).replace(/[\\\\/:*?\\\"<>|]/g, \"_\").trim() || `attachment-${index + 1}`;\n      const ext = path$1.extname(name) || (String(att?.mimeType || \"\").includes(\"png\") ? \".png\" : String(att?.mimeType || \"\").includes(\"jpeg\") || String(att?.mimeType || \"\").includes(\"jpg\") ? \".jpg\" : \".bin\");\n      const base = path$1.basename(name, path$1.extname(name)).replace(/[^A-Za-z0-9_.-]+/g, \"-\") || \"attachment\";\n      const target = path$1.join(uploadsDir, `${Date.now()}-${index + 1}-${base}${ext}`);\n      fs$1.writeFileSync(target, Buffer.from(content, \"base64\"));\n      return target;\n    }\n    function buildHermesAttachmentContext(attachments = []) {\n      const rows = (Array.isArray(attachments) ? attachments : []).map((att, index) => {\n        const name = String(att?.fileName || att?.name || `attachment-${index + 1}`).trim();\n        const type2 = String(att?.mimeType || att?.type || \"file\").trim();\n        const filePath = materializeHermesAttachment(att, index);\n        const content = String(att?.content || \"\").trim();\n        if (!filePath && !content) return null;\n        const parts = [`${index + 1}. ${name}`, `类型：${type2}`];\n        if (filePath) parts.push(`路径：${filePath}`);\n        if (content) parts.push(`内联内容：base64，长度 ${content.length}`);\n        return parts.join(\"；\");\n      }).filter(Boolean);\n      if (!rows.length) return \"\";\n      return [\"\", \"用户本轮上传附件如下。需要读取文件、图片 OCR 或调用技能时，请使用这些路径/内联内容：\", ...rows].join(\"\\n\");\n    }\n    const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};"
+    );
+    mainSource = mainSource.replace(
+      "    const args = [\"--oneshot\", message];",
+      "    const attachmentContext = buildHermesAttachmentContext(options.attachments);\n    const effectiveMessage = attachmentContext ? message + \"\\n\" + attachmentContext : message;\n    const args = [\"--oneshot\", effectiveMessage];"
+    );
+    mainSource = mainSource.replaceAll("String(message).length + \" provider=\"", "String(effectiveMessage).length + \" provider=\"");
+  }
+  if (!mainSource.includes("openClawReload")) {
+    mainSource = mainSource.replace(
+      "    function skillSlug(value) {\n      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");\n    }",
+      "    function skillSlug(value) {\n      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");\n    }\n    function reloadOpenClawSkills() {\n      const reload = reloadGateway();\n      safeSend(\"gateway-log\", { type: reload?.ok ? \"stdout\" : \"stderr\", msg: \"[skills] OpenClaw Gateway reload \" + (reload?.ok ? \"requested\" : \"failed\") + (reload?.error ? \": \" + reload.error : \"\") });\n      return reload;\n    }"
+    );
+    mainSource = mainSource.replace(
+      "        missingNames,\n        unchanged\n      };",
+      "        missingNames,\n        unchanged,\n        openClawReload: reloadOpenClawSkills()\n      };"
+    );
+  }
+  fs.writeFileSync(mainFile, mainSource, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -5161,6 +5264,7 @@ patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 patchWindowsResponsiveChatAndWechat(mainProcessTarget, preloadTarget, rendererTarget);
 patchGatewayReadinessAndPerfStabilizer(mainProcessTarget, rendererTarget);
+patchAiChatSkillRuntimeFixes(mainProcessTarget, rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);

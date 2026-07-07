@@ -711,6 +711,11 @@ class HermesManager {
     function skillSlug(value) {
       return String(value || "").toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     }
+    function reloadOpenClawSkills() {
+      const reload = reloadGateway();
+      safeSend("gateway-log", { type: reload?.ok ? "stdout" : "stderr", msg: "[skills] OpenClaw Gateway reload " + (reload?.ok ? "requested" : "failed") + (reload?.error ? ": " + reload.error : "") });
+      return reload;
+    }
     function uniqueTargetName(name, used) {
       let candidate = name;
       let index = 2;
@@ -867,7 +872,8 @@ class HermesManager {
         catalogMarkdownPath: catalog.catalogMd,
         sampleCommands: verification.commands.slice(0, 20),
         missingNames,
-        unchanged
+        unchanged,
+        openClawReload: reloadOpenClawSkills()
       };
       writeJson(reportPath, report);
       if (!silent) safeSend("hermes-log", { type: "system", msg: "[skills] synced=" + copied + " source=" + report.sourceCount + " visible=" + report.visibleCount + " commands=" + report.commandCount + " report=" + reportPath });
@@ -1810,6 +1816,34 @@ class HermesManager {
       if (id === "custom" || id === "openai-compatible") return "openai-api";
       return provider || "openai-api";
     }
+    function materializeHermesAttachment(att, index) {
+      const filePath = String(att?.filePath || "").trim();
+      const content = String(att?.content || "").trim();
+      if (filePath || !content) return filePath;
+      const uploadsDir = path$1.join(getAppRoot(), "data", ".hermes", "uploads");
+      fs$1.mkdirSync(uploadsDir, { recursive: true });
+      const name = String(att?.fileName || `attachment-${index + 1}`).replace(/[\\/:*?\"<>|]/g, "_").trim() || `attachment-${index + 1}`;
+      const ext = path$1.extname(name) || (String(att?.mimeType || "").includes("png") ? ".png" : String(att?.mimeType || "").includes("jpeg") || String(att?.mimeType || "").includes("jpg") ? ".jpg" : ".bin");
+      const base = path$1.basename(name, path$1.extname(name)).replace(/[^A-Za-z0-9_.-]+/g, "-") || "attachment";
+      const target = path$1.join(uploadsDir, `${Date.now()}-${index + 1}-${base}${ext}`);
+      fs$1.writeFileSync(target, Buffer.from(content, "base64"));
+      return target;
+    }
+    function buildHermesAttachmentContext(attachments = []) {
+      const rows = (Array.isArray(attachments) ? attachments : []).map((att, index) => {
+        const name = String(att?.fileName || att?.name || `attachment-${index + 1}`).trim();
+        const type2 = String(att?.mimeType || att?.type || "file").trim();
+        const filePath = materializeHermesAttachment(att, index);
+        const content = String(att?.content || "").trim();
+        if (!filePath && !content) return null;
+        const parts = [`${index + 1}. ${name}`, `类型：${type2}`];
+        if (filePath) parts.push(`路径：${filePath}`);
+        if (content) parts.push(`内联内容：base64，长度 ${content.length}`);
+        return parts.join("；");
+      }).filter(Boolean);
+      if (!rows.length) return "";
+      return ["", "用户本轮上传附件如下。需要读取文件、图片 OCR 或调用技能时，请使用这些路径/内联内容：", ...rows].join("\n");
+    }
     const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};
     try {
       if (!this.proc && !(await this.checkTcpPort(17520))) {
@@ -1829,7 +1863,9 @@ class HermesManager {
       }
       return { ok: false, error: "Skill 安装失败：" + (result.error || "未知错误") };
     }
-    const args = ["--oneshot", message];
+    const attachmentContext = buildHermesAttachmentContext(options.attachments);
+    const effectiveMessage = attachmentContext ? message + "\n" + attachmentContext : message;
+    const args = ["--oneshot", effectiveMessage];
     const modelName = typeof options.modelName === "string" && options.modelName.trim() ? options.modelName.trim() : runtimeModel.model || "";
     const apiKey = typeof options.apiKey === "string" && options.apiKey.trim() ? options.apiKey.trim() : runtimeModel.apiKey || "";
     const baseUrl = typeof options.baseUrl === "string" && options.baseUrl.trim() ? options.baseUrl.trim() : runtimeModel.baseUrl || "";
@@ -1860,7 +1896,7 @@ class HermesManager {
       env2.KIMI_CN_BASE_URL = baseUrl;
     }
     const chatCommand = this.getHermesCommand(args);
-    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " --oneshot [message redacted] messageLength=" + String(message).length + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " --oneshot [message redacted] messageLength=" + String(effectiveMessage).length + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
     const manager = this;
     return await new Promise((resolve) => {
       const progressBase = {
@@ -1928,7 +1964,7 @@ class HermesManager {
         manager.chatChildren.set(runId, child);
       }
       manager.chatRunMeta.set(options.taskId || runId, { statusPath, resultPath, runId, runDir, stdoutPath, stderrPath, sessionId: options.sessionId || "hermes-ai-chat" });
-      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", message, provider, modelName }, null, 2) + "\n", "utf8");
+      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", messageLength: String(effectiveMessage).length, attachmentCount: Array.isArray(options.attachments) ? options.attachments.length : 0, provider, modelName }, null, 2) + "\n", "utf8");
       fs$1.writeFileSync(statusPath, JSON.stringify({ status: "running", startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", runId, runDir }, null, 2) + "\n", "utf8");
       emitProgress("model", "Hermes 已启动，正在调用模型：" + (modelName || "当前配置模型"));
       const heartbeat = setInterval(() => {
