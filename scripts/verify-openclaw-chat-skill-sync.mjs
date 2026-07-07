@@ -24,6 +24,9 @@ function assertMainSkillRoots(relativePath) {
   const source = read(relativePath);
   assert(source.includes("function getOpenClawSkillSourceRoots(config)"), `${relativePath}: missing shared OpenClaw skill source root resolver`);
   assert(source.includes('path$1.join(getAppRoot(), "skills")'), `${relativePath}: root skills directory must always be included`);
+  assert(source.includes('path$1.join(getDataRoot(), ".openclaw", "workspace", "skills")'), `${relativePath}: OpenClaw workspace-installed skills must be included`);
+  assert(source.includes('path$1.join(getDataRoot(), ".openclaw", "skills")'), `${relativePath}: OpenClaw managed skills must be included`);
+  assert(source.includes("ensurePortableOpenClawSkillConfig"), `${relativePath}: OpenClaw config should be repaired to include portable skills root`);
   assert(source.includes("getOpenClawSkillSourceRoots(config)"), `${relativePath}: skill scan/sync must use shared source roots`);
 }
 
@@ -44,6 +47,7 @@ for (const relativePath of [
 
 const restore = read("scripts/restore-openclaw-shell.mjs");
 assert(restore.includes("function getOpenClawSkillSourceRoots(config)"), "scripts/restore-openclaw-shell.mjs: restore script must preserve root skill source scanning");
+assert(restore.includes("ensurePortableOpenClawSkillConfig"), "scripts/restore-openclaw-shell.mjs: restore script must preserve OpenClaw skill config repair");
 assert(restore.includes("scheduleOpenClawHistorySync(sessionKey, { immediate: true })"), "scripts/restore-openclaw-shell.mjs: restore script must preserve final history refresh");
 
 console.log("OpenClaw chat and skill sync checks passed");

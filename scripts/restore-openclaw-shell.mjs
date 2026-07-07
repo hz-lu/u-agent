@@ -4885,6 +4885,8 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
         "    roots.push(resolved);",
         "  }",
         "  addRoot(path$1.join(getAppRoot(), \"skills\"));",
+        "  addRoot(path$1.join(getDataRoot(), \".openclaw\", \"workspace\", \"skills\"));",
+        "  addRoot(path$1.join(getDataRoot(), \".openclaw\", \"skills\"));",
         "  const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];",
         "  for (const dir of extraDirs) {",
         "    addRoot(path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));",
@@ -4906,6 +4908,52 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   mainSource = mainSource.replace(
     "                source: \"local\",\n                path: resolvedDir,\n                enabled: skillEntries[name]?.enabled !== false",
     "                source: \"local\",\n                path: skillFile,\n                enabled: skillEntries[name]?.enabled !== false"
+  );
+  if (!mainSource.includes("function ensurePortableOpenClawSkillConfig()")) {
+    mainSource = mainSource.replace(
+      "function normalizeOpenClawPluginSkillLinks() {",
+      [
+        "function ensurePortableOpenClawSkillConfig() {",
+        "  const configPath = path$1.join(getDataRoot(), \".openclaw\", \"openclaw.json\");",
+        "  try {",
+        "    if (!fs$1.existsSync(configPath)) return;",
+        "    const config = JSON.parse(fs$1.readFileSync(configPath, \"utf8\"));",
+        "    config.skills ||= {};",
+        "    config.skills.load ||= {};",
+        "    const current = Array.isArray(config.skills.load.extraDirs) ? config.skills.load.extraDirs : [];",
+        "    const next = [];",
+        "    const seen = /* @__PURE__ */ new Set();",
+        "    function addDir(entry) {",
+        "      if (typeof entry !== \"string\" || !entry.trim()) return;",
+        "      const clean = entry.trim().replace(/\\\\/g, \"/\");",
+        "      const portableEntry = /^[A-Za-z]:\\/skills\\/?$/i.test(clean) || clean === \"skills\" || clean.endsWith(\"/skills\") ? \"skills\" : entry.trim();",
+        "      const key = portableEntry.replace(/\\\\/g, \"/\").toLowerCase();",
+        "      if (seen.has(key)) return;",
+        "      seen.add(key);",
+        "      next.push(portableEntry);",
+        "    }",
+        "    addDir(\"skills\");",
+        "    for (const entry of current) addDir(entry);",
+        "    if (JSON.stringify(next) !== JSON.stringify(current)) {",
+        "      config.skills.load.extraDirs = next;",
+        "      fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + \"\\n\", \"utf8\");",
+        "      console.log(\"[portable] ensured OpenClaw skills.load.extraDirs:\", next.join(\", \"));",
+        "    }",
+        "  } catch (err) {",
+        "    console.warn(\"[portable] failed to ensure OpenClaw skill config:\", err instanceof Error ? err.message : String(err));",
+        "  }",
+        "}",
+        "function normalizeOpenClawPluginSkillLinks() {"
+      ].join("\n")
+    );
+  }
+  mainSource = mainSource.replace(
+    "function getGatewayEnv() {\n  rewritePortableOpenClawConfigPaths();",
+    "function getGatewayEnv() {\n  rewritePortableOpenClawConfigPaths();\n  ensurePortableOpenClawSkillConfig();"
+  );
+  mainSource = mainSource.replace(
+    "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\"));\n    const openClawSkillDirs = Array.isArray(openClawConfig?.skills?.load?.extraDirs) ? openClawConfig.skills.load.extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir)) : [];",
+    "    const openClawConfig = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\")) || {};\n    const openClawSkillDirs = getOpenClawSkillSourceRoots(openClawConfig);"
   );
   if (!mainSource.includes("function writeOpenClawSkillCatalog(sources, sourceRoots)")) {
     mainSource = mainSource.replace(
