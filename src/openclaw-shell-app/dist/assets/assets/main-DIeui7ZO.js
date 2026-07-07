@@ -14592,7 +14592,6 @@ const _sfc_main$t = {
     const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);
     const hermesSyncing = /* @__PURE__ */ ref(false);
     const hermesSyncMessage = /* @__PURE__ */ ref("");
-    const skillRefreshTimer = /* @__PURE__ */ ref(null);
     async function refreshLocalSkills() {
       await fetchAllSkills();
     }
@@ -14603,7 +14602,7 @@ const _sfc_main$t = {
         await fetchAllSkills();
         const result = await window.uclaw.ipcSyncHermesSkills();
         if (!result?.ok) throw new Error(result?.error || "同步失败");
-        const reloadResult = result.openClawReload || await window.uclaw?.reloadGateway?.();
+        const reloadResult = result.openClawReload || null;
         hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? "已请求" : "未完成"}；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
         await fetchAllSkills();
       } catch (err) {
@@ -14643,11 +14642,9 @@ const _sfc_main$t = {
     }
     onMounted(() => {
       refreshLocalSkills();
-      skillRefreshTimer.value = window.setInterval(refreshLocalSkills, 15000);
       document.addEventListener("visibilitychange", handleSkillVisibilityChange);
     });
     onUnmounted(() => {
-      if (skillRefreshTimer.value) window.clearInterval(skillRefreshTimer.value);
       document.removeEventListener("visibilitychange", handleSkillVisibilityChange);
     });
     return (_ctx, _cache) => {
@@ -25371,6 +25368,7 @@ const _sfc_main$c = {
     const dragOver = /* @__PURE__ */ ref(false);
     const dragCounter = /* @__PURE__ */ ref(0);
     const isComposingInput = /* @__PURE__ */ ref(false);
+    const lightboxSrc = /* @__PURE__ */ ref(null);
     const textareaRef = /* @__PURE__ */ ref(null);
     const fileInputRef = /* @__PURE__ */ ref(null);
     const cmdWrapRef = /* @__PURE__ */ ref(null);
@@ -25497,7 +25495,7 @@ const _sfc_main$c = {
     function previewAttachment(att) {
       if (!att) return;
       if (att.preview) {
-        window.open(att.preview, "_blank");
+        lightboxSrc.value = att.preview;
         return;
       }
       if (att.filePath) {
@@ -25697,7 +25695,12 @@ const _sfc_main$c = {
                 createBaseVNode("path", { d: "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" })
               ], -1)
             ])], 8, _hoisted_16$2))
-          ])
+          ]),
+          lightboxSrc.value ? (openBlock(), createBlock(Lightbox, {
+            key: 1,
+            src: lightboxSrc.value,
+            onClose: _cache[7] || (_cache[7] = ($event) => lightboxSrc.value = null)
+          }, null, 8, ["src"])) : createCommentVNode("", true)
         ])
       ], 34);
     };

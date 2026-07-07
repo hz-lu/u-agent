@@ -314,6 +314,12 @@ function patchHermesRuntimeEnv(filePath) {
       "    function skillSlug(value) {",
       "      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");",
       "    }",
+      "    function reloadOpenClawSkills() {",
+      "      if (options?.reloadOpenClaw !== true) return null;",
+      "      const reload = reloadGateway();",
+      "      safeSend(\"gateway-log\", { type: reload?.ok ? \"stdout\" : \"stderr\", msg: \"[skills] OpenClaw Gateway reload \" + (reload?.ok ? \"requested\" : \"failed\") + (reload?.error ? \": \" + reload.error : \"\") });",
+      "      return reload;",
+      "    }",
       "    function uniqueTargetName(name, used) {",
       "      let candidate = name;",
       "      let index = 2;",
@@ -380,9 +386,8 @@ function patchHermesRuntimeEnv(filePath) {
       "    }",
       "    try {",
       "      const config = readJsonSafe(path$1.join(getAppRoot(), \"data\", \".openclaw\", \"openclaw.json\")) || {};",
-      "      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];",
       "      const skillEntries = config?.skills?.entries || {};",
-      "      const sourceRoots = extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));",
+      "      const sourceRoots = getOpenClawSkillSourceRoots(config);",
       "      const sources = [];",
       "      const seenKeys = new Set();",
       "      for (const rootDir of sourceRoots) {",
@@ -434,7 +439,8 @@ function patchHermesRuntimeEnv(filePath) {
       "        reportPath,",
       "        sampleCommands: verification.commands.slice(0, 20),",
       "        missingNames,",
-      "        unchanged",
+      "        unchanged,",
+      "        openClawReload: options?.reloadOpenClaw === true ? reloadOpenClawSkills() : null",
       "      };",
       "      writeJson(reportPath, report);",
       "      if (!silent) safeSend(\"hermes-log\", { type: \"system\", msg: \"[skills] synced=\" + copied + \" source=\" + report.sourceCount + \" visible=\" + report.visibleCount + \" commands=\" + report.commandCount + \" report=\" + reportPath });",
@@ -656,7 +662,7 @@ function patchHermesRuntimeEnv(filePath) {
       "        installed.push({ name: safeName, path: target });",
       "      }",
       "      ensureOpenClawSkillsConfig(installed);",
-      "      const sync = this.syncOpenClawSkillsToHermes({ silent: false });",
+      "      const sync = this.syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });",
       "      const report = { ok: true, url: cleanUrl, repoName, cloneReused: !!clone.reused, installed, installedCount: installed.length, skillsRoot, sync, elapsedMs: Date.now() - startedAt };",
       "      safeSend(\"hermes-log\", { type: \"system\", msg: \"[skill-install] installed=\" + installed.length + \" synced=\" + (sync?.mirroredCount ?? sync?.sourceCount ?? 0) + \" url=\" + cleanUrl });",
       "      return report;",
@@ -1135,6 +1141,25 @@ function patchHermesRuntimeEnv(filePath) {
   fs.writeFileSync(filePath, source, "utf8");
 }
 
+function patchHermesAppleDoubleCleanupThrottle(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("_lastWritableAppleDoubleCleanupAt")) {
+    source = source.replace(
+      "    this._lastAppleDoubleCleanupAt = 0;\n    this._lastAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };",
+      "    this._lastAppleDoubleCleanupAt = 0;\n    this._lastAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };\n    this._lastWritableAppleDoubleCleanupAt = 0;\n    this._lastWritableAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };"
+    );
+  }
+  source = source.replace(
+    "  cleanupWritableAppleDoubleFiles() {\n    return this.cleanupAppleDoubleFiles([this.getHermesDataRoot()], { force: true, throttleMs: 0 });\n  }",
+    "  cleanupWritableAppleDoubleFiles() {\n    const now = Date.now();\n    if (this._lastWritableAppleDoubleCleanupAt && now - this._lastWritableAppleDoubleCleanupAt < 5 * 60 * 1000) {\n      return { ...(this._lastWritableAppleDoubleCleanup || { removed: 0, errors: [] }), skipped: true };\n    }\n    const result = this.cleanupAppleDoubleFiles([this.getHermesDataRoot()], { force: true, throttleMs: 0 });\n    this._lastWritableAppleDoubleCleanupAt = now;\n    this._lastWritableAppleDoubleCleanup = result;\n    return result;\n  }"
+  );
+  source = source.replace(
+    "    this.cleanupWritableAppleDoubleFiles();\n    this.cleanupAppleDoubleFiles();",
+    "    this.cleanupAppleDoubleFiles();"
+  );
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
 function patchHermesPortablePythonLaunch(filePath) {
   let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
   const commandMethod = [
@@ -1554,7 +1579,7 @@ function patchHermesSkillBridge(filePath) {
     "",
     "  electron.ipcMain.handle(\"sync-hermes-skills\", async () => {",
     "    try {",
-    "      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false });",
+    "      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });",
     "      const hermesSkillsRoot = path$1.join(getAppRoot(), \"data\", \".hermes\", \"skills\");",
     "      fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });",
     "      let extraDirs = [];",
@@ -5116,24 +5141,34 @@ function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
     );
   }
 
-  if (!rendererSource.includes("function previewAttachment(att)")) {
-    rendererSource = rendererSource.replace(
+	  if (!rendererSource.includes("function previewAttachment(att)")) {
+    if (!rendererSource.includes("const lightboxSrc = /* @__PURE__ */ ref(null);", rendererSource.indexOf("const _sfc_main$c = {"))) {
+      rendererSource = rendererSource.replace(
+        "    const isComposingInput = /* @__PURE__ */ ref(false);\n    const textareaRef = /* @__PURE__ */ ref(null);",
+        "    const isComposingInput = /* @__PURE__ */ ref(false);\n    const lightboxSrc = /* @__PURE__ */ ref(null);\n    const textareaRef = /* @__PURE__ */ ref(null);"
+      );
+    }
+	    rendererSource = rendererSource.replace(
       "        mimeType: file.type,\n        preview: null,\n        content: null\n      };\n      if (!isImage) {\n        att.filePath = window.uclaw?.getFilePath(file) || file.path || null;\n      }",
       "        mimeType: file.type,\n        filePath: window.uclaw?.getFilePath(file) || file.path || null,\n        preview: null,\n        content: null\n      };"
     );
     rendererSource = rendererSource.replace(
       "    function removeAttachment(i) {\n      attachments.value.splice(i, 1);\n    }\n    function handleSend() {",
-      "    function removeAttachment(i) {\n      attachments.value.splice(i, 1);\n    }\n    function previewAttachment(att) {\n      if (!att) return;\n      if (att.preview) {\n        window.open(att.preview, \"_blank\");\n        return;\n      }\n      if (att.filePath) {\n        const url = \"file://\" + String(att.filePath).replace(/\\\\/g, \"/\").split(\"/\").map((part, index) => index === 0 && part === \"\" ? \"\" : encodeURIComponent(part)).join(\"/\");\n        window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, \"_blank\");\n      }\n    }\n    function handleSend() {"
+      "    function removeAttachment(i) {\n      attachments.value.splice(i, 1);\n    }\n    function previewAttachment(att) {\n      if (!att) return;\n      if (att.preview) {\n        lightboxSrc.value = att.preview;\n        return;\n      }\n      if (att.filePath) {\n        const url = \"file://\" + String(att.filePath).replace(/\\\\/g, \"/\").split(\"/\").map((part, index) => index === 0 && part === \"\" ? \"\" : encodeURIComponent(part)).join(\"/\");\n        window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, \"_blank\");\n      }\n    }\n    function handleSend() {"
     );
     rendererSource = rendererSource.replace(
       "                key: i,\n                class: normalizeClass([\"attachment-chip\", { \"is-image\": att.type === \"image\" }])\n              }, [",
       "                key: i,\n                class: normalizeClass([\"attachment-chip\", { \"is-image\": att.type === \"image\" }]),\n                onClick: ($event) => previewAttachment(att)\n              }, ["
     );
+	    rendererSource = rendererSource.replace(
+	      "                  class: \"chip-remove\",\n                  onClick: ($event) => removeAttachment(i)\n                }, \"✕\", 8, _hoisted_7$7)",
+	      "                  class: \"chip-remove\",\n                  onClick: withModifiers(($event) => removeAttachment(i), [\"stop\"])\n                }, \"✕\", 8, _hoisted_7$7)"
+	    );
     rendererSource = rendererSource.replace(
-      "                  class: \"chip-remove\",\n                  onClick: ($event) => removeAttachment(i)\n                }, \"✕\", 8, _hoisted_7$7)",
-      "                  class: \"chip-remove\",\n                  onClick: withModifiers(($event) => removeAttachment(i), [\"stop\"])\n                }, \"✕\", 8, _hoisted_7$7)"
+      "            ])], 8, _hoisted_16$2))\n          ])\n        ])",
+      "            ])], 8, _hoisted_16$2))\n          ]),\n          lightboxSrc.value ? (openBlock(), createBlock(Lightbox, {\n            key: 1,\n            src: lightboxSrc.value,\n            onClose: _cache[7] || (_cache[7] = ($event) => lightboxSrc.value = null)\n          }, null, 8, [\"src\"])) : createCommentVNode(\"\", true)\n        ])"
     );
-  }
+	  }
 
   if (!rendererSource.includes("function buildHermesMessageWithAttachments(content, attachments = [])")) {
     rendererSource = rendererSource.replace(
@@ -5150,10 +5185,10 @@ function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
     );
   }
 
-  if (!rendererSource.includes("skillRefreshTimer")) {
+  if (!rendererSource.includes("function refreshLocalSkills()")) {
     rendererSource = rendererSource.replace(
       "    const hermesSyncing = /* @__PURE__ */ ref(false);\n    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");\n    async function syncHermesSkills() {",
-      "    const hermesSyncing = /* @__PURE__ */ ref(false);\n    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");\n    const skillRefreshTimer = /* @__PURE__ */ ref(null);\n    async function refreshLocalSkills() {\n      await fetchAllSkills();\n    }\n    async function syncHermesSkills() {"
+      "    const hermesSyncing = /* @__PURE__ */ ref(false);\n    const hermesSyncMessage = /* @__PURE__ */ ref(\"\");\n    async function refreshLocalSkills() {\n      await fetchAllSkills();\n    }\n    async function syncHermesSkills() {"
     );
     rendererSource = rendererSource.replace(
       "      try {\n        const result = await window.uclaw.ipcSyncHermesSkills();",
@@ -5161,7 +5196,7 @@ function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
     );
     rendererSource = rendererSource.replace(
       "        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;",
-      "        const reloadResult = result.openClawReload || await window.uclaw?.reloadGateway?.();\n        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? \"已请求\" : \"未完成\"}；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;\n        await fetchAllSkills();"
+      "        const reloadResult = result.openClawReload || null;\n        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? \"已请求\" : \"未完成\"}；调用注入 ${result.invocationLoaded ? \"已通过\" : \"未验证\"}${result.invocationCommand ? \"（\" + result.invocationCommand + \"）\" : \"\"}。报告：${result.reportPath || result.path || \"未生成\"}${result.missingNames?.length ? \"；未显示样例：\" + result.missingNames.slice(0, 5).join(\", \") : \"\"}`;\n        await fetchAllSkills();"
     );
     const skillComponentStart = rendererSource.indexOf("const _sfc_main$t = {");
     const skillComponentEnd = skillComponentStart >= 0 ? rendererSource.indexOf("const Skill = ", skillComponentStart) : -1;
@@ -5169,7 +5204,7 @@ function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
     const beforeSkill = rendererSource.slice(0, skillComponentStart);
     const skillComponent = rendererSource.slice(skillComponentStart, skillComponentEnd).replace(
       "    return (_ctx, _cache) => {",
-      "    function handleSkillVisibilityChange() {\n      if (!document.hidden) refreshLocalSkills();\n    }\n    onMounted(() => {\n      refreshLocalSkills();\n      skillRefreshTimer.value = window.setInterval(refreshLocalSkills, 15000);\n      document.addEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    onUnmounted(() => {\n      if (skillRefreshTimer.value) window.clearInterval(skillRefreshTimer.value);\n      document.removeEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    return (_ctx, _cache) => {"
+      "    function handleSkillVisibilityChange() {\n      if (!document.hidden) refreshLocalSkills();\n    }\n    onMounted(() => {\n      refreshLocalSkills();\n      document.addEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    onUnmounted(() => {\n      document.removeEventListener(\"visibilitychange\", handleSkillVisibilityChange);\n    });\n    return (_ctx, _cache) => {"
     );
     rendererSource = beforeSkill + skillComponent + rendererSource.slice(skillComponentEnd);
   }
@@ -5191,11 +5226,11 @@ function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
   if (!mainSource.includes("openClawReload")) {
     mainSource = mainSource.replace(
       "    function skillSlug(value) {\n      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");\n    }",
-      "    function skillSlug(value) {\n      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");\n    }\n    function reloadOpenClawSkills() {\n      const reload = reloadGateway();\n      safeSend(\"gateway-log\", { type: reload?.ok ? \"stdout\" : \"stderr\", msg: \"[skills] OpenClaw Gateway reload \" + (reload?.ok ? \"requested\" : \"failed\") + (reload?.error ? \": \" + reload.error : \"\") });\n      return reload;\n    }"
+      "    function skillSlug(value) {\n      return String(value || \"\").toLowerCase().replace(/[\\s_]+/g, \"-\").replace(/[^a-z0-9-]/g, \"\").replace(/-+/g, \"-\").replace(/^-|-$/g, \"\");\n    }\n    function reloadOpenClawSkills() {\n      if (options?.reloadOpenClaw !== true) return null;\n      const reload = reloadGateway();\n      safeSend(\"gateway-log\", { type: reload?.ok ? \"stdout\" : \"stderr\", msg: \"[skills] OpenClaw Gateway reload \" + (reload?.ok ? \"requested\" : \"failed\") + (reload?.error ? \": \" + reload.error : \"\") });\n      return reload;\n    }"
     );
     mainSource = mainSource.replace(
       "        missingNames,\n        unchanged\n      };",
-      "        missingNames,\n        unchanged,\n        openClawReload: reloadOpenClawSkills()\n      };"
+      "        missingNames,\n        unchanged,\n        openClawReload: options?.reloadOpenClaw === true ? reloadOpenClawSkills() : null\n      };"
     );
   }
   fs.writeFileSync(mainFile, mainSource, "utf8");
@@ -5241,6 +5276,7 @@ patchNonBlockingGatewayStartupCleanup(mainProcessTarget);
 patchGatewayStatusAndPluginDefaults(mainProcessTarget);
 patchResponsiveGatewayStartup(mainProcessTarget);
 patchHermesRuntimeEnv(mainProcessTarget);
+patchHermesAppleDoubleCleanupThrottle(mainProcessTarget);
 patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);

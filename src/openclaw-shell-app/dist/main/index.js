@@ -519,6 +519,8 @@ class HermesManager {
     this._statusRefreshInFlight = null;
     this._lastAppleDoubleCleanupAt = 0;
     this._lastAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
+    this._lastWritableAppleDoubleCleanupAt = 0;
+    this._lastWritableAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
   }
   getHermesDataRoot() {
     return path$1.join(getAppRoot(), "data", ".hermes");
@@ -579,7 +581,14 @@ class HermesManager {
     return result;
   }
   cleanupWritableAppleDoubleFiles() {
-    return this.cleanupAppleDoubleFiles([this.getHermesDataRoot()], { force: true, throttleMs: 0 });
+    const now = Date.now();
+    if (this._lastWritableAppleDoubleCleanupAt && now - this._lastWritableAppleDoubleCleanupAt < 5 * 60 * 1000) {
+      return { ...(this._lastWritableAppleDoubleCleanup || { removed: 0, errors: [] }), skipped: true };
+    }
+    const result = this.cleanupAppleDoubleFiles([this.getHermesDataRoot()], { force: true, throttleMs: 0 });
+    this._lastWritableAppleDoubleCleanupAt = now;
+    this._lastWritableAppleDoubleCleanup = result;
+    return result;
   }
   writeLauncherLog(type, msg) {
     const text = String(msg || "").trimEnd();
@@ -712,6 +721,7 @@ class HermesManager {
       return String(value || "").toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     }
     function reloadOpenClawSkills() {
+      if (options?.reloadOpenClaw !== true) return null;
       const reload = reloadGateway();
       safeSend("gateway-log", { type: reload?.ok ? "stdout" : "stderr", msg: "[skills] OpenClaw Gateway reload " + (reload?.ok ? "requested" : "failed") + (reload?.error ? ": " + reload.error : "") });
       return reload;
@@ -873,7 +883,7 @@ class HermesManager {
         sampleCommands: verification.commands.slice(0, 20),
         missingNames,
         unchanged,
-        openClawReload: reloadOpenClawSkills()
+        openClawReload: options?.reloadOpenClaw === true ? reloadOpenClawSkills() : null
       };
       writeJson(reportPath, report);
       if (!silent) safeSend("hermes-log", { type: "system", msg: "[skills] synced=" + copied + " source=" + report.sourceCount + " visible=" + report.visibleCount + " commands=" + report.commandCount + " report=" + reportPath });
@@ -1092,7 +1102,7 @@ class HermesManager {
         installed.push({ name: safeName, path: target });
       }
       ensureOpenClawSkillsConfig(installed);
-      const sync = this.syncOpenClawSkillsToHermes({ silent: false });
+      const sync = this.syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const report = { ok: true, url: cleanUrl, repoName, cloneReused: !!clone.reused, installed, installedCount: installed.length, skillsRoot, sync, elapsedMs: Date.now() - startedAt };
       safeSend("hermes-log", { type: "system", msg: "[skill-install] installed=" + installed.length + " synced=" + (sync?.mirroredCount ?? sync?.sourceCount ?? 0) + " url=" + cleanUrl });
       return report;
@@ -1360,12 +1370,13 @@ class HermesManager {
     };
   }
   verifyEnvironment() {
-    const cleanup = this.cleanupAppleDoubleFiles(null, { force: true });
-    const writableCleanup = this.cleanupWritableAppleDoubleFiles();
-    const memoryReport = this.verifyHermesMemory({ silent: true, forceMetadataCleanup: false });
-    const skillsReport = this.syncOpenClawSkillsToHermes({ silent: true, forceMetadataCleanup: false });
-    const snapshot = this.snapshot({ fast: false, forceMetadataCleanup: false });
-    return { ...snapshot, macosMetadataCleanup: { ...cleanup, writableRemoved: writableCleanup.removed, writableErrors: writableCleanup.errors }, memoryReport, skillsReport };
+    const snapshot = this.snapshot({ fast: true, forceMetadataCleanup: false });
+    return {
+      ...snapshot,
+      macosMetadataCleanup: { removed: 0, errors: [], writableRemoved: 0, writableErrors: [] },
+      memoryReport: snapshot.memoryReport,
+      skillsReport: snapshot.skillsReport
+    };
   }
   emitStatus() {
     safeSend("hermes-status", this.snapshot({ fast: true }));
@@ -1772,7 +1783,6 @@ class HermesManager {
     if (!fs$1.existsSync(hermesCommand.command)) {
       return { ok: false, error: "Hermes CLI runtime not found: " + hermesCommand.command };
     }
-    this.cleanupWritableAppleDoubleFiles();
     this.cleanupAppleDoubleFiles();
     function readJsonSafe(filePath) {
       try {
@@ -23513,7 +23523,7 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("sync-hermes-skills", async () => {
     try {
-      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false });
+      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
       fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });
       let extraDirs = [];
