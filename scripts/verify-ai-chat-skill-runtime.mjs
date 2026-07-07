@@ -19,6 +19,7 @@ function assertRenderer(relativePath) {
   assert(source.includes("function previewAttachment(att)"), `${relativePath}: pending attachments need a preview handler`);
   assert(source.includes("onClick: ($event) => previewAttachment(att)"), `${relativePath}: attachment chips must open preview on click`);
   assert(source.includes("lightboxSrc.value = att.preview"), `${relativePath}: image attachment preview must use in-app lightbox instead of opening a new window`);
+  assert(source.includes('event.key === "Escape"') && source.includes('document.addEventListener("keydown"'), `${relativePath}: image lightbox must close on Escape`);
   assert(!source.includes("window.open(att.preview"), `${relativePath}: image attachment preview must not rely on window.open(data:)`);
   assert(source.includes("filePath: window.uclaw?.getFilePath(file) || file.path || null"), `${relativePath}: image and file attachments must preserve filePath`);
   assert(source.includes("function normalizeHermesAttachments(attachments = [])"), `${relativePath}: Hermes messages must normalize attachment metadata`);
@@ -40,6 +41,9 @@ function assertMain(relativePath) {
   assert(source.includes('const args = ["--oneshot", effectiveMessage];'), `${relativePath}: Hermes CLI must receive attachment-aware message`);
   assert(source.includes("options?.reloadOpenClaw === true"), `${relativePath}: OpenClaw Gateway reload must be opt-in for explicit skill sync/install only`);
   assert(source.includes("openClawReload: options?.reloadOpenClaw === true ? reloadOpenClawSkills() : null"), `${relativePath}: silent environment checks must not reload OpenClaw Gateway`);
+  assert(source.includes('child.on("exit", async (code, signal) =>'), `${relativePath}: Hermes chat exit handler must record process signal`);
+  assert(source.includes('errorKind: "interrupted"') && source.includes("exitSignal"), `${relativePath}: Hermes signal/code-null exits must be classified as interrupted`);
+  assert(source.includes("codex-hermes-chat-readiness-wait") && source.includes("Hermes 正在等待本地 API/Gateway 就绪"), `${relativePath}: Hermes chat must wait for local runtime readiness before oneshot`);
 }
 
 for (const relativePath of [
@@ -61,6 +65,9 @@ const restore = read("scripts/restore-openclaw-shell.mjs");
 assert(restore.includes("isComposingInput"), "scripts/restore-openclaw-shell.mjs: restore script must preserve IME-safe send handling");
 assert(restore.includes("buildHermesMessageWithAttachments"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes attachment context");
 assert(restore.includes("reloadOpenClaw === true"), "scripts/restore-openclaw-shell.mjs: restore script must preserve opt-in OpenClaw skill reload");
+assert(restore.includes('event.key === "Escape"') && restore.includes('document.addEventListener("keydown"'), "scripts/restore-openclaw-shell.mjs: restore script must preserve Escape-close image preview");
+assert(restore.includes('async (code, signal)') && restore.includes("interrupted") && restore.includes("exitSignal"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes interrupted exit classification");
+assert(restore.includes("codex-hermes-chat-readiness-wait"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes chat readiness wait");
 assert(!restore.includes("skillRefreshTimer"), "scripts/restore-openclaw-shell.mjs: restore script must not restore timer-based skill scanning");
 
 console.log("AI chat skill runtime checks passed");

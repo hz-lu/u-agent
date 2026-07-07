@@ -1034,7 +1034,7 @@ function patchHermesRuntimeEnv(filePath) {
     "        const lower = raw.toLowerCase();",
     "        const has = (items) => items.some((item) => lower.includes(String(item).toLowerCase()) || raw.includes(String(item)));",
     "        const logLine = context.runDir ? \"\\n\\n\\u6280\\u672f\\u65e5\\u5fd7\\uff1a\" + context.runDir : \"\";",
-    "        const build = (errorKind, title, reasons, actions) => ({",
+    "        const build = (errorKind, title, reasons, actions, extra = {}) => ({",
     "          ok: false,",
     "          errorKind,",
     "          error: title + (reasons && reasons.length ? \"\\n\\n\\u53ef\\u80fd\\u539f\\u56e0\\uff1a\\n\" + reasons.map((item, index) => index + 1 + \". \" + item).join(\"\\n\") : \"\") + (actions && actions.length ? \"\\n\\n\\u5efa\\u8bae\\u5904\\u7406\\uff1a\\n\" + actions.map((item, index) => index + 1 + \". \" + item).join(\"\\n\") : \"\") + logLine,",
@@ -1043,8 +1043,12 @@ function patchHermesRuntimeEnv(filePath) {
     "          runId: context.runId,",
     "          runDir: context.runDir,",
     "          stdoutPath: context.stdoutPath,",
-    "          stderrPath: context.stderrPath",
+    "          stderrPath: context.stderrPath,",
+    "          ...extra",
     "        });",
+    "        if (context.exitSignal || has([\"Hermes chat exited with code null\", \"signal SIGTERM\", \"signal SIGKILL\"])) {",
+    "          return build(\"interrupted\", \"Hermes 本轮任务被本地进程启动/重启流程中断，当前不能当作模型或 API Key 错误处理。\", [\"U 盘慢盘首次启动时，Hermes API / Gateway 还在预热，oneshot 对话进程可能被旧进程清理或重启信号打断。\", \"用户点击停止、应用退出或后台服务重启也会产生同类中断。\"], [\"等首页 Hermes 状态稳定显示已启动后重新发送。\", \"如果反复出现，请在首页停止并重新启动 Hermes，再发送同一条消息。\"], { exitCode: context.exitCode ?? null, exitSignal: context.exitSignal || \"\" });",
+    "        }",
     "        if (has([\"insufficient_quota\", \"quota\", \"billing\", \"balance\", \"insufficient balance\", \"credit\", \"payment required\", \"resource_exhausted\", \"402\", \"\\u989d\\u5ea6\", \"\\u4f59\\u989d\", \"\\u6b20\\u8d39\", \"\\u5145\\u503c\"])) {",
     "          return build(\"quota_exhausted\", \"\\u5f53\\u524d\\u6a21\\u578b API \\u989d\\u5ea6\\u4e0d\\u8db3\\u6216\\u8d26\\u6237\\u4f59\\u989d\\u5df2\\u7528\\u5b8c\\uff0cHermes \\u65e0\\u6cd5\\u7ee7\\u7eed\\u8c03\\u7528\\u6a21\\u578b\\u3002\", [], [\"\\u5145\\u503c token/API \\u5957\\u9910\\u540e\\u91cd\\u8bd5\\u3002\", \"\\u6216\\u5728\\u201c\\u6a21\\u578b\\u914d\\u7f6e\\u201d\\u4e2d\\u5207\\u6362\\u5230\\u5176\\u4ed6\\u53ef\\u7528\\u6a21\\u578b\\uff0c\\u5e76\\u5148\\u70b9\\u51fb\\u6d4b\\u8bd5\\u8fde\\u63a5\\u3002\"]);",
     "        }",
@@ -1098,7 +1102,7 @@ function patchHermesRuntimeEnv(filePath) {
     "      child.on(\"error\", (err) => {",
     "        finish({ ok: false, error: err.message });",
     "      });",
-    "      child.on(\"exit\", (code) => {",
+    "      child.on(\"exit\", async (code, signal) => {",
     "        if (settled) return;",
     "        const reply = stdout.trim();",
     "        const errText = stderr.trim();",
@@ -1129,7 +1133,7 @@ function patchHermesRuntimeEnv(filePath) {
   );
   source = source.replace(
     /          finish\(\{ ok: false, error: \(errText\.slice\(-4000\) \|\| reply\.slice\(-4000\) \|\| "Hermes chat exited with code " \+ code\) \+ .*? runId, runDir, stdoutPath, stderrPath \}\);/,
-    "          finish(classifyHermesError(errText.slice(-4000) || reply.slice(-4000) || \"Hermes chat exited with code \" + code, { runId, runDir, stdoutPath, stderrPath }));"
+    "          const exitText = \"Hermes chat exited with code \" + code + (signal ? \", signal \" + signal : \"\");\n          finish(classifyHermesError(errText.slice(-4000) || reply.slice(-4000) || exitText, { runId, runDir, stdoutPath, stderrPath, exitCode: code, exitSignal: signal || \"\" }));"
   );
   source = source.replace(
     "        const replyForUi = reply.length > maxStdoutBytes ?",
@@ -1287,6 +1291,43 @@ function patchMainProcessStability(filePath) {
     );
   }
 
+  if (!source.includes("codex-hermes-chat-readiness-wait")) {
+    const readinessAnchor = [
+      "    } catch (err) {",
+      "      safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[hermes-chat] background start failed: \" + (err instanceof Error ? err.message : String(err)) });",
+      "    }"
+    ].join("\n");
+    const readinessWait = [
+      readinessAnchor,
+      "    /* codex-hermes-chat-readiness-wait */",
+      "    const chatProgressBase = {",
+      "      sessionId: options.sessionId || \"hermes-ai-chat\",",
+      "      mode: options.sessionId === \"openclaw-hermes-collab\" ? \"collab\" : \"hermes\",",
+      "      startedAt: Date.now()",
+      "    };",
+      "    let configReadyForChat = await this.checkTcpPort(17520);",
+      "    let apiReadyForChat = await this.checkTcpPort(8642);",
+      "    if (!configReadyForChat || !apiReadyForChat) {",
+      "      safeSend(\"hermes-chat-progress\", { ...chatProgressBase, stage: \"runtime\", detail: \"Hermes 正在等待本地 API/Gateway 就绪，首次从 U 盘启动可能较慢。\", at: Date.now() });",
+      "      await this.start({ open: false }).catch((err) => {",
+      "        safeSend(\"hermes-log\", { type: \"stderr\", msg: \"[hermes-chat] readiness start failed: \" + (err instanceof Error ? err.message : String(err)) });",
+      "      });",
+      "      configReadyForChat = await this.waitForPort(17520, 12e4);",
+      "      apiReadyForChat = await this.waitForPort(8642, 12e4);",
+      "    }",
+      "    if (!configReadyForChat || !apiReadyForChat) {",
+      "      return {",
+      "        ok: false,",
+      "        errorKind: \"interrupted\",",
+      "        error: \"Hermes 本地服务还没有完全启动，本轮消息没有投递给模型。\\n\\n可能原因：\\n1. U 盘首次启动 Hermes 较慢，API/Gateway 仍在预热。\\n2. Hermes 后台进程刚被停止、重启或系统回收。\\n\\n建议处理：\\n1. 等首页 Hermes 状态稳定显示已启动后重新发送。\\n2. 如果反复出现，请在首页停止并重新启动 Hermes。\",",
+      "        configReady: configReadyForChat,",
+      "        apiServerReady: apiReadyForChat",
+      "      };",
+      "    }"
+    ].join("\n");
+    source = source.replace(readinessAnchor, readinessWait);
+  }
+
   if (!source.includes("codex-desktop-crash-diagnostics")) {
     const dataRootAnchor = [
       "function getDataRoot() {",
@@ -1385,7 +1426,7 @@ function patchMainProcessStability(filePath) {
     );
     source = source.replace(
       "      child.on(\"exit\", (code) => {\n        if (settled) return;",
-      "      child.on(\"exit\", async (code) => {\n        await flushSpoolWrites();\n        if (settled) return;"
+      "      child.on(\"exit\", async (code, signal) => {\n        await flushSpoolWrites();\n        if (settled) return;"
     );
   }
 
@@ -5123,6 +5164,20 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   fs.writeFileSync(rendererFile, rendererSource, "utf8");
 }
 
+function patchLightboxEscapeClose(rendererFile) {
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+  if (rendererSource.includes('event.key === "Escape"') && rendererSource.includes('document.addEventListener("keydown"')) {
+    fs.writeFileSync(rendererFile, rendererSource, "utf8");
+    return;
+  }
+  rendererSource = rendererSource.replace(
+    '  emits: ["close"],\n  setup(__props) {',
+    '  emits: ["close"],\n  setup(__props, { emit: __emit }) {\n    function handleKeydown(event) {\n      if (event.key === "Escape") __emit("close");\n    }\n    onMounted(() => document.addEventListener("keydown", handleKeydown));\n    onUnmounted(() => document.removeEventListener("keydown", handleKeydown));'
+  );
+  rendererSource = rendererSource.replaceAll('_ctx.$emit("close")', '__emit("close")');
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+}
+
 function patchAiChatSkillRuntimeFixes(mainFile, rendererFile) {
   let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
 
@@ -5301,6 +5356,7 @@ patchHermesSkillManagement(rendererTarget);
 patchWindowsResponsiveChatAndWechat(mainProcessTarget, preloadTarget, rendererTarget);
 patchGatewayReadinessAndPerfStabilizer(mainProcessTarget, rendererTarget);
 patchAiChatSkillRuntimeFixes(mainProcessTarget, rendererTarget);
+patchLightboxEscapeClose(rendererTarget);
 copyDir(path.join(backupRoot, "dist", "assets", "assets", "styles"), path.join(targetApp, "dist", "assets", "assets", "styles"));
 const rendererStyleTarget = path.join(targetApp, "dist", "assets", "main-CAx6YYDG.css");
 copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererStyleTarget);

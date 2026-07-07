@@ -24927,12 +24927,17 @@ const _sfc_main$e = {
     alt: { type: String, default: "" }
   },
   emits: ["close"],
-  setup(__props) {
+  setup(__props, { emit: __emit }) {
+    function handleKeydown(event) {
+      if (event.key === "Escape") __emit("close");
+    }
+    onMounted(() => document.addEventListener("keydown", handleKeydown));
+    onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
     return (_ctx, _cache) => {
       return openBlock(), createBlock(Teleport, { to: "body" }, [
         createBaseVNode("div", {
           class: "lightbox-overlay",
-          onClick: _cache[2] || (_cache[2] = ($event) => _ctx.$emit("close"))
+          onClick: _cache[2] || (_cache[2] = ($event) => __emit("close"))
         }, [
           createBaseVNode("img", {
             src: __props.src,
@@ -24943,7 +24948,7 @@ const _sfc_main$e = {
           }, null, 8, _hoisted_1$e),
           createBaseVNode("button", {
             class: "lightbox-close",
-            onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("close"))
+            onClick: _cache[1] || (_cache[1] = ($event) => __emit("close"))
           }, "✕")
         ])
       ]);
