@@ -886,9 +886,28 @@ class HermesManager {
     if (!/(install|安装|装上|添加|同步).{0,30}(skill|技能)/i.test(text) && !/(skill|技能).{0,30}(install|安装|装上|添加|同步)/i.test(text)) return null;
     const match = text.match(/https?:\/\/(?:www\.)?github\.com\/([^\s\)\]\}\"'，。；;]+)(?:\.git)?/i);
     if (!match) return null;
-    let url = match[0].replace(/[，。；;,.]+$/, "");
-    if (!/\.git$/i.test(url)) url += ".git";
-    return { url };
+    return this.normalizeGitHubSkillUrl(match[0]);
+  }
+  normalizeGitHubSkillUrl(rawUrl) {
+    const clean = String(rawUrl || "").trim().replace(/[，。；;,.]+$/, "");
+    let parsed;
+    try {
+      parsed = new URL(clean);
+    } catch {
+      return null;
+    }
+    if (!/^https?:$/i.test(parsed.protocol) || !/^(www\.)?github\.com$/i.test(parsed.hostname)) return null;
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const owner = parts[0];
+    const repo = String(parts[1] || "").replace(/\.git$/i, "");
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    let subdir = "";
+    const treeIndex = parts.indexOf("tree");
+    if (treeIndex >= 0 && parts.length > treeIndex + 2) {
+      subdir = parts.slice(treeIndex + 2).join("/");
+    }
+    return { url: "https://github.com/" + owner + "/" + repo + ".git", subdir };
   }
 
   async installPortableSkillFromGit(url, options = {}) {
@@ -916,6 +935,22 @@ class HermesManager {
     }
     function findSkillSources(rootDir) {
       const rows = [];
+      const requestedSubdir = String(options.subdir || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (requestedSubdir) {
+        const scopedRoot = path$1.resolve(rootDir, requestedSubdir);
+        if (!isInside(rootDir, scopedRoot)) throw new Error("非法 skill 子目录：" + requestedSubdir);
+        if (!fs$1.existsSync(scopedRoot)) throw new Error("仓库中没有找到指定 skill 子目录：" + requestedSubdir);
+        if (fs$1.existsSync(path$1.join(scopedRoot, "SKILL.md"))) {
+          rows.push({ source: scopedRoot, name: path$1.basename(scopedRoot) || repoName });
+        } else {
+          for (const entry of fs$1.readdirSync(scopedRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const full = path$1.join(scopedRoot, entry.name);
+            if (fs$1.existsSync(path$1.join(full, "SKILL.md"))) rows.push({ source: full, name: entry.name });
+          }
+        }
+        return rows;
+      }
       if (fs$1.existsSync(path$1.join(rootDir, "SKILL.md"))) rows.push({ source: rootDir, name: repoName });
       for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -1728,15 +1763,6 @@ class HermesManager {
     if (!message) {
       return { ok: false, error: "消息不能为空" };
     }
-    const skillInstallRequest = this.detectPortableSkillInstallRequest(message);
-    if (skillInstallRequest) {
-      const result = await this.installPortableSkillFromGit(skillInstallRequest.url);
-      if (result.ok) {
-        const names = (result.installed || []).map((item) => item.name).join(", ") || "已安装技能";
-        return { ok: true, reply: "已通过便携安装器安装 skill：" + names + "。\n安装位置：" + result.skillsRoot + "\n已同步给 Hermes，OpenClaw 与 Hermes 可以共用。" };
-      }
-      return { ok: false, error: "Skill 安装失败：" + (result.error || "未知错误") };
-    }
     const hermesCommand = this.getHermesCommand([]);
     if (!fs$1.existsSync(hermesCommand.command)) {
       return { ok: false, error: "Hermes CLI runtime not found: " + hermesCommand.command };
@@ -1788,12 +1814,21 @@ class HermesManager {
     const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};
     try {
       if (!this.proc && !(await this.checkTcpPort(17520))) {
-        this.start({ open: false }).catch((err) => {
+        await this.start({ open: false }).catch((err) => {
           safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
         });
       }
     } catch (err) {
       safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
+    }
+    const skillInstallRequest = this.detectPortableSkillInstallRequest(message);
+    if (skillInstallRequest) {
+      const result = await this.installPortableSkillFromGit(skillInstallRequest.url, { subdir: skillInstallRequest.subdir });
+      if (result.ok) {
+        const names = (result.installed || []).map((item) => item.name).join(", ") || "已安装技能";
+        return { ok: true, reply: "已通过便携安装器安装 skill：" + names + "。\n安装位置：" + result.skillsRoot + "\n已同步给 Hermes，OpenClaw 与 Hermes 可以共用。" };
+      }
+      return { ok: false, error: "Skill 安装失败：" + (result.error || "未知错误") };
     }
     const args = ["--oneshot", message];
     const modelName = typeof options.modelName === "string" && options.modelName.trim() ? options.modelName.trim() : runtimeModel.model || "";
