@@ -802,9 +802,8 @@ class HermesManager {
     }
     try {
       const config = readJsonSafe(path$1.join(getAppRoot(), "data", ".openclaw", "openclaw.json")) || {};
-      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];
       const skillEntries = config?.skills?.entries || {};
-      const sourceRoots = extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));
+      const sourceRoots = getOpenClawSkillSourceRoots(config);
       const sources = [];
       const seenKeys = new Set();
       for (const rootDir of sourceRoots) {
@@ -23097,6 +23096,24 @@ function parseSkillMeta(skillFilePath) {
     return null;
   }
 }
+function getOpenClawSkillSourceRoots(config) {
+  const roots = [];
+  const seen = /* @__PURE__ */ new Set();
+  function addRoot(rootDir) {
+    if (!rootDir) return;
+    const resolved = path$1.resolve(rootDir);
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    roots.push(resolved);
+  }
+  addRoot(path$1.join(getAppRoot(), "skills"));
+  const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];
+  for (const dir of extraDirs) {
+    addRoot(path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));
+  }
+  return roots;
+}
 function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
   electron.ipcMain.handle("open-dashboard", () => {
@@ -23354,22 +23371,19 @@ function registerIPCHandlers({ gateway }) {
   electron.ipcMain.handle("scan-local-skills", async () => {
     const skillsMap = /* @__PURE__ */ new Map();
     try {
-      let extraDirs = [];
+      let sourceRoots = [];
       let skillEntries = {};
       if (fs$1.existsSync(configPath)) {
         try {
           const config = JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
-          extraDirs = config.skills?.load?.extraDirs || [];
+          sourceRoots = getOpenClawSkillSourceRoots(config);
           skillEntries = config.skills?.entries || {};
         } catch (e) {
           console.warn("读取 openclw.json extraDirs 失败:", e.message);
         }
       }
-      for (const extraDir of extraDirs) {
-        let resolvedDir = extraDir;
-        if (!path$1.isAbsolute(extraDir)) {
-          resolvedDir = path$1.join(getAppRoot(), extraDir);
-        }
+      if (!sourceRoots.length) sourceRoots = getOpenClawSkillSourceRoots({});
+      for (const resolvedDir of sourceRoots) {
         if (!fs$1.existsSync(resolvedDir)) {
           continue;
         }
@@ -23404,7 +23418,7 @@ function registerIPCHandlers({ gateway }) {
                 description: meta?.description || null,
                 emoji: meta?.emoji || null,
                 source: "local",
-                path: resolvedDir,
+                path: skillFile,
                 enabled: skillEntries[name]?.enabled !== false
               });
             }

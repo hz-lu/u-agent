@@ -4869,6 +4869,44 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
     "if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(path$1.dirname(configDir), extraDir);",
     "if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(getAppRoot(), extraDir);"
   );
+  if (!mainSource.includes("function getOpenClawSkillSourceRoots(config)")) {
+    mainSource = mainSource.replace(
+      "function registerIPCHandlers({ gateway }) {",
+      [
+        "function getOpenClawSkillSourceRoots(config) {",
+        "  const roots = [];",
+        "  const seen = /* @__PURE__ */ new Set();",
+        "  function addRoot(rootDir) {",
+        "    if (!rootDir) return;",
+        "    const resolved = path$1.resolve(rootDir);",
+        "    const key = resolved.toLowerCase();",
+        "    if (seen.has(key)) return;",
+        "    seen.add(key);",
+        "    roots.push(resolved);",
+        "  }",
+        "  addRoot(path$1.join(getAppRoot(), \"skills\"));",
+        "  const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];",
+        "  for (const dir of extraDirs) {",
+        "    addRoot(path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));",
+        "  }",
+        "  return roots;",
+        "}",
+        "function registerIPCHandlers({ gateway }) {"
+      ].join("\n")
+    );
+  }
+  mainSource = mainSource.replace(
+    "      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];\n      const skillEntries = config?.skills?.entries || {};\n      const sourceRoots = extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));",
+    "      const skillEntries = config?.skills?.entries || {};\n      const sourceRoots = getOpenClawSkillSourceRoots(config);"
+  );
+  mainSource = mainSource.replace(
+    "      let extraDirs = [];\n      let skillEntries = {};\n      if (fs$1.existsSync(configPath)) {\n        try {\n          const config = JSON.parse(fs$1.readFileSync(configPath, \"utf-8\"));\n          extraDirs = config.skills?.load?.extraDirs || [];\n          skillEntries = config.skills?.entries || {};\n        } catch (e) {\n          console.warn(\"读取 openclw.json extraDirs 失败:\", e.message);\n        }\n      }\n      for (const extraDir of extraDirs) {\n        let resolvedDir = extraDir;\n        if (!path$1.isAbsolute(extraDir)) {\n          resolvedDir = path$1.join(getAppRoot(), extraDir);\n        }",
+    "      let sourceRoots = [];\n      let skillEntries = {};\n      if (fs$1.existsSync(configPath)) {\n        try {\n          const config = JSON.parse(fs$1.readFileSync(configPath, \"utf-8\"));\n          sourceRoots = getOpenClawSkillSourceRoots(config);\n          skillEntries = config.skills?.entries || {};\n        } catch (e) {\n          console.warn(\"读取 openclw.json extraDirs 失败:\", e.message);\n        }\n      }\n      if (!sourceRoots.length) sourceRoots = getOpenClawSkillSourceRoots({});\n      for (const resolvedDir of sourceRoots) {"
+  );
+  mainSource = mainSource.replace(
+    "                source: \"local\",\n                path: resolvedDir,\n                enabled: skillEntries[name]?.enabled !== false",
+    "                source: \"local\",\n                path: skillFile,\n                enabled: skillEntries[name]?.enabled !== false"
+  );
   if (!mainSource.includes("function writeOpenClawSkillCatalog(sources, sourceRoots)")) {
     mainSource = mainSource.replace(
       "    function verifyHermesSkills(python, sourceRoot, env2) {",
@@ -4927,6 +4965,38 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   for (const call of noisyCalls) {
     rendererSource = rendererSource.replaceAll(call, "if (CHAT_DEBUG) " + call);
   }
+  rendererSource = rendererSource.replace(
+    "  function scheduleOpenClawHistorySync(sessionKey) {\n    const delays = [1500, 5e3, 12e3, 25e3];\n    for (const delay of delays) {\n      setTimeout(() => loadSessionMessages(sessionKey, 200, { force: true }), delay);\n    }\n  }",
+    "  function scheduleOpenClawHistorySync(sessionKey, options = {}) {\n    const delays = options?.immediate === true ? [0, 1500, 5e3, 12e3, 25e3] : [1500, 5e3, 12e3, 25e3];\n    for (const delay of delays) {\n      setTimeout(() => loadSessionMessages(sessionKey, 200, { force: true }), delay);\n    }\n  }\n  function finishOpenClawResponse(sessionKey) {\n    sending.value = false;\n    currentRunId.value = null;\n    scheduleOpenClawHistorySync(sessionKey, { immediate: true });\n    setTimeout(() => flushOpenClawQueue(), 0);\n  }"
+  );
+  rendererSource = rendererSource.replace(
+    "    if (payload.state === \"final\") {\n      sending.value = false;\n      currentRunId.value = null;\n      setTimeout(() => flushOpenClawQueue(), 0);",
+    "    if (payload.state === \"final\") {\n      finishOpenClawResponse(sk);"
+  );
+  rendererSource = rendererSource.replace(
+    "      if (payload.done) {\n        sending.value = false;\n        currentRunId.value = null;\n        const curMsgs = messagesMap.value[sk] || [];",
+    "      if (payload.done) {\n        const curMsgs = messagesMap.value[sk] || [];"
+  );
+  rendererSource = rendererSource.replace(
+    "          messagesMap.value[sk] = finalMsgs;\n        }\n      }\n      return;",
+    "          messagesMap.value[sk] = finalMsgs;\n        }\n        finishOpenClawResponse(sk);\n      }\n      return;"
+  );
+  rendererSource = rendererSource.replace(
+    "      messagesMap.value[sk] = [...msgs];\n      sending.value = false;\n      currentRunId.value = null;\n      return;",
+    "      messagesMap.value[sk] = [...msgs];\n      finishOpenClawResponse(sk);\n      return;"
+  );
+  rendererSource = rendererSource.replace(
+    "      if (isDone) {\n        sending.value = false;\n        currentRunId.value = null;\n      }\n      return;",
+    "      if (isDone) {\n        finishOpenClawResponse(sk);\n      }\n      return;"
+  );
+  rendererSource = rendererSource.replace(
+    "    if (payload.done) {\n      if (CHAT_DEBUG) console.log(\"[DEDUP-DEBUG] 格式E done | runId=\", payload.runId, \"| existingIdx=\", existingIdx);\n      sending.value = false;\n      currentRunId.value = null;\n      if (existingIdx >= 0) {",
+    "    if (payload.done) {\n      if (CHAT_DEBUG) console.log(\"[DEDUP-DEBUG] 格式E done | runId=\", payload.runId, \"| existingIdx=\", existingIdx);\n      if (existingIdx >= 0) {"
+  );
+  rendererSource = rendererSource.replace(
+    "        messagesMap.value[sk] = newMsgs;\n      }\n    }\n  }\n  function extractMessageParts(msg) {",
+    "        messagesMap.value[sk] = newMsgs;\n      }\n      finishOpenClawResponse(sk);\n    }\n  }\n  function extractMessageParts(msg) {"
+  );
 
   if (!rendererSource.includes("refreshGatewayReadinessForChat")) {
     rendererSource = rendererSource.replace(

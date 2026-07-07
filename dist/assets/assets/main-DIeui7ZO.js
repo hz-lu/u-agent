@@ -19817,11 +19817,17 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isOpenClawSendPathAvailable() {
     return _isWsReady() || _isGatewayAvailable();
   }
-  function scheduleOpenClawHistorySync(sessionKey) {
-    const delays = [1500, 5e3, 12e3, 25e3];
+  function scheduleOpenClawHistorySync(sessionKey, options = {}) {
+    const delays = options?.immediate === true ? [0, 1500, 5e3, 12e3, 25e3] : [1500, 5e3, 12e3, 25e3];
     for (const delay of delays) {
       setTimeout(() => loadSessionMessages(sessionKey, 200, { force: true }), delay);
     }
+  }
+  function finishOpenClawResponse(sessionKey) {
+    sending.value = false;
+    currentRunId.value = null;
+    scheduleOpenClawHistorySync(sessionKey, { immediate: true });
+    setTimeout(() => flushOpenClawQueue(), 0);
   }
   async function syncOpenClawHistoryFromMain(sessionKey, limit = 200) {
     const api = getApi();
@@ -20076,9 +20082,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       return;
     }
     if (payload.state === "final") {
-      sending.value = false;
-      currentRunId.value = null;
-      setTimeout(() => flushOpenClawQueue(), 0);
+      finishOpenClawResponse(sk);
       let finalContent = "";
       let finalContentBlocks = void 0;
       let finalThinkContent = void 0;
@@ -20275,8 +20279,6 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         messagesMap.value[sk] = [...msgs];
       }
       if (payload.done) {
-        sending.value = false;
-        currentRunId.value = null;
         const curMsgs = messagesMap.value[sk] || [];
         const finalIdx = curMsgs.findIndex((m) => m.runId === payload.runId && m.role === "assistant");
         if (finalIdx >= 0) {
@@ -20284,6 +20286,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           finalMsgs[finalIdx] = { ...finalMsgs[finalIdx], status: "done", _streaming: false };
           messagesMap.value[sk] = finalMsgs;
         }
+        finishOpenClawResponse(sk);
       }
       return;
     }
@@ -20376,8 +20379,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         msgs = _mergeToolResults([...msgs, { ...normalized, status: "done", _streaming: false }]);
       }
       messagesMap.value[sk] = [...msgs];
-      sending.value = false;
-      currentRunId.value = null;
+      finishOpenClawResponse(sk);
       return;
     }
     if (payload.role) {
@@ -20402,15 +20404,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       }
       messagesMap.value[sk] = [...msgs];
       if (isDone) {
-        sending.value = false;
-        currentRunId.value = null;
+        finishOpenClawResponse(sk);
       }
       return;
     }
     if (payload.done) {
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式E done | runId=", payload.runId, "| existingIdx=", existingIdx);
-      sending.value = false;
-      currentRunId.value = null;
       if (existingIdx >= 0) {
         const newMsgs = [...msgs];
         const updated = { ...newMsgs[existingIdx], status: "done", _streaming: false };
@@ -20422,6 +20421,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         newMsgs[existingIdx] = updated;
         messagesMap.value[sk] = newMsgs;
       }
+      finishOpenClawResponse(sk);
     }
   }
   function extractMessageParts(msg) {
