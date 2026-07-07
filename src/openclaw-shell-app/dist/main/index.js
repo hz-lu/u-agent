@@ -1619,7 +1619,8 @@ class HermesManager {
         API_SERVER_PORT: "8642",
         API_SERVER_KEY: this.apiServerKey,
         API_SERVER_MODEL_NAME: "hermes-agent",
-        HERMES_ACCEPT_HOOKS: "1"
+        HERMES_ACCEPT_HOOKS: "1",
+        GATEWAY_ALLOW_ALL_USERS: "true"
       });
     }
     const ready = await this.waitForPort(8642, 9e4, () => !!this.apiProc);
@@ -1825,7 +1826,7 @@ class HermesManager {
       env2.KIMI_CN_BASE_URL = baseUrl;
     }
     const chatCommand = this.getHermesCommand(args);
-    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " " + chatCommand.args.join(" ") + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " --oneshot [message redacted] messageLength=" + String(message).length + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
     const manager = this;
     return await new Promise((resolve) => {
       const progressBase = {

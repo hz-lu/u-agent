@@ -934,6 +934,7 @@ function patchHermesRuntimeEnv(filePath) {
     "      ...this.getHermesEnv(),",
     "      HERMES_MEMORY_PATH: memoryPath,",
     "      HERMES_ACCEPT_HOOKS: \"1\",",
+    "      GATEWAY_ALLOW_ALL_USERS: \"true\",",
     "      HERMES_BROWSER_OPENED: \"1\",",
     "      PYTHONIOENCODING: \"utf-8\",",
     "      PYTHONUTF8: \"1\"",
@@ -952,7 +953,7 @@ function patchHermesRuntimeEnv(filePath) {
     "      env2.DEEPSEEK_BASE_URL = baseUrl;",
     "      env2.KIMI_CN_BASE_URL = baseUrl;",
     "    }",
-    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });",
+    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" --oneshot [message redacted] messageLength=\" + String(message).length + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });",
     "    return await new Promise((resolve) => {",
     "      const child = child_process.spawn(hermesBin, args, {",
     "        cwd: path$1.join(getAppRoot(), \"data\", \".hermes\"),",
@@ -1171,8 +1172,8 @@ function patchHermesPortablePythonLaunch(filePath) {
     "    const hermesCommand = this.getHermesCommand([]);\n    if (!fs$1.existsSync(hermesCommand.command)) {\n      return { ok: false, error: \"Hermes CLI runtime not found: \" + hermesCommand.command };\n    }"
   );
   source = source.replace(
-    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(hermesBin, args, {",
-    "    const chatCommand = this.getHermesCommand(args);\n    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + chatCommand.command + \" \" + chatCommand.args.join(\" \") + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(chatCommand.command, chatCommand.args, {"
+    "    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + hermesBin + \" --oneshot [message redacted] messageLength=\" + String(message).length + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(hermesBin, args, {",
+    "    const chatCommand = this.getHermesCommand(args);\n    safeSend(\"hermes-log\", { type: \"system\", msg: \"[hermes-chat] starting oneshot: \" + chatCommand.command + \" --oneshot [message redacted] messageLength=\" + String(message).length + \" provider=\" + (provider || \"auto\") + \" model=\" + (modelName || \"auto\") + \" key=\" + (apiKey ? \"present\" : \"missing\") });\n    return await new Promise((resolve) => {\n      const child = child_process.spawn(chatCommand.command, chatCommand.args, {"
   );
 
   fs.writeFileSync(filePath, source, "utf8");
