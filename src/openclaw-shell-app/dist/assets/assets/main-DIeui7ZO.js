@@ -13088,17 +13088,20 @@ function useEnvCheck() {
       updateItem(id, { status: "checking", statusText: "检测中", detail: "" });
     }
     try {
-      const status = await window.uclaw.ipcGetHermesStatus();
+      const status = window.uclaw.ipcVerifyHermesEnvironment ? await window.uclaw.ipcVerifyHermesEnvironment() : await window.uclaw.ipcGetHermesStatus();
       updateItem("hermes-python", status?.pythonReady ? { status: "pass", statusText: "正常", detail: status.pythonBin || "Portable Python 已就绪" } : { status: "fail", statusText: "缺失", detail: status?.pythonBin || "未找到 portable python" });
       updateItem("hermes-node", status?.nodeReady ? { status: "pass", statusText: "正常", detail: status.nodeBin || "Portable Node.js 已就绪" } : { status: "warn", statusText: "未找到", detail: status?.nodeBin || "Hermes Node runtime 待补齐" });
       updateItem("hermes-cli", status?.hermesReady && status?.sourceReady ? { status: "pass", statusText: "正常", detail: status.hermesBin || "Hermes CLI 已就绪" } : { status: "fail", statusText: "缺失", detail: status?.lastError || status?.hermesBin || "Hermes CLI 或源码不完整" });
-      updateItem("hermes-data", status?.dataReady && status?.configDirReady ? { status: "pass", statusText: "零痕迹", detail: status.dataRoot || "data/.hermes" } : { status: "warn", statusText: "待初始化", detail: status?.dataRoot || "首次启动后创建 U 盘数据目录" });
+      const cleaned = status?.macosMetadataCleanup?.removed || 0;
+      const cleanupText = cleaned ? `；已清理 macOS 元数据 ${cleaned} 个` : "";
+      updateItem("hermes-data", status?.dataReady && status?.configDirReady ? { status: "pass", statusText: "零痕迹", detail: (status.dataRoot || "data/.hermes") + cleanupText } : { status: "warn", statusText: "待初始化", detail: status?.dataRoot || "首次启动后创建 U 盘数据目录" });
       updateItem("hermes-model", status?.modelBridgeReady ? { status: "pass", statusText: "已桥接", detail: status.modelBridge } : { status: "warn", statusText: "未配置", detail: "在模型配置页应用模型后，Hermes 自动复用" });
       updateItem("hermes-memory", status?.memoryReady && status?.memoryWritable ? { status: "pass", statusText: "可读写", detail: `MEMORY ${status.memoryEntryCount || 0} 条；USER ${status.userMemoryEntryCount || 0} 条。报告：${status.memoryReportPath || "未生成"}` } : { status: "warn", statusText: "待验证", detail: status?.memoryReportPath || status?.memoryPath || "请启动 Hermes 后重新检查" });
-      updateItem("hermes-skill-growth", status?.skillGrowthReady ? { status: "pass", statusText: "已闭环", detail: status.skillGrowthReportPath || "growth report ready" } : { status: "warn", statusText: "待验证", detail: status?.skillGrowthReportPath || "运行 verify:hermes-skill-growth 后显示结果" });
-      updateItem("hermes-skills", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: "pass", statusText: "可见", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || "未生成"}` } : { status: "warn", statusText: "待验证", detail: status?.skillReportPath || status?.skillsRoot || "请在技能管理页同步并验证" });
+      const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;
+      updateItem("hermes-skill-growth", status?.skillGrowthReady ? { status: "pass", statusText: "已闭环", detail: status.skillGrowthReportPath || "growth report ready" } : { status: "pass", statusText: "未生成", detail: "自我成长 skill 会在 Hermes 生成新技能后出现；当前基础对话不受影响" });
+      updateItem("hermes-skills", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: "pass", statusText: "可见", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || "未生成"}` } : status?.skillsReady && skillSourceCount === 0 ? { status: "pass", statusText: "未安装", detail: "当前 U 盘未安装可同步 skill；安装后可在技能管理页同步给 Hermes" } : { status: "warn", statusText: "待同步", detail: status?.skillReportPath || status?.skillsRoot || "请在技能管理页同步并验证" });
       const ports = [`配置 ${status?.configReady ? "就绪" : "未启动"}`, `Dashboard ${status?.dashboardReady ? "就绪" : "未启动"}`, `API ${status?.apiServerReady ? "就绪" : "未启动"}`].join(" / ");
-      updateItem("hermes-ports", status?.configReady || status?.dashboardReady || status?.apiServerReady ? { status: "pass", statusText: "运行中", detail: ports } : { status: "warn", statusText: "未启动", detail: "首页点击启动 Hermes 后检查端口" });
+      updateItem("hermes-ports", status?.configReady || status?.dashboardReady || status?.apiServerReady ? { status: "pass", statusText: "运行中", detail: ports } : { status: "pass", statusText: "未占用", detail: "基础 Hermes 对话按需启动；API/Dashboard 端口未启动不影响当前对话" });
     } catch (e) {
       for (const id of ["hermes-python", "hermes-node", "hermes-cli", "hermes-data", "hermes-model", "hermes-memory", "hermes-skill-growth", "hermes-skills", "hermes-ports"]) {
         updateItem(id, { status: "fail", statusText: "异常", detail: e.message });
@@ -13739,12 +13742,12 @@ function modelsFromOpenClawConfig(config) {
       const modelName = model?.id || model?.name;
       if (!modelName) continue;
       const source = provider === "custom" ? "custom" : "recommend";
-      const value = source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
-      const labelPrefix = source === "custom" ? "" : provider === "cifu" ? "词符科技" : provider;
       const isCifuDefault = model?.isCifuDefault === true || model?.isCifuDefault === 1;
+      const value = isCifuDefault ? "cifu-tech-default" : source === "custom" ? `custom-${modelName}` : `${provider}-${modelName}`;
+      const labelPrefix = source === "custom" ? "" : provider === "cifu" ? "词符科技" : provider;
       result.push({
         label: labelPrefix ? `${labelPrefix} / ${modelName}` : modelName,
-        value: isCifuDefault ? "cifu-tech-default" : value,
+        value,
         source,
         base: providerConfig?.baseUrl || providerConfig?.base || "",
         key: providerConfig?.apiKey || providerConfig?.key || "",
@@ -14202,6 +14205,7 @@ const _sfc_main$u = {
         modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item.value === model.value }))
       );
       if (isChanging) {
+        window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model } }));
         showRestartCardNotice();
       }
     }
@@ -14588,13 +14592,19 @@ const _sfc_main$t = {
     const enabledSkills = computed(() => allSkills.value.filter((s) => s.enabled).length);
     const hermesSyncing = /* @__PURE__ */ ref(false);
     const hermesSyncMessage = /* @__PURE__ */ ref("");
+    async function refreshLocalSkills() {
+      await fetchAllSkills();
+    }
     async function syncHermesSkills() {
       hermesSyncing.value = true;
       hermesSyncMessage.value = "正在同步已启用技能到 Hermes...";
       try {
+        await fetchAllSkills();
         const result = await window.uclaw.ipcSyncHermesSkills();
         if (!result?.ok) throw new Error(result?.error || "同步失败");
-        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
+        const reloadResult = result.openClawReload || null;
+        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? "已请求" : "未完成"}；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
+        await fetchAllSkills();
       } catch (err) {
         hermesSyncMessage.value = "同步失败: " + (err?.message || err);
       } finally {
@@ -14627,6 +14637,16 @@ const _sfc_main$t = {
         console.error("toggle skill failed:", err);
       }
     }
+    function handleSkillVisibilityChange() {
+      if (!document.hidden) refreshLocalSkills();
+    }
+    onMounted(() => {
+      refreshLocalSkills();
+      document.addEventListener("visibilitychange", handleSkillVisibilityChange);
+    });
+    onUnmounted(() => {
+      document.removeEventListener("visibilitychange", handleSkillVisibilityChange);
+    });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$t, [
         createBaseVNode("div", _hoisted_2$s, [
@@ -19813,11 +19833,17 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isOpenClawSendPathAvailable() {
     return _isWsReady() || _isGatewayAvailable();
   }
-  function scheduleOpenClawHistorySync(sessionKey) {
-    const delays = [1500, 5e3, 12e3, 25e3];
+  function scheduleOpenClawHistorySync(sessionKey, options = {}) {
+    const delays = options?.immediate === true ? [0, 1500, 5e3, 12e3, 25e3] : [1500, 5e3, 12e3, 25e3];
     for (const delay of delays) {
       setTimeout(() => loadSessionMessages(sessionKey, 200, { force: true }), delay);
     }
+  }
+  function finishOpenClawResponse(sessionKey) {
+    sending.value = false;
+    currentRunId.value = null;
+    scheduleOpenClawHistorySync(sessionKey, { immediate: true });
+    setTimeout(() => flushOpenClawQueue(), 0);
   }
   async function syncOpenClawHistoryFromMain(sessionKey, limit = 200) {
     const api = getApi();
@@ -20072,9 +20098,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       return;
     }
     if (payload.state === "final") {
-      sending.value = false;
-      currentRunId.value = null;
-      setTimeout(() => flushOpenClawQueue(), 0);
+      finishOpenClawResponse(sk);
       let finalContent = "";
       let finalContentBlocks = void 0;
       let finalThinkContent = void 0;
@@ -20271,8 +20295,6 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         messagesMap.value[sk] = [...msgs];
       }
       if (payload.done) {
-        sending.value = false;
-        currentRunId.value = null;
         const curMsgs = messagesMap.value[sk] || [];
         const finalIdx = curMsgs.findIndex((m) => m.runId === payload.runId && m.role === "assistant");
         if (finalIdx >= 0) {
@@ -20280,6 +20302,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           finalMsgs[finalIdx] = { ...finalMsgs[finalIdx], status: "done", _streaming: false };
           messagesMap.value[sk] = finalMsgs;
         }
+        finishOpenClawResponse(sk);
       }
       return;
     }
@@ -20372,8 +20395,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         msgs = _mergeToolResults([...msgs, { ...normalized, status: "done", _streaming: false }]);
       }
       messagesMap.value[sk] = [...msgs];
-      sending.value = false;
-      currentRunId.value = null;
+      finishOpenClawResponse(sk);
       return;
     }
     if (payload.role) {
@@ -20398,15 +20420,12 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       }
       messagesMap.value[sk] = [...msgs];
       if (isDone) {
-        sending.value = false;
-        currentRunId.value = null;
+        finishOpenClawResponse(sk);
       }
       return;
     }
     if (payload.done) {
       if (CHAT_DEBUG) console.log("[DEDUP-DEBUG] 格式E done | runId=", payload.runId, "| existingIdx=", existingIdx);
-      sending.value = false;
-      currentRunId.value = null;
       if (existingIdx >= 0) {
         const newMsgs = [...msgs];
         const updated = { ...newMsgs[existingIdx], status: "done", _streaming: false };
@@ -20418,6 +20437,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         newMsgs[existingIdx] = updated;
         messagesMap.value[sk] = newMsgs;
       }
+      finishOpenClawResponse(sk);
     }
   }
   function extractMessageParts(msg) {
@@ -20707,13 +20727,18 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   function _isSameOpenClawMessage(a, b) {
     if (!a || !b) return false;
     if (a.id && b.id && a.id === b.id) return true;
-    if (a.role === "user" || b.role === "user") return false;
     const ac = String(a.content || "").trim();
     const bc = String(b.content || "").trim();
     if (!ac || !bc || ac !== bc || a.role !== b.role) return false;
     const at = Number(a.timestamp || 0);
     const bt = Number(b.timestamp || 0);
-    return at > 0 && bt > 0 && Math.abs(at - bt) < 3e5;
+    if (at <= 0 || bt <= 0) return false;
+    const timeDiff = Math.abs(at - bt);
+    if (a.role === "user") {
+      if (a.idempotencyKey && b.idempotencyKey && a.idempotencyKey === b.idempotencyKey) return true;
+      return Boolean(a._localOnly || b._localOnly) && timeDiff < 5000;
+    }
+    return timeDiff < 3e5;
   }
   function mergeOpenClawHistoryMessages(sessionKey, remoteMsgs, limit = 200) {
     const localMsgs = messagesMap.value[sessionKey] || [];
@@ -21032,6 +21057,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     return raw;
   }
   function getPreferredOpenClawModelId(sessionKey) {
+    const sessionModel = resolveOpenClawModelId(sessionModelMap.value[sessionKey]);
+    if (sessionModel) return sessionModel;
     try {
       const modelsStore = useModelsStore();
       const preferred = modelsStore.currentModel?.value || modelsStore.currentModel?.model || modelsStore.currentModel || null;
@@ -24900,12 +24927,17 @@ const _sfc_main$e = {
     alt: { type: String, default: "" }
   },
   emits: ["close"],
-  setup(__props) {
+  setup(__props, { emit: __emit }) {
+    function handleKeydown(event) {
+      if (event.key === "Escape") __emit("close");
+    }
+    onMounted(() => document.addEventListener("keydown", handleKeydown));
+    onUnmounted(() => document.removeEventListener("keydown", handleKeydown));
     return (_ctx, _cache) => {
       return openBlock(), createBlock(Teleport, { to: "body" }, [
         createBaseVNode("div", {
           class: "lightbox-overlay",
-          onClick: _cache[2] || (_cache[2] = ($event) => _ctx.$emit("close"))
+          onClick: _cache[2] || (_cache[2] = ($event) => __emit("close"))
         }, [
           createBaseVNode("img", {
             src: __props.src,
@@ -24916,7 +24948,7 @@ const _sfc_main$e = {
           }, null, 8, _hoisted_1$e),
           createBaseVNode("button", {
             class: "lightbox-close",
-            onClick: _cache[1] || (_cache[1] = ($event) => _ctx.$emit("close"))
+            onClick: _cache[1] || (_cache[1] = ($event) => __emit("close"))
           }, "✕")
         ])
       ]);
@@ -25340,6 +25372,8 @@ const _sfc_main$c = {
     const attachments = /* @__PURE__ */ ref([]);
     const dragOver = /* @__PURE__ */ ref(false);
     const dragCounter = /* @__PURE__ */ ref(0);
+    const isComposingInput = /* @__PURE__ */ ref(false);
+    const lightboxSrc = /* @__PURE__ */ ref(null);
     const textareaRef = /* @__PURE__ */ ref(null);
     const fileInputRef = /* @__PURE__ */ ref(null);
     const cmdWrapRef = /* @__PURE__ */ ref(null);
@@ -25375,12 +25409,19 @@ const _sfc_main$c = {
     }
     function handleKeydown(e) {
       if (e.key === "Enter" && !e.shiftKey) {
+        if (isComposingInput.value || e.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         handleSend();
       }
       if (e.key === "Escape") {
         showCmdMenu.value = false;
       }
+    }
+    function handleCompositionStart() {
+      isComposingInput.value = true;
+    }
+    function handleCompositionEnd() {
+      isComposingInput.value = false;
     }
     function handlePaste(e) {
       const items = e.clipboardData?.items;
@@ -25439,12 +25480,10 @@ const _sfc_main$c = {
         type: isImage ? "image" : "file",
         fileName: file.name,
         mimeType: file.type,
+        filePath: window.uclaw?.getFilePath(file) || file.path || null,
         preview: null,
         content: null
       };
-      if (!isImage) {
-        att.filePath = window.uclaw?.getFilePath(file) || file.path || null;
-      }
       attachments.value.push(att);
       if (!isImage) return;
       const reader = new FileReader();
@@ -25457,6 +25496,17 @@ const _sfc_main$c = {
     }
     function removeAttachment(i) {
       attachments.value.splice(i, 1);
+    }
+    function previewAttachment(att) {
+      if (!att) return;
+      if (att.preview) {
+        lightboxSrc.value = att.preview;
+        return;
+      }
+      if (att.filePath) {
+        const url = "file://" + String(att.filePath).replace(/\\/g, "/").split("/").map((part, index) => index === 0 && part === "" ? "" : encodeURIComponent(part)).join("/");
+        window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, "_blank");
+      }
     }
     function handleSend() {
       const text2 = localText.value.trim();
@@ -25512,7 +25562,8 @@ const _sfc_main$c = {
             (openBlock(true), createElementBlock(Fragment, null, renderList(attachments.value, (att, i) => {
               return openBlock(), createElementBlock("div", {
                 key: i,
-                class: normalizeClass(["attachment-chip", { "is-image": att.type === "image" }])
+                class: normalizeClass(["attachment-chip", { "is-image": att.type === "image" }]),
+                onClick: ($event) => previewAttachment(att)
               }, [
                 att.type === "image" && att.preview ? (openBlock(), createElementBlock("img", {
                   key: 0,
@@ -25522,7 +25573,7 @@ const _sfc_main$c = {
                 createBaseVNode("span", _hoisted_6$7, toDisplayString(att.fileName || "文件"), 1),
                 createBaseVNode("button", {
                   class: "chip-remove",
-                  onClick: ($event) => removeAttachment(i)
+                  onClick: withModifiers(($event) => removeAttachment(i), ["stop"])
                 }, "✕", 8, _hoisted_7$7)
               ], 2);
             }), 128))
@@ -25605,6 +25656,8 @@ const _sfc_main$c = {
               rows: 1,
               onKeydown: handleKeydown,
               onInput: handleInput,
+              onCompositionstart: handleCompositionStart,
+              onCompositionend: handleCompositionEnd,
               onPaste: handlePaste
             }, null, 40, _hoisted_15$2), [
               [vModelText, localText.value]
@@ -25647,7 +25700,12 @@ const _sfc_main$c = {
                 createBaseVNode("path", { d: "M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" })
               ], -1)
             ])], 8, _hoisted_16$2))
-          ])
+          ]),
+          lightboxSrc.value ? (openBlock(), createBlock(Lightbox, {
+            key: 1,
+            src: lightboxSrc.value,
+            onClose: _cache[7] || (_cache[7] = ($event) => lightboxSrc.value = null)
+          }, null, 8, ["src"])) : createCommentVNode("", true)
         ])
       ], 34);
     };
@@ -26190,15 +26248,15 @@ const _sfc_main$9 = {
       return found?.id || found?.model || null;
     }
     const sessionCurrentModelId = computed(() => {
+      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
+      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
+      const currentValue = current?.value || null;
+      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
       const sk = store.activeSessionKey;
       if (sk && store.sessionModelMap[sk]) {
         const mapped = store.sessionModelMap[sk];
         if (!isPlaceholderSessionModelId(mapped)) return mapped;
       }
-      const current = modelsStore.currentModel?.value || modelsStore.currentModel;
-      if (current?.provider && current?.model && !isPlaceholderSessionModelId(current.model)) return `${current.provider}/${current.model}`;
-      const currentValue = current?.value || null;
-      if (!isPlaceholderSessionModelId(currentValue)) return currentValue;
       return firstRealSessionModelId();
     });
     let _storeInitDone = false;
@@ -26214,6 +26272,7 @@ const _sfc_main$9 = {
     onMounted(() => {
       loadHermesSession();
       window.addEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      window.addEventListener("uclaw-active-model-changed", handleActiveModelChanged);
       if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
       if (hermesActiveTaskId.value) resumeHermesTask(hermesActiveTaskId.value, "hermes");
       if (collabActiveTaskId.value) resumeHermesTask(collabActiveTaskId.value, "collab");
@@ -26229,7 +26288,20 @@ const _sfc_main$9 = {
       store.createSession(modelId);
     }
     function handleModelSelect(modelId) {
-      store.switchModel(modelId);
+      const selectedId = String(modelId || "").trim();
+      const matched = modelsStore.selectedModels.find((item) => item?.value === selectedId || item?.model === selectedId || item?.label === selectedId || `${item?.provider || ""}/${item?.model || ""}` === selectedId);
+      const resolvedId = matched?.provider && matched?.model ? `${matched.provider}/${matched.model}` : selectedId;
+      if (matched && resolvedId && !isPlaceholderSessionModelId(resolvedId)) {
+        const nextModels = modelsStore.selectedModels.map((item) => ({ ...item, isCurrent: item === matched || item.value === matched.value || `${item.provider || ""}/${item.model || ""}` === resolvedId }));
+        modelsStore.setSelectedModels(
+          nextModels
+        );
+        window.uclaw?.ipcWriteOpenClawConfig?.({ models: nextModels }, "model").catch((e) => {
+          console.warn("[models] write selected model from chat failed:", e?.message || e);
+        });
+        window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model: matched } }));
+      }
+      store.switchModel(resolvedId || modelId);
     }
     function handleReconnect() {
       console.log("[AiChat] 手动重试连接...");
@@ -26320,6 +26392,15 @@ const _sfc_main$9 = {
     }
     function handleHermesStateEvent() {
       nextTick(() => scrollToBottom(0));
+    }
+    function handleActiveModelChanged() {
+      const sk = store.activeSessionKey;
+      const modelId = sessionCurrentModelId.value || firstRealSessionModelId();
+      if (sk && modelId && !isPlaceholderSessionModelId(modelId)) {
+        store.sessionModelMap[sk] = modelId;
+        if (store.isReady) store.switchModel(modelId);
+      }
+      saveHermesSession();
     }
     function handleHermesChatProgress(payload) {
       const now = Date.now();
@@ -26639,9 +26720,32 @@ const _sfc_main$9 = {
       }
       return !!store.isReady;
     }
+    function normalizeHermesAttachments(attachments = []) {
+      return (Array.isArray(attachments) ? attachments : []).map((att, index) => ({
+        type: att?.type || "file",
+        fileName: att?.fileName || att?.name || `attachment-${index + 1}`,
+        mimeType: att?.mimeType || "",
+        filePath: att?.filePath || "",
+        preview: att?.preview || "",
+        content: att?.content || ""
+      })).filter((att) => att.filePath || att.content || att.preview || att.fileName);
+    }
+    function buildHermesMessageWithAttachments(content, attachments = []) {
+      const normalized = normalizeHermesAttachments(attachments);
+      if (!normalized.length) return { message: content, attachments: normalized };
+      const lines = normalized.map((att, index) => {
+        const location = att.filePath ? `路径：${att.filePath}` : att.content ? "内容：已附带图片 base64 数据" : "位置：仅有预览数据";
+        return `${index + 1}. ${att.fileName || "附件"} (${att.mimeType || att.type || "file"}) ${location}`;
+      });
+      return {
+        message: [content, "", "本轮用户上传了以下附件，请在需要读取文件、图片 OCR 或调用技能时优先使用这些附件：", ...lines].join("\n"),
+        attachments: normalized
+      };
+    }
     async function sendHermesMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content) return;
+      const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (hermesSending.value) {
         const recovered = await clearRecoveredHermesTask(hermesActiveTaskId.value, "hermes");
         if (hermesSending.value && !recovered) {
@@ -26681,8 +26785,9 @@ const _sfc_main$9 = {
           hermesRunState.value = "Hermes 已按需自动启动，正在生成回复。";
         }
         const result = await runHermesChatBackground({
-          message: content,
+          message: hermesMessage,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "hermes-ai-chat",
           ...getSelectedHermesModel()
         });
@@ -26717,6 +26822,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
+      const { message: hermesUserMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (!gatewayAvailable.value) {
         appendHermesAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
@@ -26753,7 +26859,7 @@ const _sfc_main$9 = {
           "要求：保留 OpenClaw 已完成的有效内容；指出必要风险；输出最终可执行答案。",
           "",
           "用户原始问题：",
-          content,
+          hermesUserMessage,
           "",
           "OpenClaw 草案：",
           draftText
@@ -26761,6 +26867,7 @@ const _sfc_main$9 = {
         const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: hermesMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "openclaw-hermes-collab",
           ...getSelectedHermesModel()
         });
@@ -26779,6 +26886,7 @@ const _sfc_main$9 = {
     async function sendCollaborativeMessageV2(text2, attachments = []) {
       const content = (text2 || "").trim();
       if (!content || collabSending.value) return;
+      const { message: hermesUserMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (!gatewayAvailable.value) {
         appendCollabAssistant("协同模式需要先启动 OpenClaw Gateway。请在首页启动 Gateway 后再发送。", "协同编排", "error");
         return;
@@ -26817,7 +26925,7 @@ const _sfc_main$9 = {
           "输出最终答案即可，不要写复核报告、不要列草案质量表，除非用户要求审稿。",
           "",
           "用户问题：",
-          content,
+          hermesUserMessage,
           "",
           "OpenClaw 内部草案：",
           draftText
@@ -26825,6 +26933,7 @@ const _sfc_main$9 = {
         const result = await runHermesChatBackground({
           message: hermesPrompt,
           messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
           sessionId: "openclaw-hermes-collab",
           ...getSelectedHermesModel()
         });
@@ -27039,6 +27148,7 @@ const _sfc_main$9 = {
     }
     onUnmounted(() => {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
+      window.removeEventListener("uclaw-active-model-changed", handleActiveModelChanged);
       if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
     });
     return (_ctx, _cache) => {
@@ -28047,6 +28157,8 @@ const _sfc_main = {
           return;
         }
         window.uclaw?.ipcWriteOpenClawConfig({ models: payload }, "model").then(() => {
+          const activeModel = payload.find((item) => item?.isCurrent) || null;
+          if (activeModel) window.dispatchEvent(new CustomEvent("uclaw-active-model-changed", { detail: { model: activeModel } }));
           window.dispatchEvent(new CustomEvent("uclaw-openclaw-config-updated"));
         }).catch((e) => {
           console.warn("[models] write OpenClaw config failed:", e?.message || e);

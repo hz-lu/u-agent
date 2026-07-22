@@ -640,6 +640,12 @@ class HermesManager {
     function skillSlug(value) {
       return String(value || "").toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     }
+    function reloadOpenClawSkills() {
+      if (options?.reloadOpenClaw !== true) return null;
+      const reload = reloadGateway();
+      safeSend("gateway-log", { type: reload?.ok ? "stdout" : "stderr", msg: "[skills] OpenClaw Gateway reload " + (reload?.ok ? "requested" : "failed") + (reload?.error ? ": " + reload.error : "") });
+      return reload;
+    }
     function uniqueTargetName(name, used) {
       let candidate = name;
       let index = 2;
@@ -729,9 +735,8 @@ class HermesManager {
     }
     try {
       const config = readJsonSafe(path$1.join(getAppRoot(), "data", ".openclaw", "openclaw.json")) || {};
-      const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];
       const skillEntries = config?.skills?.entries || {};
-      const sourceRoots = extraDirs.map((dir) => path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));
+      const sourceRoots = getOpenClawSkillSourceRoots(config);
       const sources = [];
       const seenKeys = new Set();
       for (const rootDir of sourceRoots) {
@@ -789,6 +794,7 @@ class HermesManager {
         reportPath,
         catalogPath: catalog.catalogJson,
         catalogMarkdownPath: catalog.catalogMd,
+        openClawReload: reloadOpenClawSkills(),
         sampleCommands: verification.commands.slice(0, 20),
         missingNames,
         unchanged
@@ -810,8 +816,25 @@ class HermesManager {
     const match = text.match(/https?:\/\/(?:www\.)?github\.com\/([^\s\)\]\}\"'，。；;]+)(?:\.git)?/i);
     if (!match) return null;
     let url = match[0].replace(/[，。；;,.]+$/, "");
-    if (!/\.git$/i.test(url)) url += ".git";
-    return { url };
+    return this.normalizeGitHubSkillUrl(url);
+  }
+  normalizeGitHubSkillUrl(rawUrl) {
+    const clean = String(rawUrl || "").trim().replace(/[,.;]+$/, "");
+    let parsed;
+    try {
+      parsed = new URL(clean);
+    } catch {
+      return null;
+    }
+    if (!/^https?:$/i.test(parsed.protocol) || !/^(www\.)?github\.com$/i.test(parsed.hostname)) return null;
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const owner = parts[0];
+    const repo = String(parts[1] || "").replace(/\.git$/i, "");
+    if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    const treeIndex = parts.indexOf("tree");
+    const subdir = treeIndex >= 0 && parts.length > treeIndex + 2 ? parts.slice(treeIndex + 2).join("/") : "";
+    return { url: `https://github.com/${owner}/${repo}.git`, subdir };
   }
 
   async installPortableSkillFromGit(url, options = {}) {
@@ -839,6 +862,22 @@ class HermesManager {
     }
     function findSkillSources(rootDir) {
       const rows = [];
+      const requestedSubdir = String(options.subdir || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (requestedSubdir) {
+        const scopedRoot = path$1.resolve(rootDir, requestedSubdir);
+        if (!isInside(rootDir, scopedRoot)) throw new Error("Invalid skill subdirectory: " + requestedSubdir);
+        if (!fs$1.existsSync(scopedRoot)) throw new Error("Skill subdirectory was not found in repository: " + requestedSubdir);
+        if (fs$1.existsSync(path$1.join(scopedRoot, "SKILL.md"))) {
+          rows.push({ source: scopedRoot, name: path$1.basename(scopedRoot) || repoName });
+        } else {
+          for (const entry of fs$1.readdirSync(scopedRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const full = path$1.join(scopedRoot, entry.name);
+            if (fs$1.existsSync(path$1.join(full, "SKILL.md"))) rows.push({ source: full, name: entry.name });
+          }
+        }
+        return rows;
+      }
       if (fs$1.existsSync(path$1.join(rootDir, "SKILL.md"))) rows.push({ source: rootDir, name: repoName });
       for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -975,7 +1014,7 @@ class HermesManager {
         installed.push({ name: safeName, path: target });
       }
       ensureOpenClawSkillsConfig(installed);
-      const sync = this.syncOpenClawSkillsToHermes({ silent: false });
+      const sync = this.syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const report = { ok: true, url: cleanUrl, repoName, cloneReused: !!clone.reused, installed, installedCount: installed.length, skillsRoot, sync, elapsedMs: Date.now() - startedAt };
       safeSend("hermes-log", { type: "system", msg: "[skill-install] installed=" + installed.length + " synced=" + (sync?.mirroredCount ?? sync?.sourceCount ?? 0) + " url=" + cleanUrl });
       return report;
@@ -1235,6 +1274,9 @@ class HermesManager {
       lastError: this.lastError,
       launcherLogPath: path$1.join(this.getHermesLogsRoot(), "launcher.log")
     };
+  }
+  verifyEnvironment() {
+    return this.snapshot({ fast: true });
   }
   emitStatus() {
     safeSend("hermes-status", this.snapshot({ fast: true }));
@@ -1634,9 +1676,18 @@ class HermesManager {
     if (!message) {
       return { ok: false, error: "消息不能为空" };
     }
+    const skillHermesCommand = this.getHermesCommand([]);
+    if (!fs$1.existsSync(skillHermesCommand.command)) {
+      return { ok: false, error: "Hermes CLI runtime not found: " + skillHermesCommand.command };
+    }
+    try {
+      if (!this.proc && !(await this.checkTcpPort(17520))) await this.start({ open: false });
+    } catch (err) {
+      safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
+    }
     const skillInstallRequest = this.detectPortableSkillInstallRequest(message);
     if (skillInstallRequest) {
-      const result = await this.installPortableSkillFromGit(skillInstallRequest.url);
+      const result = await this.installPortableSkillFromGit(skillInstallRequest.url, { subdir: skillInstallRequest.subdir });
       if (result.ok) {
         const names = (result.installed || []).map((item) => item.name).join(", ") || "已安装技能";
         return { ok: true, reply: "已通过便携安装器安装 skill：" + names + "。\n安装位置：" + result.skillsRoot + "\n已同步给 Hermes，OpenClaw 与 Hermes 可以共用。" };
@@ -1689,6 +1740,34 @@ class HermesManager {
       if (id === "custom" || id === "openai-compatible") return "openai-api";
       return provider || "openai-api";
     }
+    function materializeHermesAttachment(att, index) {
+      const filePath = String(att?.filePath || "").trim();
+      const content = String(att?.content || "").trim();
+      if (filePath || !content) return filePath;
+      const uploadsDir = path$1.join(getAppRoot(), "data", ".hermes", "uploads");
+      fs$1.mkdirSync(uploadsDir, { recursive: true });
+      const name = String(att?.fileName || `attachment-${index + 1}`).replace(/[\\/:*?\"<>|]/g, "_").trim() || `attachment-${index + 1}`;
+      const ext = path$1.extname(name) || (String(att?.mimeType || "").includes("png") ? ".png" : String(att?.mimeType || "").includes("jpeg") || String(att?.mimeType || "").includes("jpg") ? ".jpg" : ".bin");
+      const base = path$1.basename(name, path$1.extname(name)).replace(/[^A-Za-z0-9_.-]+/g, "-") || "attachment";
+      const target = path$1.join(uploadsDir, `${Date.now()}-${index + 1}-${base}${ext}`);
+      fs$1.writeFileSync(target, Buffer.from(content, "base64"));
+      return target;
+    }
+    function buildHermesAttachmentContext(attachments = []) {
+      const rows = (Array.isArray(attachments) ? attachments : []).map((att, index) => {
+        const name = String(att?.fileName || att?.name || `attachment-${index + 1}`).trim();
+        const type2 = String(att?.mimeType || att?.type || "file").trim();
+        const filePath = materializeHermesAttachment(att, index);
+        const content = String(att?.content || "").trim();
+        if (!filePath && !content) return null;
+        const parts = [`${index + 1}. ${name}`, `类型：${type2}`];
+        if (filePath) parts.push(`路径：${filePath}`);
+        if (content) parts.push(`内联内容：base64，长度 ${content.length}`);
+        return parts.join("；");
+      }).filter(Boolean);
+      if (!rows.length) return "";
+      return ["", "用户本轮上传附件如下。需要读取文件、图片 OCR 或调用技能时，请使用这些路径/内联内容：", ...rows].join("\n");
+    }
     const runtimeModel = resolveHermesModel() || resolveOpenClawModel() || {};
     try {
       if (!this.proc && !(await this.checkTcpPort(17520))) {
@@ -1699,7 +1778,33 @@ class HermesManager {
     } catch (err) {
       safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] background start failed: " + (err instanceof Error ? err.message : String(err)) });
     }
-    const args = ["--oneshot", message];
+    const chatProgressBase = {
+      sessionId: options.sessionId || "hermes-ai-chat",
+      mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",
+      startedAt: Date.now()
+    };
+    let configReadyForChat = await this.checkTcpPort(17520);
+    let apiReadyForChat = await this.checkTcpPort(8642);
+    if (!configReadyForChat || !apiReadyForChat) {
+      safeSend("hermes-chat-progress", { ...chatProgressBase, stage: "runtime", detail: "Hermes 正在等待本地 API/Gateway 就绪，首次从 U 盘启动可能较慢。", at: Date.now() });
+      await this.start({ open: false }).catch((err) => {
+        safeSend("hermes-log", { type: "stderr", msg: "[hermes-chat] readiness start failed: " + (err instanceof Error ? err.message : String(err)) });
+      });
+      configReadyForChat = await this.waitForPort(17520, 12e4);
+      apiReadyForChat = await this.waitForPort(8642, 12e4);
+    }
+    if (!configReadyForChat || !apiReadyForChat) {
+      return {
+        ok: false,
+        errorKind: "interrupted",
+        error: "Hermes 本地服务还没有完全启动，本轮消息没有投递给模型。\n\n可能原因：\n1. U 盘首次启动 Hermes 较慢，API/Gateway 仍在预热。\n2. Hermes 后台进程刚被停止、重启或系统回收。\n\n建议处理：\n1. 等首页 Hermes 状态稳定显示已启动后重新发送。\n2. 如果反复出现，请在首页停止并重新启动 Hermes。",
+        configReady: configReadyForChat,
+        apiServerReady: apiReadyForChat
+      };
+    }
+    const attachmentContext = buildHermesAttachmentContext(options.attachments);
+    const effectiveMessage = attachmentContext ? message + "\n" + attachmentContext : message;
+    const args = ["--oneshot", effectiveMessage];
     const modelName = typeof options.modelName === "string" && options.modelName.trim() ? options.modelName.trim() : runtimeModel.model || "";
     const apiKey = typeof options.apiKey === "string" && options.apiKey.trim() ? options.apiKey.trim() : runtimeModel.apiKey || "";
     const baseUrl = typeof options.baseUrl === "string" && options.baseUrl.trim() ? options.baseUrl.trim() : runtimeModel.baseUrl || "";
@@ -1730,7 +1835,7 @@ class HermesManager {
       env2.KIMI_CN_BASE_URL = baseUrl;
     }
     const chatCommand = this.getHermesCommand(args);
-    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " " + chatCommand.args.join(" ") + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] starting oneshot: " + chatCommand.command + " --oneshot [message redacted] messageLength=" + String(effectiveMessage).length + " provider=" + (provider || "auto") + " model=" + (modelName || "auto") + " key=" + (apiKey ? "present" : "missing") });
     const manager = this;
     return await new Promise((resolve) => {
       const progressBase = {
@@ -1798,7 +1903,7 @@ class HermesManager {
         manager.chatChildren.set(runId, child);
       }
       manager.chatRunMeta.set(options.taskId || runId, { statusPath, resultPath, runId, runDir, stdoutPath, stderrPath, sessionId: options.sessionId || "hermes-ai-chat" });
-      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", message, provider, modelName }, null, 2) + "\n", "utf8");
+      fs$1.writeFileSync(path$1.join(runDir, "request.json"), JSON.stringify({ startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", messageLength: String(effectiveMessage).length, attachmentCount: Array.isArray(options.attachments) ? options.attachments.length : 0, provider, modelName }, null, 2) + "\n", "utf8");
       fs$1.writeFileSync(statusPath, JSON.stringify({ status: "running", startedAt: new Date().toISOString(), taskId: options.taskId || "", sessionId: options.sessionId || "hermes-ai-chat", runId, runDir }, null, 2) + "\n", "utf8");
       emitProgress("model", "Hermes 已启动，正在调用模型：" + (modelName || "当前配置模型"));
       const heartbeat = setInterval(() => {
@@ -1911,7 +2016,7 @@ class HermesManager {
       child.on("error", (err) => {
         finish(classifyHermesError(err.message, { runId, runDir, stdoutPath, stderrPath }));
       });
-      child.on("exit", async (code) => {
+      child.on("exit", async (code, signal) => {
         await flushSpoolWrites();
         if (settled) return;
         if (child.__uclawCancelled) {
@@ -1920,8 +2025,25 @@ class HermesManager {
         }
         const reply = stdout.trim();
         const errText = stderr.trim();
-        if (code !== 0) {
-          finish(classifyHermesError(errText.slice(-4000) || reply.slice(-4000) || "Hermes chat exited with code " + code, { runId, runDir, stdoutPath, stderrPath }));
+        if (code !== 0 || signal || code === null) {
+          const exitText = "Hermes chat exited with code " + code + (signal ? ", signal " + signal : "");
+          const rawError = errText.slice(-4000) || reply.slice(-4000) || exitText;
+          if (signal || code === null) {
+            finish({
+              ok: false,
+              errorKind: "interrupted",
+              error: "Hermes 本轮任务被系统或后台进程中断，没有产生完整回复。请重新发送；如果反复出现，请先在首页重启 Hermes。",
+              technicalError: rawError,
+              runId,
+              runDir,
+              stdoutPath,
+              stderrPath,
+              exitCode: code,
+              exitSignal: signal || ""
+            });
+            return;
+          }
+          finish(classifyHermesError(rawError, { runId, runDir, stdoutPath, stderrPath, exitCode: code, exitSignal: signal || "" }));
           return;
         }
         if (!reply) {
@@ -3273,6 +3395,23 @@ function rewritePortableOpenClawConfigPaths() {
     if (!fs$1.existsSync(configPath)) return;
     const config = JSON.parse(fs$1.readFileSync(configPath, "utf8"));
     let changed = false;
+    let removedInvalidModelFields = false;
+    const providers = config?.models?.providers;
+    if (providers && typeof providers === "object") {
+      for (const providerConfig of Object.values(providers)) {
+        const providerModels = providerConfig?.models;
+        if (!Array.isArray(providerModels)) continue;
+        for (const model of providerModels) {
+          if (!model || typeof model !== "object") continue;
+          for (const key of ["isCifuDefault", "locked", "source", "value", "label", "provider", "key", "base", "url", "api"]) {
+            if (!Object.prototype.hasOwnProperty.call(model, key)) continue;
+            delete model[key];
+            changed = true;
+            removedInvalidModelFields = true;
+          }
+        }
+      }
+    }
     const extraDirs = config?.skills?.load?.extraDirs;
     if (Array.isArray(extraDirs)) {
       const normalized = extraDirs.map((entry) => {
@@ -3303,9 +3442,51 @@ function rewritePortableOpenClawConfigPaths() {
         changed = true;
       }
     }
-    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+    if (changed) {
+      if (removedInvalidModelFields) {
+        const backupPath = `${configPath}.bak-invalid-model-fields-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+        try {
+          fs$1.copyFileSync(configPath, backupPath);
+          console.log("[portable] backed up OpenClaw config before model field cleanup:", backupPath);
+        } catch (backupErr) {
+          console.warn("[portable] failed to backup OpenClaw config before cleanup:", backupErr instanceof Error ? backupErr.message : String(backupErr));
+        }
+      }
+      fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+      if (removedInvalidModelFields) console.log("[portable] removed UI-only model fields from OpenClaw config");
+    }
   } catch (err) {
     console.warn("[portable] failed to rewrite OpenClaw config paths:", err instanceof Error ? err.message : String(err));
+  }
+}
+function ensurePortableOpenClawSkillConfig() {
+  const configPath = path$1.join(getDataRoot(), ".openclaw", "openclaw.json");
+  try {
+    if (!fs$1.existsSync(configPath)) return;
+    const config = JSON.parse(fs$1.readFileSync(configPath, "utf8"));
+    config.skills ||= {};
+    config.skills.load ||= {};
+    const current = Array.isArray(config.skills.load.extraDirs) ? config.skills.load.extraDirs : [];
+    const next = [];
+    const seen = /* @__PURE__ */ new Set();
+    function addDir(entry) {
+      if (typeof entry !== "string" || !entry.trim()) return;
+      const clean = entry.trim().replace(/\\/g, "/");
+      const portableEntry = /^[A-Za-z]:\/skills\/?$/i.test(clean) || clean === "skills" || clean.endsWith("/skills") ? "skills" : entry.trim();
+      const key = portableEntry.replace(/\\/g, "/").toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      next.push(portableEntry);
+    }
+    addDir("skills");
+    for (const entry of current) addDir(entry);
+    if (JSON.stringify(next) !== JSON.stringify(current)) {
+      config.skills.load.extraDirs = next;
+      fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
+      console.log("[portable] ensured OpenClaw skills.load.extraDirs:", next.join(", "));
+    }
+  } catch (err) {
+    console.warn("[portable] failed to ensure OpenClaw skill config:", err instanceof Error ? err.message : String(err));
   }
 }
 function normalizeOpenClawPluginSkillLinks() {
@@ -3343,6 +3524,7 @@ function normalizeOpenClawPluginSkillLinks() {
 }
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
+  ensurePortableOpenClawSkillConfig();
   const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
@@ -22775,6 +22957,26 @@ function parseSkillMeta(skillFilePath) {
     return null;
   }
 }
+function getOpenClawSkillSourceRoots(config) {
+  const roots = [];
+  const seen = /* @__PURE__ */ new Set();
+  function addRoot(rootDir) {
+    if (!rootDir) return;
+    const resolved = path$1.resolve(rootDir);
+    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) return;
+    seen.add(key);
+    roots.push(resolved);
+  }
+  addRoot(path$1.join(getAppRoot(), "skills"));
+  addRoot(path$1.join(getDataRoot(), ".openclaw", "workspace", "skills"));
+  addRoot(path$1.join(getDataRoot(), ".openclaw", "skills"));
+  const extraDirs = Array.isArray(config?.skills?.load?.extraDirs) ? config.skills.load.extraDirs : [];
+  for (const dir of extraDirs) {
+    addRoot(path$1.isAbsolute(dir) ? dir : path$1.join(getAppRoot(), dir));
+  }
+  return roots;
+}
 function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
   electron.ipcMain.handle("open-dashboard", () => {
@@ -23032,22 +23234,17 @@ function registerIPCHandlers({ gateway }) {
   electron.ipcMain.handle("scan-local-skills", async () => {
     const skillsMap = /* @__PURE__ */ new Map();
     try {
-      let extraDirs = [];
+      let config = {};
       let skillEntries = {};
       if (fs$1.existsSync(configPath)) {
         try {
-          const config = JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
-          extraDirs = config.skills?.load?.extraDirs || [];
+          config = JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
           skillEntries = config.skills?.entries || {};
         } catch (e) {
           console.warn("读取 openclw.json extraDirs 失败:", e.message);
         }
       }
-      for (const extraDir of extraDirs) {
-        let resolvedDir = extraDir;
-        if (!path$1.isAbsolute(extraDir)) {
-          resolvedDir = path$1.join(getAppRoot(), extraDir);
-        }
+      for (const resolvedDir of getOpenClawSkillSourceRoots(config)) {
         if (!fs$1.existsSync(resolvedDir)) {
           continue;
         }
@@ -23082,7 +23279,7 @@ function registerIPCHandlers({ gateway }) {
                 description: meta?.description || null,
                 emoji: meta?.emoji || null,
                 source: "local",
-                path: resolvedDir,
+                path: skillFile,
                 enabled: skillEntries[name]?.enabled !== false
               });
             }
@@ -23114,7 +23311,7 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("sync-hermes-skills", async () => {
     try {
-      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false });
+      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
       fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });
       let extraDirs = [];
@@ -23176,6 +23373,9 @@ function registerIPCHandlers({ gateway }) {
   });
   electron.ipcMain.handle("hermes:getStatus", async () => {
     return await getHermesManager().getStatus({ fast: true });
+  });
+  electron.ipcMain.handle("hermes:verifyEnvironment", async () => {
+    return getHermesManager().verifyEnvironment();
   });
   electron.ipcMain.handle("hermes:getLogs", async (_, options = {}) => {
     const limit = Number.isFinite(options?.limit) ? Math.max(1, Math.min(300, Number(options.limit))) : 100;

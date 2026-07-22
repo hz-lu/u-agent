@@ -33,6 +33,36 @@ import { handleSlashCommand } from "./slash-commands.js";
 
 const MEDIA_OUTBOUND_TEMP_DIR = path.join(resolvePreferredOpenClawTmpDir(), "weixin/media/outbound-temp");
 
+function classifyWeixinReplyError(err: unknown): "media-download" | "media-upload" | "network-send" | "other" {
+  const text = err instanceof Error
+    ? `${err.name} ${err.message} ${(err as { cause?: unknown }).cause ? String((err as { cause?: unknown }).cause) : ""}`
+    : String(err);
+  const lower = text.toLowerCase();
+
+  if (lower.includes("remote media download failed")) {
+    return "media-download";
+  }
+  if (
+    lower.includes("getuploadurl") ||
+    lower.includes("cdn upload") ||
+    lower.includes("upload_param")
+  ) {
+    return "media-upload";
+  }
+  if (
+    lower.includes("aborterror") ||
+    lower.includes("fetch failed") ||
+    lower.includes("econnreset") ||
+    lower.includes("etimedout") ||
+    lower.includes("timeout") ||
+    lower.includes("socket") ||
+    lower.includes("network")
+  ) {
+    return "network-send";
+  }
+  return "other";
+}
+
 /** Dependencies for processOneMessage, injected by the monitor loop. */
 export type ProcessMessageDeps = {
   accountId: string;
@@ -380,15 +410,14 @@ export async function processOneMessage(
       onError: (err, info) => {
         deps.errLog(`weixin reply ${info.kind}: ${String(err)}`);
         const errMsg = err instanceof Error ? err.message : String(err);
+        const errorKind = classifyWeixinReplyError(err);
         let notice: string;
-        if (errMsg.includes("remote media download failed") || errMsg.includes("fetch")) {
+        if (errorKind === "media-download") {
           notice = `⚠️ 媒体文件下载失败，请检查链接是否可访问。`;
-        } else if (
-          errMsg.includes("getUploadUrl") ||
-          errMsg.includes("CDN upload") ||
-          errMsg.includes("upload_param")
-        ) {
+        } else if (errorKind === "media-upload") {
           notice = `⚠️ 媒体文件上传失败，请稍后重试。`;
+        } else if (errorKind === "network-send") {
+          notice = `⚠️ 微信消息发送失败，网络连接不稳定或微信服务暂时不可达，请稍后重试。`;
         } else {
           notice = `⚠️ 消息发送失败：${errMsg}`;
         }

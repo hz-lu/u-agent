@@ -29,6 +29,7 @@
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
+    "verify:shared-backports": "node scripts/verify-macos-shared-backports.mjs",
     "diagnose:hermes-startup": "node scripts/diagnose-hermes-startup.mjs",
     "diagnose:windows-layout": "node scripts/diagnose-windows-layout.mjs",
     "migrate:hermes-data": "node scripts/migrate-hermes-data.mjs",
