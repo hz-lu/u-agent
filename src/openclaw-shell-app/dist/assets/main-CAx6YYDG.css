@@ -5765,6 +5765,25 @@ html.light .history-empty[data-v-48c21956] {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+.message-skill-tags[data-v-fd7d93a3] {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+.message-skill-tag[data-v-fd7d93a3] {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 3px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .attached-image[data-v-fd7d93a3] {
   max-width: 200px;
   max-height: 200px;

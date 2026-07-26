@@ -14,6 +14,7 @@ const require = createRequire(import.meta.url);
 const {
   buildOpenClawSkillMessage,
   normalizeSelectedSkills,
+  parseOpenClawSkillMessage,
   routeCompleteSkillSet
 } = require(routingPath);
 
@@ -73,6 +74,17 @@ assert.match(multiMessage, /- "skill-a"/);
 assert.match(multiMessage, /- "skill-b"/);
 assert.match(multiMessage, /User input:\nsummarize this/);
 assert.equal((multiMessage.match(/skill-a/g) || []).length, 1);
+assert.deepEqual(parseOpenClawSkillMessage("/skill skill-a summarize this"), {
+  displayText: "summarize this",
+  skills: [{ name: "skill-a", command: "/skill skill-a" }]
+});
+assert.deepEqual(parseOpenClawSkillMessage(multiMessage), {
+  displayText: "summarize this",
+  skills: [
+    { name: "skill-a", command: "/skill skill-a" },
+    { name: "skill-b", command: "/skill skill-b" }
+  ]
+});
 
 const main = fs.readFileSync(mainPath, "utf8");
 const preload = fs.readFileSync(preloadPath, "utf8");
@@ -106,6 +118,29 @@ for (const marker of [
 ]) {
   assert(renderer.includes(marker), `renderer is missing ${marker}`);
 }
+for (const marker of [
+  "async function sendMessage(text2, attachments, options = {})",
+  "content: displayText",
+  "skills: messageSkills",
+  "return { accepted: true, queued: false }",
+  "retrySafe: true",
+  "window.uclaw?.ipcPrepareChatSkillRequest",
+  "async function sendSkillMessage(text2, attachments, selectedSkills)",
+  'prepared.executionAgent === "hermes"',
+  "store.sendMessage(prepared.runtimeMessage, attachments, sendOptions)",
+  "sendCollaborativeSkillMessage",
+  "const result = !selectedSkills.length",
+  "function parseStoredOpenClawSkillMessage(content)",
+  'const collabOpenClawSessionKey = "agent:main:openclawpro-collab"',
+  "getSessionMessages(sessionKey)",
+  "sendOptions.sessionKey = collabOpenClawSessionKey"
+]) {
+  assert(renderer.includes(marker), `renderer is missing execution marker ${marker}`);
+}
+assert(!renderer.includes("content: prepared.runtimeMessage"), "runtime skill prompts must not be persisted as user content");
+const openClawGatewaySendBody = renderer.match(/async function sendOpenClawToGateway\(item\) \{([\s\S]*?)\n  \}\n  async function flushOpenClawQueue/)?.[1] || "";
+assert(openClawGatewaySendBody, "renderer is missing sendOpenClawToGateway body");
+assert(!openClawGatewaySendBody.includes('inputText.value = ""'), "OpenClaw store must not clear the draft before Gateway acceptance");
 const selectSkillBody = renderer.match(/function selectChatSkill\(skill\) \{([\s\S]*?)\n    \}/)?.[1] || "";
 assert(selectSkillBody, "renderer is missing selectChatSkill body");
 assert(!selectSkillBody.includes("handleSend("), "selecting a skill must not send the message");

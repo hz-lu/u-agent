@@ -19651,6 +19651,9 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     if (!activeSessionKey.value) return [];
     return messagesMap.value[activeSessionKey.value] || [];
   });
+  function getSessionMessages(sessionKey) {
+    return messagesMap.value[sessionKey] || [];
+  }
   const isReady = computed(() => wsStatus.value === "ready");
   const activeSession = computed(() => {
     return sessions.value.find((s) => s.key === activeSessionKey.value);
@@ -20581,6 +20584,30 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       contentBlocks: buildContentBlocks(msg.content, msg._thinkContent)
     };
   }
+  function parseStoredOpenClawSkillMessage(content) {
+    const text2 = String(content || "").trim();
+    const single = text2.match(/^\/skill\s+(\S+)(?:\s+([\s\S]*))?$/i);
+    if (single) {
+      return {
+        displayText: String(single[2] || "").trim(),
+        skills: [{ name: single[1], command: `/skill ${single[1]}` }]
+      };
+    }
+    const prefix = "Use all of the following skills together for this request:\n";
+    if (!text2.startsWith(prefix)) return null;
+    const separator = "\n\nUser input:\n";
+    const separatorIndex = text2.indexOf(separator, prefix.length);
+    const listText = separatorIndex >= 0 ? text2.slice(prefix.length, separatorIndex) : text2.slice(prefix.length);
+    const skills = listText.split(/\r?\n/).map((line) => {
+      const match = line.match(/^-\s+["'](.+)["']$/);
+      return match ? { name: match[1], command: `/skill ${match[1]}` } : null;
+    }).filter(Boolean);
+    if (!skills.length) return null;
+    return {
+      displayText: separatorIndex >= 0 ? text2.slice(separatorIndex + separator.length).trim() : "",
+      skills
+    };
+  }
   function normalizeMessage(msg) {
     const role = msg.role || "assistant";
     if (role === "toolResult") {
@@ -20607,19 +20634,21 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     }
     const { text: text2, images, videos, audios, files, tools, thinking: ytThinking } = extractMessageParts(msg);
     const { clean, thinking: muThinking } = stripThinkingTags(text2);
+    const storedSkillRequest = role === "user" ? parseStoredOpenClawSkillMessage(clean) : null;
     const combinedThinking = [ytThinking, muThinking].filter(Boolean).join("\n") || void 0;
     const existingThink = msg._thinkContent || combinedThinking;
     return syncMessageBlocks({
       id: msg.id || msg.messageId || crypto.randomUUID(),
       sessionKey: msg.sessionKey || void 0,
       role,
-      content: clean,
+      content: storedSkillRequest?.displayText ?? clean,
       images,
       videos,
       audios,
       files,
       tools,
       attachments: msg.attachments || [],
+      skills: Array.isArray(msg.skills) ? msg.skills : storedSkillRequest?.skills || [],
       _thinkContent: existingThink || void 0,
       timestamp: msg.timestamp || Date.now(),
       runId: msg.runId || void 0,
@@ -21088,10 +21117,11 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
   }
   async function sendOpenClawToGateway(item) {
     const sk = item.sessionKey;
-    if (!_isOpenClawSendPathAvailable()) return false;
+    if (!_isOpenClawSendPathAvailable()) {
+      return { accepted: false, queued: false, retrySafe: true, error: "OpenClaw 发送通道尚未就绪" };
+    }
     updateOpenClawMessage(sk, item.userMessageId, { status: "done" });
     sending.value = true;
-    inputText.value = "";
     const timeoutId = setTimeout(() => {
       if (sending.value) {
         console.warn("[aiChat] OpenClaw send timeout: no reply event in 45 seconds");
@@ -21128,14 +21158,19 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
         currentRunId.value = null;
         setTimeout(() => flushOpenClawQueue(), 0);
       }
-      return true;
+      return { accepted: true, queued: false };
     } catch (e) {
       clearTimeout(timeoutId);
       sending.value = false;
       currentRunId.value = null;
       appendOpenClawNotice(sk, "发送失败：" + (e.message || "未知错误"), "error");
       setTimeout(() => flushOpenClawQueue(), 0);
-      return false;
+      return {
+        accepted: false,
+        queued: false,
+        retrySafe: false,
+        error: e?.message || "OpenClaw Gateway 发送失败"
+      };
     }
   }
   async function flushOpenClawQueue() {
@@ -21262,55 +21297,74 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       _scheduleSave(sk);
     }
   }
-  async function sendMessage(text2, attachments) {
-    const sk = ensureActiveSession();
-    if (!sk || !text2?.trim() && !attachments?.length) return;
-    if (text2?.trim() && handleCommand(text2.trim())) return;
+  async function sendMessage(text2, attachments, options = {}) {
+    const requestedSessionKey = String(options?.sessionKey || "").trim();
+    const sk = requestedSessionKey || ensureActiveSession();
+    if (requestedSessionKey && !messagesMap.value[requestedSessionKey]) messagesMap.value[requestedSessionKey] = [];
+    const runtimeText = String(text2 || "");
+    const displayText = String(options?.displayText ?? text2 ?? "");
+    const messageSkills = (Array.isArray(options?.skills) ? options.skills : []).map((skill) => ({
+      id: String(skill?.id || skill?.name || ""),
+      name: String(skill?.name || ""),
+      command: String(skill?.command || "")
+    })).filter((skill) => skill.name);
+    if (!sk || !runtimeText.trim() && !attachments?.length && !messageSkills.length) {
+      return { accepted: false, queued: false, retrySafe: true, error: "消息内容为空" };
+    }
+    if (!messageSkills.length && runtimeText.trim() && handleCommand(runtimeText.trim())) {
+      return { accepted: true, queued: false };
+    }
     if (sending.value) {
       appendOpenClawNotice(sk, "OpenClaw 正在处理上一条消息，本条暂未发送。请等待当前回复完成后再发送，或点击停止后重新发送。", "done");
-      return;
+      return { accepted: false, queued: false, retrySafe: true, error: "OpenClaw 正在处理上一条消息" };
     }
     if (pendingOpenClawMessage.value) {
       appendOpenClawNotice(sk, "OpenClaw 尚未完全启动，上一条消息仍在等待发送。请等待启动完成，或点击停止后重新发送。", "done");
-      return;
+      return { accepted: false, queued: false, retrySafe: true, error: "OpenClaw 已有待发送消息" };
     }
     const shouldQueue = !_isOpenClawSendPathAvailable();
-    const validation = validateOpenClawPayload(text2, attachments, shouldQueue);
+    const validation = validateOpenClawPayload(runtimeText, attachments, shouldQueue);
+    if (!validation.ok) {
+      appendOpenClawNotice(sk, validation.error, "error");
+      return { accepted: false, queued: false, retrySafe: true, error: validation.error };
+    }
+    if (shouldQueue && options?.disableQueue === true) {
+      return { accepted: false, queued: false, retrySafe: true, error: "OpenClaw 尚未完全启动" };
+    }
     const userMsg = {
       id: crypto.randomUUID(),
       role: "user",
-      content: text2 || "",
+      content: displayText,
       images: [],
       videos: [],
       audios: [],
       files: [],
       tools: [],
       attachments: attachments || [],
+      skills: messageSkills,
+      executionAgent: String(options?.executionAgent || "openclaw"),
+      fallbackReason: String(options?.fallbackReason || ""),
       timestamp: Date.now(),
-      status: validation.ok ? "done" : "error",
+      status: "done",
       _localOnly: true
     };
     const msgs = messagesMap.value[sk] || [];
     messagesMap.value[sk] = [...msgs, userMsg];
     _localMessageMutatedAt[sk] = Date.now();
     _scheduleSave(sk);
-    if (!validation.ok) {
-      appendOpenClawNotice(sk, validation.error, "error");
-      return;
-    }
     const item = {
       id: crypto.randomUUID(),
       sessionKey: sk,
       userMessageId: userMsg.id,
-      text: text2 || "",
+      text: runtimeText,
       attachments: attachments || [],
       createdAt: Date.now()
     };
     if (!_isOpenClawSendPathAvailable()) {
       queueOpenClawMessage(item, "OpenClaw 尚未完全启动");
-      return;
+      return { accepted: false, queued: true, retrySafe: false, error: "OpenClaw 尚未完全启动，消息已排队" };
     }
-    await sendOpenClawToGateway(item);
+    return await sendOpenClawToGateway(item);
   }
   function abortMessage() {
     const sk = activeSessionKey.value;
@@ -21401,6 +21455,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
     profile,
     // computed
     currentMessages,
+    getSessionMessages,
     isReady,
     activeSession,
     // methods
@@ -24969,6 +25024,10 @@ const _hoisted_7$8 = {
   key: 0,
   class: "user-attachments"
 };
+const _hoisted_user_skills = {
+  key: 0,
+  class: "message-skill-tags"
+};
 const _hoisted_8$8 = ["src", "alt", "onClick"];
 const _hoisted_9$5 = {
   key: 1,
@@ -25160,6 +25219,14 @@ const _sfc_main$d = {
             createBaseVNode("div", _hoisted_5$a, [
               createBaseVNode("span", _hoisted_6$8, toDisplayString(__props.profile.userName || "我"), 1)
             ]),
+            __props.message.skills?.length ? (openBlock(), createElementBlock("div", _hoisted_user_skills, [
+              (openBlock(true), createElementBlock(Fragment, null, renderList(__props.message.skills, (skill, i) => {
+                return openBlock(), createElementBlock("span", {
+                  key: skill.id || skill.name || i,
+                  class: "message-skill-tag"
+                }, toDisplayString(skill.name || skill.command), 1);
+              }), 128))
+            ])) : createCommentVNode("", true),
             __props.message.attachments?.length ? (openBlock(), createElementBlock("div", _hoisted_7$8, [
               (openBlock(true), createElementBlock(Fragment, null, renderList(__props.message.attachments, (att, i) => {
                 return openBlock(), createElementBlock(Fragment, { key: i }, [
@@ -26328,6 +26395,7 @@ const _sfc_main$9 = {
     const collabRunState = /* @__PURE__ */ ref("");
     const hermesActiveTaskId = /* @__PURE__ */ ref("");
     const collabActiveTaskId = /* @__PURE__ */ ref("");
+    const collabOpenClawSessionKey = "agent:main:openclawpro-collab";
     const hermesProgressLines = /* @__PURE__ */ ref([]);
     const messagesArea = /* @__PURE__ */ ref(null);
     const messagesEnd = /* @__PURE__ */ ref(null);
@@ -26824,16 +26892,16 @@ const _sfc_main$9 = {
       }];
       saveHermesSession();
     }
-    function getLatestOpenClawAssistant(afterLength) {
-      const messages = store.currentMessages || [];
+    function getLatestOpenClawAssistant(afterLength, sessionKey = "") {
+      const messages = sessionKey ? store.getSessionMessages(sessionKey) : store.currentMessages || [];
       const candidates = messages.slice(afterLength).filter((m) => m.role === "assistant" && (m.content || m.status === "error"));
       return candidates[candidates.length - 1] || null;
     }
-    function waitForOpenClawDraft(afterLength, timeoutMs = 13e4) {
+    function waitForOpenClawDraft(afterLength, timeoutMs = 13e4, sessionKey = "") {
       return new Promise((resolve, reject) => {
         const start = Date.now();
         const timer = window.setInterval(() => {
-          const draft = getLatestOpenClawAssistant(afterLength);
+          const draft = getLatestOpenClawAssistant(afterLength, sessionKey);
           if (draft && !draft._streaming && draft.status !== "streaming" && !store.sending) {
             window.clearInterval(timer);
             resolve(draft);
@@ -26882,9 +26950,11 @@ const _sfc_main$9 = {
         attachments: normalized
       };
     }
-    async function sendHermesMessage(text2, attachments = []) {
+    async function sendHermesMessage(text2, attachments = [], options = {}) {
       const content = (text2 || "").trim();
       if (!content) return;
+      const displayText = String(options?.displayText ?? text2 ?? "");
+      const messageSkills = Array.isArray(options?.skills) ? options.skills : [];
       const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (hermesSending.value) {
         const recovered = await clearRecoveredHermesTask(hermesActiveTaskId.value, "hermes");
@@ -26900,8 +26970,11 @@ const _sfc_main$9 = {
       const userMessage = {
         id: `hermes-user-${now}`,
         role: "user",
-        content,
+        content: displayText,
         attachments,
+        skills: messageSkills,
+        executionAgent: String(options?.executionAgent || "hermes"),
+        fallbackReason: String(options?.fallbackReason || ""),
         timestamp: now,
         status: "done"
       };
@@ -26958,6 +27031,98 @@ const _sfc_main$9 = {
         saveHermesSession();
         scrollToBottom();
       }
+    }
+    async function sendCollaborativeSkillMessage(text2, attachments = [], options = {}) {
+      const content = (text2 || "").trim();
+      if (!content || collabSending.value) return;
+      const displayText = String(options?.displayText ?? "");
+      const messageSkills = Array.isArray(options?.skills) ? options.skills : [];
+      const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
+      const now = Date.now();
+      collabMessages.value = [...collabMessages.value, {
+        id: `collab-user-${now}`,
+        role: "user",
+        content: displayText,
+        attachments,
+        skills: messageSkills,
+        executionAgent: "hermes",
+        fallbackReason: String(options?.fallbackReason || ""),
+        timestamp: now,
+        status: "done"
+      }];
+      collabSending.value = true;
+      collabRunState.value = options?.fallbackReason
+        ? `OpenClaw 未接受任务，已安全回退 Hermes：${options.fallbackReason}`
+        : "Hermes 正在执行所选技能。";
+      saveHermesSession();
+      scrollToBottom();
+      try {
+        const result = await runHermesChatBackground({
+          message: hermesMessage,
+          messages: collabMessages.value.map((m) => ({ role: m.role, content: m.content })).filter((m) => m.content),
+          attachments: hermesAttachments,
+          sessionId: "openclaw-hermes-collab",
+          ...getSelectedHermesModel()
+        });
+        const ok = result?.ok !== false;
+        appendCollabAssistant(
+          ok ? getHermesReply(result) : (result?.error || "Hermes 暂时无法完成技能任务。"),
+          "Hermes 技能执行",
+          ok ? "done" : "error",
+          { executionAgent: "hermes", skills: messageSkills }
+        );
+        collabRunState.value = ok ? "Hermes 已完成所选技能任务。" : "Hermes 技能任务失败。";
+      } catch (error) {
+        appendCollabAssistant("Hermes 技能任务失败: " + (error?.message || error), "协同编排", "error", {
+          executionAgent: "hermes",
+          skills: messageSkills
+        });
+        collabRunState.value = "Hermes 技能任务失败。";
+      } finally {
+        collabSending.value = false;
+        saveHermesSession();
+        scrollToBottom();
+      }
+    }
+    function trackCollaborativeOpenClawSkillResult(beforeLength, displayText, attachments, skills) {
+      const now = Date.now();
+      collabMessages.value = [...collabMessages.value, {
+        id: `collab-user-${now}`,
+        role: "user",
+        content: displayText,
+        attachments,
+        skills,
+        executionAgent: "openclaw",
+        fallbackReason: "",
+        timestamp: now,
+        status: "done"
+      }];
+      collabSending.value = true;
+      collabRunState.value = "OpenClaw 正在执行所选技能。";
+      saveHermesSession();
+      scrollToBottom();
+      void (async () => {
+        try {
+          const reply = await waitForOpenClawDraft(beforeLength, 13e4, collabOpenClawSessionKey);
+          appendCollabAssistant(
+            reply?.content || "OpenClaw 未返回可用结果。",
+            "OpenClaw 技能执行",
+            reply?.status === "error" ? "error" : "done",
+            { executionAgent: "openclaw", skills }
+          );
+          collabRunState.value = reply?.status === "error" ? "OpenClaw 技能任务失败。" : "OpenClaw 已完成所选技能任务。";
+        } catch (error) {
+          appendCollabAssistant("OpenClaw 技能任务失败: " + (error?.message || error), "协同编排", "error", {
+            executionAgent: "openclaw",
+            skills
+          });
+          collabRunState.value = "OpenClaw 技能任务失败。";
+        } finally {
+          collabSending.value = false;
+          saveHermesSession();
+          scrollToBottom();
+        }
+      })();
     }
     async function sendCollaborativeMessage(text2, attachments = []) {
       const content = (text2 || "").trim();
@@ -27105,11 +27270,71 @@ const _sfc_main$9 = {
         showToast("Hermes Agent API 启动失败: " + e.message, true);
       }
     }
+    function skillHistoryMetadata(selectedSkills) {
+      return (Array.isArray(selectedSkills) ? selectedSkills : []).map((skill) => ({
+        id: String(skill?.id || skill?.name || ""),
+        name: String(skill?.name || ""),
+        command: String(skill?.command || "")
+      })).filter((skill) => skill.name);
+    }
+    async function prepareSkillRequest(mode, text2, selectedSkills) {
+      const prepare = window.uclaw?.ipcPrepareChatSkillRequest;
+      if (!prepare) return { ok: false, error: "当前程序壳不支持会话技能调用。" };
+      return await prepare({
+        mode,
+        instruction: text2,
+        selectedSkills,
+        taskId: `chat-skill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      });
+    }
+    async function sendSkillMessage(text2, attachments, selectedSkills) {
+      const skills = skillHistoryMetadata(selectedSkills);
+      const prepared = await prepareSkillRequest(agentMode.value, text2, skills);
+      if (!prepared?.ok) {
+        const error = prepared?.error || "所选技能当前无法完整调用。";
+        return { accepted: false, queued: false, retrySafe: true, error };
+      }
+      const sendOptions = {
+        displayText: text2,
+        skills,
+        executionAgent: prepared.executionAgent,
+        fallbackReason: prepared.fallbackReason || "",
+        disableQueue: true
+      };
+      if (prepared.executionAgent === "hermes") {
+        if (agentMode.value === "collab") {
+          if (collabSending.value) return { accepted: false, queued: false, retrySafe: true, error: "协同任务正在执行" };
+          void sendCollaborativeSkillMessage(prepared.runtimeMessage, attachments, sendOptions);
+        } else {
+          if (hermesSending.value) return { accepted: false, queued: false, retrySafe: true, error: "Hermes 正在处理上一条消息" };
+          void sendHermesMessage(prepared.runtimeMessage, attachments, sendOptions);
+        }
+        return { accepted: true, queued: false };
+      }
+      const openClawSessionKey = agentMode.value === "collab" ? collabOpenClawSessionKey : "";
+      const beforeLength = openClawSessionKey ? store.getSessionMessages(openClawSessionKey).length : store.currentMessages.length;
+      if (openClawSessionKey) sendOptions.sessionKey = collabOpenClawSessionKey;
+      const result = await store.sendMessage(prepared.runtimeMessage, attachments, sendOptions);
+      if (result?.accepted && agentMode.value === "collab") {
+        trackCollaborativeOpenClawSkillResult(beforeLength, text2, attachments || [], skills);
+      }
+      if (result?.accepted || agentMode.value !== "collab" || result?.retrySafe !== true) return result;
+      const fallback = await prepareSkillRequest("hermes", text2, skills);
+      if (!fallback?.ok || fallback.executionAgent !== "hermes") return result;
+      const fallbackReason = result?.error || prepared.fallbackReason || "OpenClaw 未接受任务";
+      void sendCollaborativeSkillMessage(fallback.runtimeMessage, attachments, {
+        ...sendOptions,
+        executionAgent: "hermes",
+        fallbackReason
+      });
+      return { accepted: true, queued: false, fallback: true };
+    }
     const chatAdapters = {
       openclaw: {
-        send(text2, attachments) {
-          store.sendMessage(text2, attachments);
+        async send(text2, attachments) {
+          const result = await store.sendMessage(text2, attachments);
           scrollToBottom();
+          return result;
         },
         command(cmd) {
           store.handleCommand(cmd);
@@ -27121,8 +27346,9 @@ const _sfc_main$9 = {
       },
       hermes: {
         send(text2, attachments) {
-          hermesInputText.value = "";
-          sendHermesMessage(text2, attachments);
+          if (hermesSending.value) return { accepted: false, queued: false, retrySafe: true, error: "Hermes 正在处理上一条消息" };
+          void sendHermesMessage(text2, attachments);
+          return { accepted: true, queued: false };
         },
         command(cmd) {
           if (cmd === "/new" || cmd === "/reset") {
@@ -27143,8 +27369,10 @@ const _sfc_main$9 = {
       },
       collab: {
         send(text2, attachments) {
-          hermesInputText.value = "";
-          sendCollaborativeMessageV2(text2, attachments);
+          if (collabSending.value) return { accepted: false, queued: false, retrySafe: true, error: "协同任务正在执行" };
+          if (!gatewayAvailable.value) return { accepted: false, queued: false, retrySafe: true, error: "协同模式需要先启动 OpenClaw Gateway" };
+          void sendCollaborativeMessageV2(text2, attachments);
+          return { accepted: true, queued: false };
         },
         command(cmd) {
           if (cmd === "/new" || cmd === "/reset") {
@@ -27169,8 +27397,11 @@ const _sfc_main$9 = {
     }
     async function handleSend(text2, attachments, selectedSkills = []) {
       try {
-        currentChatAdapter().send(text2, attachments, selectedSkills);
-        return { accepted: true };
+        const result = !selectedSkills.length
+          ? await currentChatAdapter().send(text2, attachments)
+          : await sendSkillMessage(text2, attachments, selectedSkills);
+        if (!result?.accepted && result?.error) showToast(result.error, true);
+        return result;
       } catch (error) {
         showToast(error?.message || String(error), true);
         return { accepted: false, error: error?.message || String(error) };

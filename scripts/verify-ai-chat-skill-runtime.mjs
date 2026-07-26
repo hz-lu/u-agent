@@ -19,6 +19,11 @@ function assertRenderer(relativePath) {
   assert(source.includes("if (!result?.accepted) return result"), `${relativePath}: rejected sends must preserve text, attachments, and selected skills`);
   assert(source.includes("function selectChatSkill(skill)"), `${relativePath}: ChatInput must support selecting skills without sending`);
   assert(source.includes("selectedSkills.value = []"), `${relativePath}: accepted sends must clear selected skill tags`);
+  assert(source.includes("async function sendMessage(text2, attachments, options = {})"), `${relativePath}: OpenClaw send must return a structured acceptance result`);
+  assert(source.includes("content: displayText") && source.includes("skills: messageSkills"), `${relativePath}: OpenClaw history must store display text and skill metadata only`);
+  assert(source.includes("async function sendSkillMessage(text2, attachments, selectedSkills)"), `${relativePath}: selected skills must use the main-process routing contract`);
+  assert(source.includes("sendCollaborativeSkillMessage"), `${relativePath}: collaboration mode must execute a routed skill set through one agent`);
+  assert(!source.includes("content: prepared.runtimeMessage"), `${relativePath}: expanded runtime skill prompts must not enter visible history`);
   assert(source.includes("onCompositionstart") && source.includes("onCompositionend"), `${relativePath}: textarea must wire composition events`);
   assert(source.includes("function previewAttachment(att)"), `${relativePath}: pending attachments need a preview handler`);
   assert(source.includes("onClick: ($event) => previewAttachment(att)"), `${relativePath}: attachment chips must open preview on click`);

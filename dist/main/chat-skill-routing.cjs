@@ -159,7 +159,7 @@ function buildOpenClawSkillMessage(skills, instruction = "") {
   if (!selectedSkills.length) return userInstruction;
   if (selectedSkills.length === 1) {
     const skill = selectedSkills[0];
-    const command = skill.command || `/skill ${skill.name}`;
+    const command = `/skill ${skill.name}`;
     return [command, userInstruction].filter(Boolean).join(" ");
   }
   return [
@@ -169,8 +169,36 @@ function buildOpenClawSkillMessage(skills, instruction = "") {
   ].filter(Boolean).join("\n");
 }
 
+function parseOpenClawSkillMessage(content) {
+  const text = String(content || "").trim();
+  const single = text.match(/^\/skill\s+(\S+)(?:\s+([\s\S]*))?$/i);
+  if (single) {
+    return {
+      displayText: String(single[2] || "").trim(),
+      skills: [{ name: single[1], command: `/skill ${single[1]}` }]
+    };
+  }
+  const prefix = "Use all of the following skills together for this request:\n";
+  if (!text.startsWith(prefix)) return null;
+  const separator = "\n\nUser input:\n";
+  const separatorIndex = text.indexOf(separator, prefix.length);
+  const listText = separatorIndex >= 0
+    ? text.slice(prefix.length, separatorIndex)
+    : text.slice(prefix.length);
+  const skills = listText.split(/\r?\n/).map((line) => {
+    const match = line.match(/^-\s+["'](.+)["']$/);
+    return match ? { name: match[1], command: `/skill ${match[1]}` } : null;
+  }).filter(Boolean);
+  if (!skills.length) return null;
+  return {
+    displayText: separatorIndex >= 0 ? text.slice(separatorIndex + separator.length).trim() : "",
+    skills
+  };
+}
+
 module.exports = {
   buildOpenClawSkillMessage,
   normalizeSelectedSkills,
+  parseOpenClawSkillMessage,
   routeCompleteSkillSet
 };
