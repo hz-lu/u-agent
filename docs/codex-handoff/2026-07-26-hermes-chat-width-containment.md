@@ -40,6 +40,9 @@
 - `git diff --check` 通过。
 - 1280×720 页面验证：主工作区为 256–1280px，会话根、顶部栏、消息区和输入区均无横向溢出。
 - 900×700 页面验证：主工作区为 256–900px，相关容器 `scrollWidth <= clientWidth`，实际截图中右侧工具栏和输入区完整显示。
+- 已重新生成 `D:/github/u-agent/win-unpacked`：Electron 35.7.5、Windows x64、96 个文件。
+- 已重新生成 `D:/github/u-agent/OpenClawPro U盘便携版.exe`。
+- 壳内 CSS 与最新 `dist` 的 SHA-256 一致：`8308581C20CFE8194779B30EB3538B46AE91E56A9F8080FCEC400440233951C4`。
 
 ## 如果需要下一台 Codex 接手，提示词
 
