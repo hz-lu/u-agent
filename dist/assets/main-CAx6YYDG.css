@@ -6274,6 +6274,54 @@ html.light .history-empty[data-v-48c21956] {
   color: var(--text-secondary);
   font-size: 12px;
 }
+.skill-command-item.selected[data-v-351db0cb] {
+  background: rgba(78, 222, 163, 0.16);
+  box-shadow: inset 3px 0 0 #22c55e;
+}
+.selected-skill-list[data-v-351db0cb] {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 2px;
+}
+.selected-skill-chip[data-v-351db0cb] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 220px;
+  height: 26px;
+  padding: 0 5px 0 9px;
+  border: 1px solid rgba(34, 197, 94, 0.38);
+  border-radius: 7px;
+  background: rgba(34, 197, 94, 0.12);
+  color: #15803d;
+  font-size: 12px;
+}
+.selected-skill-name[data-v-351db0cb] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selected-skill-remove[data-v-351db0cb] {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  line-height: 18px;
+}
+.selected-skill-remove[data-v-351db0cb]:hover {
+  background: rgba(21, 128, 61, 0.15);
+}
+.selected-skill-hint[data-v-351db0cb] {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 .action-btn[data-v-351db0cb] {
   width: 32px;
   height: 32px;
@@ -6723,6 +6771,8 @@ html.light .history-empty[data-v-48c21956] {
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   background: var(--bg2);
+  min-width: 0;
+  overflow: hidden;
 }
 .toggle-btn[data-v-f16be7f3] {
   width: 30px;
@@ -6742,7 +6792,8 @@ html.light .history-empty[data-v-48c21956] {
   color: var(--text-primary);
 }
 .session-title[data-v-f16be7f3] {
-  flex: 1;
+  flex: 0 1 190px;
+  min-width: 72px;
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
@@ -6754,6 +6805,10 @@ html.light .history-empty[data-v-48c21956] {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  justify-content: flex-end;
+  overflow: hidden;
 }
 .icon-btn[data-v-f16be7f3] {
   display: flex;
@@ -8266,6 +8321,7 @@ to {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   flex: 0 0 auto;
+  min-width: 0;
 }
 
 .agent-mode-switch button {
@@ -8301,6 +8357,22 @@ to {
   color: #4edea3;
   font-size: 12px;
   white-space: nowrap;
+  flex: 1 1 180px;
+  min-width: 72px;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-topbar[data-v-f16be7f3] .model-selector[data-v-d1dc68d3] {
+  flex: 0 1 240px;
+  min-width: 120px;
+  max-width: 240px;
+}
+
+.chat-topbar[data-v-f16be7f3] .model-selector[data-v-d1dc68d3] .selector-btn {
+  width: 100%;
+  min-width: 0;
 }
 
 .hermes-open-btn {

@@ -1709,10 +1709,20 @@ class HermesManager {
       "if action == 'list':",
       "    result['skills'] = [{'command': key, 'name': (info or {}).get('name') or key.lstrip('/'), 'description': (info or {}).get('description') or ''} for key, info in sorted(commands.items())]",
       "else:",
-      "    raw = str(payload.get('command') or '').lstrip('/')",
-      "    key = resolve_skill_command_key(raw)",
-      "    message = build_skill_invocation_message(key, str(payload.get('instruction') or ''), task_id=str(payload.get('taskId') or 'openclawpro-oneshot')) if key else None",
-      "    result.update({'found': bool(message), 'command': key or '', 'message': message or ''})",
+      "    raw_commands = payload.get('commands') or [payload.get('command') or '']",
+      "    raw_commands = [str(raw).lstrip('/').strip() for raw in raw_commands if str(raw).strip()]",
+      "    instruction = str(payload.get('instruction') or '')",
+      "    resolved = []",
+      "    messages = []",
+      "    for raw in raw_commands:",
+      "        key = resolve_skill_command_key(raw)",
+      "        message = build_skill_invocation_message(key, instruction if len(raw_commands) == 1 else '', task_id=str(payload.get('taskId') or 'openclawpro-oneshot')) if key else None",
+      "        if key and message:",
+      "            resolved.append(key)",
+      "            messages.append(message)",
+      "    if len(raw_commands) > 1 and instruction:",
+      "        messages.extend(['', 'The user has selected multiple skills for one combined task. Apply all selected skill instructions together.', 'User task: ' + instruction])",
+      "    result.update({'found': bool(messages) and len(resolved) == len(raw_commands), 'command': ','.join(resolved), 'commands': resolved, 'message': '\\n\\n--- SELECTED SKILL ---\\n\\n'.join(messages)})",
       "print('__UCLAW_SKILL_JSON__' + json.dumps(result, ensure_ascii=False))"
     ].join("\n");
     return new Promise((resolve, reject) => {
@@ -1770,7 +1780,8 @@ class HermesManager {
       command = direct[1];
       instruction = direct[2] || "";
     }
-    const result = await this.runHermesSkillCommandBridge({ action: "invoke", command, instruction, taskId: "openclawpro-oneshot" });
+    const commands = command.split(",").map((item) => item.trim()).filter(Boolean).slice(0, 5);
+    const result = await this.runHermesSkillCommandBridge({ action: "invoke", commands, instruction, taskId: "openclawpro-oneshot" });
     return result?.found ? result : null;
   }
   async chat(options = {}) {
@@ -2478,7 +2489,10 @@ function checkTcpPortOpen(port, timeoutMs = 500) {
 }
 let portableCleanupInFlight = false;
 function cleanupPortableChildProcesses() {
-  if (process.platform !== "win32") return;
+  if (process.platform !== "win32") return Promise.resolve();
+  if (portableCleanupInFlight) return Promise.resolve();
+  portableCleanupInFlight = true;
+  return new Promise((resolve) => {
   try {
     const appRoot = path$1.resolve(getAppRoot()).toLowerCase();
     const dataRoot = path$1.resolve(getDataRoot()).toLowerCase();
@@ -2497,8 +2511,6 @@ function cleanupPortableChildProcesses() {
       "  }",
       "}"
     ].join("; ");
-    if (portableCleanupInFlight) return;
-    portableCleanupInFlight = true;
     const child = child_process.spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], {
       stdio: "ignore",
       windowsHide: true,
@@ -2513,16 +2525,20 @@ function cleanupPortableChildProcesses() {
     child.on("exit", () => {
       clearTimeout(timer);
       portableCleanupInFlight = false;
+      resolve();
     });
     child.on("error", (err) => {
       clearTimeout(timer);
       portableCleanupInFlight = false;
       appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
+      resolve();
     });
   } catch (err) {
     portableCleanupInFlight = false;
     appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
+    resolve();
   }
+  });
 }
 function createWindow(gateway) {
   function createTray() {
@@ -2577,8 +2593,6 @@ function createWindow(gateway) {
           label: "❌ 完全退出",
           click: () => {
             electron.app.isQuitting = true;
-            gateway.stopGatewaySync();
-            getHermesManager().stop().finally(() => cleanupPortableChildProcesses());
             getWechatManagerInstance()?.destroy();
             electron.app.quit();
           }
@@ -3644,21 +3658,25 @@ let portableSkillRepositoryBuffer = "";
 let portableSkillRepositoryStopping = false;
 let portableSkillRepositoryRestartCount = 0;
 let portableSkillRepositoryLastReport = null;
+let portableSkillRepositoryAwaitingStartup = false;
 const portableSkillRepositoryWaiters = [];
 function handlePortableSkillRepositoryReport(report) {
   if (!report || report.type !== "skill-repository") return;
   portableSkillRepositoryLastReport = report;
   if (report.ok) {
     portableSkillRepositoryRestartCount = 0;
-    if (report.changedCount > 0) {
-      console.log("[skill-repository] reconciled", JSON.stringify({ changedCount: report.changedCount, elapsedMs: report.elapsedMs }));
+    portableSkillRepositoryAwaitingStartup = false;
+    if (report.catalogChanged || report.changedCount > 0) {
+      console.log("[skill-repository] reconciled", JSON.stringify({ changedCount: report.changedCount, trigger: report.trigger, elapsedMs: report.elapsedMs }));
       if (hermesManager) {
         hermesManager._skillCommandCache = null;
         hermesManager._skillCommandCacheAt = 0;
       }
+      setTimeout(() => invalidateOpenClawSessionSkillSnapshots(), 250).unref?.();
       safeSend("skills-repository-updated", report);
     }
   } else {
+    portableSkillRepositoryAwaitingStartup = false;
     console.error("[skill-repository] reconcile failed:", report.error || "unknown error");
     safeSend("skills-repository-updated", report);
   }
@@ -3683,6 +3701,7 @@ function startPortableSkillRepositoryWorker() {
     ELECTRON_RUN_AS_NODE: fs$1.existsSync(bundledNode) ? process.env.ELECTRON_RUN_AS_NODE || "" : "1"
   };
   portableSkillRepositoryStopping = false;
+  portableSkillRepositoryAwaitingStartup = true;
   portableSkillRepositoryWorker = child_process.spawn(command, [workerScript, getAppRoot()], {
     cwd: getAppRoot(),
     env: env2,
@@ -3706,6 +3725,7 @@ function startPortableSkillRepositoryWorker() {
   });
   portableSkillRepositoryWorker.once("exit", (code, signal) => {
     portableSkillRepositoryWorker = null;
+    portableSkillRepositoryAwaitingStartup = false;
     if (portableSkillRepositoryStopping) return;
     console.warn("[skill-repository] worker exited:", code, signal || "");
     while (portableSkillRepositoryWaiters.length) {
@@ -3733,7 +3753,7 @@ function requestPortableSkillRepositoryReconcile(timeoutMs = 30000) {
       }, timeoutMs)
     };
     portableSkillRepositoryWaiters.push(waiter);
-    worker.stdin.write("reconcile\n");
+    if (!portableSkillRepositoryAwaitingStartup) worker.stdin.write("reconcile\n");
   });
 }
 function stopPortableSkillRepositoryWorker() {
@@ -4240,22 +4260,36 @@ function createGatewayManager() {
   };
 }
 function setupLifecycle({ getGateway }) {
+  let shutdownStarted = false;
+  let shutdownComplete = false;
   electron.app.on("window-all-closed", () => {
     console.log(`所有窗口已关闭，app.isQuitting=`, electron.app.isQuitting, "mainWindow=", !!mainWindow);
     if (process.platform !== "darwin") {
       electron.app.quit();
     }
   });
-  electron.app.on("before-quit", async () => {
+  electron.app.on("before-quit", (event) => {
+    if (shutdownComplete) return;
+    event.preventDefault();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     console.log(`应用退出前事件触发`);
     electron.app.isQuitting = true;
     stopPortableSkillRepositoryWorker();
     flushGatewayDiskLogs();
-    if (hermesManager) {
-      await hermesManager.stop();
-    }
-    await getGateway().stopGateway();
-    cleanupPortableChildProcesses();
+    const graceful = (async () => {
+      if (hermesManager) await hermesManager.stop();
+      await getGateway().stopGateway();
+    })();
+    Promise.race([
+      graceful,
+      new Promise((resolve) => setTimeout(resolve, 8e3))
+    ]).catch((error) => {
+      appendDesktopCrashLog("shutdown-failed", { message: error?.message || String(error) });
+    }).then(() => cleanupPortableChildProcesses()).finally(() => {
+      shutdownComplete = true;
+      electron.app.exit(0);
+    });
   });
   electron.app.on("activate", async () => {
   });
@@ -23486,7 +23520,7 @@ function registerIPCHandlers({ gateway }) {
         const result = await gatewayRpcViaMain("commands.list", { agentId: "main", scope: "text", includeArgs: true }, { timeoutMs: 15e3 });
         const skills = (Array.isArray(result?.commands) ? result.commands : []).filter((item) => item?.source === "skill").map((item) => ({
           command: Array.isArray(item.textAliases) && item.textAliases[0] ? item.textAliases[0] : "/" + item.name,
-          name: item.name,
+          name: item.skillName || item.name,
           description: item.description || ""
         }));
         if (skills.length) return { ok: true, mode, source: "openclaw-official-commands-list", skills };
@@ -23536,7 +23570,6 @@ function registerIPCHandlers({ gateway }) {
       } catch (error) {
         console.warn("[chat-skills] OpenClaw official CLI unavailable, using portable catalog:", error?.message || error);
       }
-      await requestPortableSkillRepositoryReconcile();
       let config = {};
       let skillEntries = {};
       if (fs$1.existsSync(configPath)) {
@@ -24702,7 +24735,6 @@ electron.app.whenReady().then(async () => {
   updateSplash("正在清理旧程序...", 4);
   await extractRuntime();
   await ensureOpenClawDirectories();
-  requestPortableSkillRepositoryReconcile().catch((error) => console.warn("[skill-repository] initial reconcile failed:", error?.message || error));
   updateSplash("正在加载微信插件...", 80);
   registerWechatIPCHandler({ gateway });
   updateSplash("正在加载飞书插件...", 85);
@@ -24710,4 +24742,7 @@ electron.app.whenReady().then(async () => {
   updateSplash("正在加载界面...", 100);
   createWindow(gateway);
   loadActivationPage();
+  setTimeout(() => {
+    startPortableSkillRepositoryWorker();
+  }, 12e3).unref?.();
 });

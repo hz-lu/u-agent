@@ -124,11 +124,14 @@ function runHermes() {
   const script = [
     "import json, sys",
     `sys.path.insert(0, ${JSON.stringify(sourceRoot)})`,
-    "from agent.skill_commands import reload_skills, get_skill_commands",
+    "from agent.skill_commands import reload_skills, get_skill_commands, resolve_skill_command_key, build_skill_invocation_message",
     "from agent.skill_utils import get_external_skills_dirs",
     "reload = reload_skills()",
     "commands = get_skill_commands()",
-    "print(json.dumps({'reload': reload, 'commandCount': len(commands), 'externalDirs': [str(p) for p in get_external_skills_dirs()]}, ensure_ascii=False))"
+    "selected = list(commands.keys())[:2]",
+    "resolved = [resolve_skill_command_key(key.lstrip('/')) for key in selected]",
+    "messages = [build_skill_invocation_message(key, '', task_id='verify-multi-skill') for key in resolved if key]",
+    "print(json.dumps({'reload': reload, 'commandCount': len(commands), 'externalDirs': [str(p) for p in get_external_skills_dirs()], 'multiSkill': {'selected': selected, 'resolved': resolved, 'messageCount': len([m for m in messages if m])}}, ensure_ascii=False))"
   ].join("\n");
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
   const result = spawnSync(python, ["-c", script], {
@@ -161,6 +164,9 @@ try {
   const openClaw = runOpenClaw();
   const openClawPrompt = await auditOpenClawPrompt();
   const hermes = runHermes();
+  assert(hermes.multiSkill?.selected?.length === 2, "Hermes multi-skill fixture did not select two commands");
+  assert(hermes.multiSkill?.resolved?.every(Boolean), "Hermes official resolver failed for a selected command");
+  assert(hermes.multiSkill?.messageCount === 2, "Hermes official invocation builder did not produce two skill messages");
   const openClawSourceCounts = new Map();
   for (const skill of openClaw.skills || []) openClawSourceCounts.set(skill.source, (openClawSourceCounts.get(skill.source) || 0) + 1);
   const report = {
@@ -175,7 +181,8 @@ try {
     hermes: {
       total: hermes.reload?.total || 0,
       commandCount: hermes.commandCount,
-      externalDirs: hermes.externalDirs
+      externalDirs: hermes.externalDirs,
+      multiSkill: hermes.multiSkill
     }
   };
   console.log(JSON.stringify(report, null, 2));

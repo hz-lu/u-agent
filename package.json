@@ -30,6 +30,7 @@
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
     "verify:windows-shared-skills": "node scripts/verify-windows-shared-skill-closure.mjs",
     "verify:portable-skill-repository": "node scripts/verify-portable-skill-repository.mjs",
+    "verify:skill-repository-events": "node scripts/verify-skill-repository-events.mjs",
     "verify:skill-metadata": "node scripts/verify-skill-metadata.mjs",
     "verify:chat-skill-commands": "node scripts/verify-chat-skill-commands.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",

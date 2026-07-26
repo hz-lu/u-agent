@@ -10,7 +10,9 @@ const once = process.argv.includes("--once");
 const canonicalRoot = path.join(portableRoot, "skills");
 const stateRoot = path.join(portableRoot, "data", ".agent-hub");
 const manifestPath = path.join(stateRoot, "shared-skills.json");
-const intervalMs = Math.max(5000, Number(process.env.SKILL_REPOSITORY_INTERVAL_MS || 15000));
+const intervalMs = Math.max(60000, Number(process.env.SKILL_REPOSITORY_INTERVAL_MS || 10 * 60 * 1000));
+const watchDebounceMs = Math.max(500, Number(process.env.SKILL_REPOSITORY_WATCH_DEBOUNCE_MS || 1500));
+const watchStatIntervalMs = Math.max(500, Number(process.env.SKILL_REPOSITORY_WATCH_STAT_INTERVAL_MS || 5000));
 const excludedDirectories = new Set([".git", ".github", ".hub", ".archive", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"]);
 const sources = [
   { id: "openclaw-managed", tag: "openclaw", root: path.join(portableRoot, "data", ".openclaw", "skills") },
@@ -21,7 +23,12 @@ const sources = [
 let running = false;
 let queued = false;
 let queuedForceEmit = false;
+let queuedReason = "queued";
 let stopping = false;
+let watchTimer = null;
+let watchRefreshTimer = null;
+let watchers = [];
+let suppressCanonicalWatchUntil = 0;
 
 function emit(payload) {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
@@ -59,6 +66,10 @@ async function writeManifest(manifest) {
   await fsp.writeFile(tempPath, `${JSON.stringify({ ...manifest, updatedAt: new Date().toISOString() }, null, 2)}\n`, "utf8");
   await fsp.rm(manifestPath, { force: true });
   await fsp.rename(tempPath, manifestPath);
+}
+
+function suppressCanonicalWatch() {
+  suppressCanonicalWatchUntil = Math.max(suppressCanonicalWatchUntil, Date.now() + 2500);
 }
 
 async function discoverSkillPackages(source) {
@@ -175,6 +186,7 @@ async function chooseTarget(packageInfo, manifest, sourceFingerprint) {
 }
 
 async function replaceDirectory(sourcePath, targetPath) {
+  suppressCanonicalWatch();
   const tempPath = path.join(canonicalRoot, `.skill-import-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   const backupPath = path.join(canonicalRoot, `.skill-backup-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
   await fsp.cp(sourcePath, tempPath, { recursive: true, preserveTimestamps: true, filter: (candidate) => shouldCopy(sourcePath, candidate) });
@@ -193,10 +205,11 @@ async function replaceDirectory(sourcePath, targetPath) {
   }
 }
 
-async function reconcile(forceEmit = false) {
+async function reconcile(forceEmit = false, reason = "requested") {
   if (running) {
     queued = true;
     queuedForceEmit ||= forceEmit;
+    queuedReason = reason || queuedReason;
     return null;
   }
   running = true;
@@ -255,10 +268,11 @@ async function reconcile(forceEmit = false) {
       }
       delete manifest.entries[sourceId];
     }
+    suppressCanonicalWatch();
     await writeManifest(manifest);
     const changedCount = changes.added.length + changes.updated.length + changes.removed.length + changes.conflicts.length;
     const canonicalPackageCount = changedCount || once || forceEmit ? await countCanonicalPackages() : void 0;
-    const report = { type: "skill-repository", ok: true, portableRoot, canonicalRoot, discovered: discovered.length, canonicalPackageCount, changedCount, changes, elapsedMs: Date.now() - startedAt };
+    const report = { type: "skill-repository", ok: true, portableRoot, canonicalRoot, discovered: discovered.length, canonicalPackageCount, changedCount, changes, trigger: reason, catalogChanged: changedCount > 0 || reason === "watch", elapsedMs: Date.now() - startedAt };
     if (changedCount || once || forceEmit) emit(report);
     return report;
   } catch (error) {
@@ -270,22 +284,103 @@ async function reconcile(forceEmit = false) {
     if (queued && !stopping) {
       queued = false;
       const nextForceEmit = queuedForceEmit;
+      const nextReason = queuedReason;
       queuedForceEmit = false;
-      setTimeout(() => reconcile(nextForceEmit), 50);
+      queuedReason = "queued";
+      setTimeout(() => reconcile(nextForceEmit, nextReason), 50);
     }
   }
 }
 
-process.on("SIGTERM", () => { stopping = true; process.exit(0); });
-process.on("SIGINT", () => { stopping = true; process.exit(0); });
+function closeWatchers() {
+  for (const watcher of watchers) {
+    try {
+      if (typeof watcher === "function") watcher();
+      else watcher.close();
+    } catch {}
+  }
+  watchers = [];
+}
 
-reconcile().then(() => {
+function scheduleWatcherRefresh() {
+  clearTimeout(watchRefreshTimer);
+  watchRefreshTimer = setTimeout(() => {
+    watchRefreshTimer = null;
+    startWatchers();
+  }, watchDebounceMs * 3);
+  watchRefreshTimer.unref?.();
+}
+
+function scheduleWatchedReconcile(root, filename) {
+  if (stopping) return;
+  const relative = String(filename || "").replace(/\\/g, "/");
+  if (relative.includes(".skill-import-") || relative.includes(".skill-backup-")) return;
+  if (path.resolve(root) === path.resolve(canonicalRoot) && Date.now() < suppressCanonicalWatchUntil) return;
+  clearTimeout(watchTimer);
+  watchTimer = setTimeout(() => {
+    watchTimer = null;
+    reconcile(true, "watch");
+  }, watchDebounceMs);
+  watchTimer.unref?.();
+}
+
+async function collectWatchDirectories(root) {
+  const dirs = [];
+  const queue = [{ dir: root, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || current.depth > 6) continue;
+    let entries;
+    try {
+      entries = await fsp.readdir(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    dirs.push(current.dir);
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || excludedDirectories.has(entry.name)) continue;
+      queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 });
+    }
+  }
+  return dirs;
+}
+
+async function startWatchers() {
+  closeWatchers();
+  const roots = [canonicalRoot, ...sources.map((source) => source.root)];
+  for (const root of roots) {
+    try { await fsp.mkdir(root, { recursive: true }); } catch {}
+    if (process.platform === "win32") {
+      const listener = (current, previous) => {
+        if (current.mtimeMs === previous.mtimeMs && current.size === previous.size) return;
+        scheduleWatchedReconcile(root, "");
+      };
+      fs.watchFile(root, { interval: watchStatIntervalMs, persistent: false }, listener);
+      watchers.push(() => fs.unwatchFile(root, listener));
+      continue;
+    }
+    for (const dir of await collectWatchDirectories(root)) {
+      try {
+        watchers.push(fs.watch(dir, (_event, filename) => {
+          scheduleWatchedReconcile(root, filename);
+          scheduleWatcherRefresh();
+        }));
+      } catch {}
+    }
+  }
+}
+
+process.on("SIGTERM", () => { stopping = true; clearTimeout(watchTimer); clearTimeout(watchRefreshTimer); closeWatchers(); process.exit(0); });
+process.on("SIGINT", () => { stopping = true; clearTimeout(watchTimer); clearTimeout(watchRefreshTimer); closeWatchers(); process.exit(0); });
+
+reconcile(true, "startup").then(async () => {
   if (once) return;
-  const timer = setInterval(() => { if (!stopping) reconcile(); }, intervalMs);
+  await startWatchers();
+  const timer = setInterval(() => { if (!stopping) reconcile(false, "fallback"); }, intervalMs);
   timer.unref?.();
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
-    if (String(chunk).split(/\r?\n/).some((line) => line.trim() === "reconcile")) reconcile(true);
+    if (String(chunk).split(/\r?\n/).some((line) => line.trim() === "reconcile")) reconcile(true, "requested");
   });
   process.stdin.resume();
 });
