@@ -58,6 +58,10 @@
 - `npm.cmd run verify:portable-skill-repository` 通过。
 - 静态页面验证中，首页和 `/ai-chat` 的 `clientWidth/scrollWidth`、`clientHeight/scrollHeight` 一致，`body` margin 为 0，页面无溢出。
 - `git diff --check` 通过。
+- 已重新生成 `D:/github/u-agent/win-unpacked`：Electron 35.7.5、Windows x64、96 个文件。
+- 已重新生成 `D:/github/u-agent/OpenClawPro U盘便携版.exe` 根目录启动器。
+- 壳内 main、preload、worker 均通过 `node --check`。
+- 壳内 main、worker、renderer 和 CSS 与仓库最新 `dist` 的 SHA-256 全部一致。
 
 ## 如果需要下一台 Codex 接手，提示词
 
