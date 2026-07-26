@@ -2487,6 +2487,204 @@ function cleanupPortableChildProcesses() {
     appendDesktopCrashLog("cleanup-portable-processes-failed", { message: err?.message || String(err) });
   }
 }
+let skillRepositoryWorker = null;
+let skillRepositoryStdout = "";
+let skillRepositoryWaiters = [];
+let skillRepositoryGeneration = 0;
+let skillRepositoryRequestInFlight = false;
+
+function getPortableNodeChildCommand(modulePath, args = []) {
+  const nodePath = path$1.join(
+    getAppRoot(),
+    "runtime",
+    process.platform === "win32" ? "node.exe" : "node"
+  );
+  if (fs$1.existsSync(nodePath)) {
+    return {
+      command: nodePath,
+      args: [modulePath, ...args],
+      env: { ...process.env }
+    };
+  }
+  return {
+    command: process.execPath,
+    args: [modulePath, ...args],
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }
+  };
+}
+
+function settleSkillRepositoryWaiters(error, report) {
+  if (error) {
+    const waiters = skillRepositoryWaiters;
+    skillRepositoryWaiters = [];
+    skillRepositoryRequestInFlight = false;
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+    return;
+  }
+  skillRepositoryGeneration += 1;
+  const completed = skillRepositoryWaiters.filter(
+    (waiter) => waiter.targetGeneration <= skillRepositoryGeneration
+  );
+  skillRepositoryWaiters = skillRepositoryWaiters.filter(
+    (waiter) => waiter.targetGeneration > skillRepositoryGeneration
+  );
+  skillRepositoryRequestInFlight = skillRepositoryWaiters.length > 0;
+  for (const waiter of completed) {
+    clearTimeout(waiter.timer);
+    waiter.resolve(report);
+  }
+}
+
+function startPortableSkillRepositoryWorker() {
+  if (skillRepositoryWorker && !skillRepositoryWorker.killed) return skillRepositoryWorker;
+  const workerPath = path$1.join(__dirname, "skill-repository-worker.cjs");
+  if (!fs$1.existsSync(workerPath)) {
+    throw new Error("Portable skill repository worker was not found: " + workerPath);
+  }
+  const command = getPortableNodeChildCommand(workerPath, [getAppRoot()]);
+  skillRepositoryStdout = "";
+  skillRepositoryWorker = child_process.spawn(command.command, command.args, {
+    cwd: getAppRoot(),
+    env: {
+      ...command.env,
+      SKILL_REPOSITORY_FALLBACK_MS: process.env.SKILL_REPOSITORY_FALLBACK_MS || "900000"
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  });
+  skillRepositoryWorker.stdout?.on("data", (chunk) => {
+    skillRepositoryStdout += Buffer.from(chunk).toString("utf8");
+    const lines = skillRepositoryStdout.split(/\r?\n/);
+    skillRepositoryStdout = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const report = JSON.parse(line);
+        if (report?.type !== "skill-repository") continue;
+        if (report.ok) settleSkillRepositoryWaiters(null, report);
+        else settleSkillRepositoryWaiters(new Error(report.error || "Skill repository failed"));
+        safeSend("skills-repository-updated", report);
+      } catch (error) {
+        console.warn("[skills-repository] invalid worker output:", error?.message || error);
+      }
+    }
+  });
+  skillRepositoryWorker.stderr?.on("data", (chunk) => {
+    console.warn("[skills-repository]", Buffer.from(chunk).toString("utf8").trim());
+  });
+  skillRepositoryWorker.once("error", (error) => {
+    settleSkillRepositoryWaiters(error);
+    skillRepositoryWorker = null;
+  });
+  skillRepositoryWorker.once("exit", (code, signal) => {
+    if (skillRepositoryWaiters.length) {
+      settleSkillRepositoryWaiters(
+        new Error(`Skill repository worker exited before completion (${code ?? signal ?? "unknown"})`)
+      );
+    }
+    skillRepositoryWorker = null;
+  });
+  return skillRepositoryWorker;
+}
+
+function requestPortableSkillRepositoryReconcile(options = {}) {
+  return new Promise((resolve, reject) => {
+    let worker;
+    try {
+      worker = startPortableSkillRepositoryWorker();
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const timer = setTimeout(() => {
+      const index = skillRepositoryWaiters.findIndex((item) => item.resolve === resolve);
+      if (index >= 0) skillRepositoryWaiters.splice(index, 1);
+      skillRepositoryRequestInFlight = skillRepositoryWaiters.length > 0;
+      reject(new Error("Skill repository reconciliation timed out"));
+    }, 120000);
+    const targetGeneration = skillRepositoryGeneration + (skillRepositoryRequestInFlight ? 2 : 1);
+    skillRepositoryRequestInFlight = true;
+    skillRepositoryWaiters.push({
+      resolve,
+      reject,
+      timer,
+      targetGeneration,
+      reason: options.reason || "manual"
+    });
+    try {
+      worker.stdin?.write("reconcile\n");
+    } catch (error) {
+      clearTimeout(timer);
+      skillRepositoryWaiters = skillRepositoryWaiters.filter((item) => item.resolve !== resolve);
+      skillRepositoryRequestInFlight = skillRepositoryWaiters.length > 0;
+      reject(error);
+    }
+  });
+}
+
+function stopPortableSkillRepositoryWorker() {
+  const worker = skillRepositoryWorker;
+  skillRepositoryWorker = null;
+  if (!worker) return;
+  try {
+    worker.kill("SIGTERM");
+  } catch {
+  }
+}
+
+function runPortableSkillMetadataDiscovery(rootDir) {
+  const metadataPath = path$1.join(__dirname, "skill-metadata.cjs");
+  if (!fs$1.existsSync(metadataPath)) {
+    return Promise.reject(new Error("Skill metadata worker was not found: " + metadataPath));
+  }
+  const command = getPortableNodeChildCommand(metadataPath, [rootDir]);
+  return new Promise((resolve, reject) => {
+    const child = child_process.spawn(command.command, command.args, {
+      cwd: getAppRoot(),
+      env: command.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+      finish(reject, new Error("Skill metadata scan timed out"));
+    }, 45000);
+    child.stdout?.on("data", (chunk) => {
+      stdout += Buffer.from(chunk).toString("utf8");
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr = (stderr + Buffer.from(chunk).toString("utf8")).slice(-8000);
+    });
+    child.once("error", (error) => finish(reject, error));
+    child.once("exit", (code) => {
+      if (code !== 0) {
+        finish(reject, new Error((stderr || stdout || `Skill metadata worker exited ${code}`).trim()));
+        return;
+      }
+      try {
+        finish(resolve, JSON.parse(stdout.trim()));
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+  });
+}
+
 function createWindow(gateway) {
   function createTray() {
     try {
@@ -2594,6 +2792,11 @@ function createWindow(gateway) {
   });
   mainWindow$1.webContents.on("did-finish-load", () => {
     console.log(`Page finished loading`);
+    setTimeout(() => {
+      requestPortableSkillRepositoryReconcile({ reason: "window-ready" }).catch((error) => {
+        console.warn("[skills-repository] startup reconcile failed:", error?.message || error);
+      });
+    }, 1000);
   });
   electron.ipcMain.on("window-ready", () => {
     console.log(`Window ready from renderer, closing splash and showing`);
@@ -4191,6 +4394,7 @@ function setupLifecycle({ getGateway }) {
       await hermesManager.stop();
     }
     await getGateway().stopGateway();
+    stopPortableSkillRepositoryWorker();
     cleanupPortableChildProcesses();
   });
   electron.app.on("activate", async () => {
@@ -23472,64 +23676,52 @@ function registerIPCHandlers({ gateway }) {
     return { ok: true };
   });
   electron.ipcMain.handle("scan-local-skills", async () => {
-    const skillsMap = /* @__PURE__ */ new Map();
     try {
-      let sourceRoots = [];
+      await requestPortableSkillRepositoryReconcile({ reason: "skill-page-refresh" });
       let skillEntries = {};
       if (fs$1.existsSync(configPath)) {
         try {
           const config = JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
-          sourceRoots = getOpenClawSkillSourceRoots(config);
           skillEntries = config.skills?.entries || {};
         } catch (e) {
-          console.warn("读取 openclw.json extraDirs 失败:", e.message);
+          console.warn("读取 openclaw skills 配置失败:", e.message);
         }
       }
-      if (!sourceRoots.length) sourceRoots = getOpenClawSkillSourceRoots({});
-      for (const resolvedDir of sourceRoots) {
-        if (!fs$1.existsSync(resolvedDir)) {
-          continue;
-        }
-        const entries = fs$1.readdirSync(resolvedDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const skillPath = path$1.join(resolvedDir, entry.name);
-            const skillFile = path$1.join(skillPath, "SKILL.md");
-            if (fs$1.existsSync(skillFile)) {
-              const meta = parseSkillMeta(skillFile);
-              const name = meta?.name || entry.name;
-              if (!skillsMap.has(name)) {
-                skillsMap.set(name, {
-                  name,
-                  cnName: skillNameMap[entry.name] || null,
-                  description: meta?.description || null,
-                  emoji: meta?.emoji || null,
-                  source: "local",
-                  path: skillPath,
-                  enabled: skillEntries[name]?.enabled !== false
-                });
-              }
-            }
-          } else if (entry.name.endsWith(".md")) {
-            const skillFile = path$1.join(resolvedDir, entry.name);
-            const meta = parseSkillMeta(skillFile);
-            const name = meta?.name || entry.name.replace(".md", "");
-            if (!skillsMap.has(name)) {
-              skillsMap.set(name, {
-                name,
-                cnName: skillNameMap[entry.name] || null,
-                description: meta?.description || null,
-                emoji: meta?.emoji || null,
-                source: "local",
-                path: skillFile,
-                enabled: skillEntries[name]?.enabled !== false
-              });
-            }
-          }
-        }
+      const canonicalRoot = path$1.join(getAppRoot(), "skills");
+      const discovery = await runPortableSkillMetadataDiscovery(canonicalRoot);
+      const nameCounts = /* @__PURE__ */ new Map();
+      for (const item of discovery.packages || []) {
+        const name = String(item.name || item.packageName || "").trim();
+        if (name) nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
       }
-      const skills = Array.from(skillsMap.values());
-      return { ok: true, skills };
+      const skills = (discovery.packages || []).map((item) => {
+        const name = String(item.name || item.packageName || "").trim();
+        const packageId = String(item.relativeName || item.packageName || name);
+        return {
+          id: packageId,
+          packageId,
+          packageName: item.packageName,
+          relativeName: item.relativeName,
+          name,
+          cnName: skillNameMap[item.packageName] || null,
+          description: item.description || null,
+          emoji: item.emoji || null,
+          source: "local",
+          path: item.entryPath,
+          enabled: skillEntries[name]?.enabled !== false && skillEntries[item.packageName]?.enabled !== false,
+          duplicateName: (nameCounts.get(name) || 0) > 1
+        };
+      });
+      return {
+        ok: true,
+        skills,
+        summary: {
+          totalPackages: skills.length,
+          uniqueNames: nameCounts.size,
+          duplicateNames: Array.from(nameCounts.values()).filter((count) => count > 1).length,
+          invalidDirectories: discovery.invalidDirectories || []
+        }
+      };
     } catch (err) {
       console.error("扫描本地skill失败:", err);
       return { ok: false, error: err.message, skills: [] };
@@ -23544,6 +23736,7 @@ function registerIPCHandlers({ gateway }) {
           }
         }
       }, "skills");
+      await requestPortableSkillRepositoryReconcile({ reason: "skill-toggle" });
       return { ok: true };
     } catch (err) {
       console.error("toggle-skill 失败:", err);
@@ -23553,54 +23746,12 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("sync-hermes-skills", async () => {
     try {
-      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
-      const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
-      fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });
-      let extraDirs = [];
-      let skillEntries = {};
-      if (fs$1.existsSync(configPath)) {
-        try {
-          const config = JSON.parse(fs$1.readFileSync(configPath, "utf-8"));
-          extraDirs = config.skills?.load?.extraDirs || [];
-          skillEntries = config.skills?.entries || {};
-        } catch (e) {
-          console.warn("读取 openclaw skills 配置失败:", e.message);
-        }
-      }
-      let copied = 0;
-      const seen = new Set();
-      function copySkillEntry(skillPath, name) {
-        if (!name || seen.has(name) || skillEntries[name]?.enabled === false) return;
-        seen.add(name);
-        const target = path$1.join(hermesSkillsRoot, name.replace(/[\\/:*?\"<>|]/g, "_"));
-        fs$1.rmSync(target, { recursive: true, force: true });
-        if (fs$1.statSync(skillPath).isDirectory()) {
-          fs$1.cpSync(skillPath, target, { recursive: true });
-        } else {
-          fs$1.mkdirSync(target, { recursive: true });
-          fs$1.copyFileSync(skillPath, path$1.join(target, "SKILL.md"));
-        }
-        copied += 1;
-      }
-      for (const extraDir of extraDirs) {
-        let resolvedDir = extraDir;
-        if (!path$1.isAbsolute(extraDir)) resolvedDir = path$1.join(getAppRoot(), extraDir);
-        if (!fs$1.existsSync(resolvedDir)) continue;
-        for (const entry of fs$1.readdirSync(resolvedDir, { withFileTypes: true })) {
-          const skillPath = path$1.join(resolvedDir, entry.name);
-          if (entry.isDirectory()) {
-            const skillFile = path$1.join(skillPath, "SKILL.md");
-            if (!fs$1.existsSync(skillFile)) continue;
-            const meta = parseSkillMeta(skillFile);
-            copySkillEntry(skillPath, meta?.name || entry.name);
-          } else if (entry.name.toLowerCase().endsWith(".md")) {
-            const meta = parseSkillMeta(skillPath);
-            copySkillEntry(skillPath, meta?.name || entry.name.replace(/\.md$/i, ""));
-          }
-        }
-      }
-      safeSend("hermes-log", { type: "system", msg: "[skills] synced " + copied + " OpenClaw skills to Hermes: " + hermesSkillsRoot });
-      return { ok: true, copied, path: hermesSkillsRoot };
+      const result = await getHermesManager().syncOpenClawSkillsToHermes({
+        silent: false,
+        reloadOpenClaw: true
+      });
+      await requestPortableSkillRepositoryReconcile({ reason: "hermes-sync" });
+      return result;
     } catch (err) {
       console.error("sync-hermes-skills 失败:", err);
       return { ok: false, error: err.message };
