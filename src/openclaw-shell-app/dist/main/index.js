@@ -614,13 +614,82 @@ class HermesManager {
       [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path$1.delimiter)
     };
   }
-  syncOpenClawSkillsToHermes(options = {}) {
+  ensurePortableSkillConfig() {
+    const data = this.getHermesDataRoot();
+    const configPath = path$1.join(data, "config.yaml");
+    const sharedSkillsEntry = "../../skills";
+    fs$1.mkdirSync(data, { recursive: true });
+    let content = fs$1.existsSync(configPath) ? fs$1.readFileSync(configPath, "utf8") : "";
+    if (!content.trim()) {
+      content = [
+        "# Managed by OpenClawPro Agent Hub. Kept inside the portable data/.hermes directory.",
+        "memory:",
+        "  memory_enabled: true",
+        "  user_profile_enabled: true",
+        "skills:",
+        "  auto_skill_enabled: true",
+        "  external_dirs:",
+        "    - \"../../skills\"",
+        ""
+      ].join("\n");
+      fs$1.writeFileSync(configPath, content, "utf8");
+      return { changed: true, configPath, sharedSkillsPath: path$1.join(getAppRoot(), "skills") };
+    }
+    const lines = content.replace(/\r\n/g, "\n").split("\n");
+    let skillsStart = lines.findIndex((line) => /^skills:\s*(?:#.*)?$/.test(line));
+    if (skillsStart < 0) {
+      if (lines.length && lines.at(-1) !== "") lines.push("");
+      skillsStart = lines.length;
+      lines.push("skills:", "  auto_skill_enabled: true", "  external_dirs:", `    - ${JSON.stringify(sharedSkillsEntry)}`);
+    } else {
+      let skillsEnd = lines.length;
+      for (let index = skillsStart + 1; index < lines.length; index += 1) {
+        if (/^[^\s#][^:]*:\s*/.test(lines[index])) {
+          skillsEnd = index;
+          break;
+        }
+      }
+      const externalIndex = lines.slice(skillsStart + 1, skillsEnd).findIndex((line) => /^\s{2}external_dirs:\s*/.test(line));
+      if (externalIndex < 0) {
+        lines.splice(skillsEnd, 0, "  external_dirs:", `    - ${JSON.stringify(sharedSkillsEntry)}`);
+      } else {
+        const absoluteIndex = skillsStart + 1 + externalIndex;
+        let listEnd = absoluteIndex + 1;
+        while (listEnd < skillsEnd && (/^\s{4,}-\s*/.test(lines[listEnd]) || /^\s*$/.test(lines[listEnd]))) listEnd += 1;
+        const existing = [];
+        for (const line of lines.slice(absoluteIndex + 1, listEnd)) {
+          const match = line.match(/^\s{4,}-\s*(.*?)\s*$/);
+          if (!match) continue;
+          let value = match[1];
+          try { value = JSON.parse(value); } catch { value = value.replace(/^['"]|['"]$/g, ""); }
+          if (typeof value === "string" && value.trim()) existing.push(value.trim());
+        }
+        const normalized = [];
+        const seen = new Set();
+        const appSkills = path$1.resolve(getAppRoot(), "skills");
+        for (const value of [sharedSkillsEntry, ...existing]) {
+          let next = value;
+          const resolved = path$1.isAbsolute(value) ? path$1.resolve(value) : path$1.resolve(data, value);
+          if (value === "skills" || resolved.toLowerCase() === appSkills.toLowerCase()) next = sharedSkillsEntry;
+          const key = next.replace(/\\/g, "/").toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          normalized.push(next);
+        }
+        lines.splice(absoluteIndex, listEnd - absoluteIndex, "  external_dirs:", ...normalized.map((value) => `    - ${JSON.stringify(value)}`));
+      }
+    }
+    const nextContent = lines.join("\n");
+    const changed = nextContent !== content.replace(/\r\n/g, "\n");
+    if (changed) fs$1.writeFileSync(configPath, nextContent, "utf8");
+    return { changed, configPath, sharedSkillsPath: path$1.join(getAppRoot(), "skills") };
+  }
+  async syncOpenClawSkillsToHermes(options = {}) {
     const silent = options?.silent !== false;
     const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
     const openClawTargetRoot = path$1.join(hermesSkillsRoot, "openclaw");
     const manifestPath = path$1.join(openClawTargetRoot, ".openclaw_sync_manifest.json");
     const reportPath = path$1.join(getAppRoot(), "data", ".hermes", "reports", "skills", "visibility-last.json");
-    fs$1.mkdirSync(openClawTargetRoot, { recursive: true });
     fs$1.mkdirSync(path$1.dirname(reportPath), { recursive: true });
     function readJsonSafe(filePath) {
       try {
@@ -634,9 +703,6 @@ class HermesManager {
       fs$1.mkdirSync(path$1.dirname(filePath), { recursive: true });
       fs$1.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n", "utf8");
     }
-    function safeSkillDirName(name, fallback) {
-      return String(name || fallback || "skill").replace(/[\\/:*?\"<>|]/g, "_").trim() || "skill";
-    }
     function skillSlug(value) {
       return String(value || "").toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     }
@@ -645,21 +711,6 @@ class HermesManager {
       const reload = reloadGateway();
       safeSend("gateway-log", { type: reload?.ok ? "stdout" : "stderr", msg: "[skills] OpenClaw Gateway reload " + (reload?.ok ? "requested" : "failed") + (reload?.error ? ": " + reload.error : "") });
       return reload;
-    }
-    function uniqueTargetName(name, used) {
-      let candidate = name;
-      let index = 2;
-      while (used.has(candidate.toLowerCase())) {
-        candidate = name + "-" + index;
-        index += 1;
-      }
-      used.add(candidate.toLowerCase());
-      return candidate;
-    }
-    function shouldCopySkillPath(rootDir, sourcePath) {
-      const rel = path$1.relative(rootDir, sourcePath).replace(/\\/g, "/");
-      const excluded = new Set([".git", ".github", ".hub", ".archive", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"]);
-      return !rel.split("/").some((part) => excluded.has(part));
     }
     function findSkillSources(rootDir) {
       const rows = [];
@@ -716,91 +767,79 @@ class HermesManager {
         "cmd_keys = sorted(commands.keys())",
         "print(json.dumps({'ok': True, 'reload': result, 'commands': cmd_keys, 'names': names}, ensure_ascii=False))"
       ].join("; ");
-      const result = child_process.spawnSync(python, ["-c", script], {
-        cwd: path$1.join(getAppRoot(), "data", ".hermes"),
-        env: env2,
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 45000
+      return new Promise((resolve, reject) => {
+        const child = child_process.spawn(python, ["-c", script], {
+          cwd: path$1.join(getAppRoot(), "data", ".hermes"),
+          env: env2,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true
+        });
+        let stdout = "";
+        let stderr = "";
+        const timer = setTimeout(() => {
+          try { child.kill("SIGKILL"); } catch {}
+          reject(new Error("Hermes skill scan timed out after 45 seconds"));
+        }, 45000);
+        child.stdout?.on("data", (chunk) => { stdout += Buffer.from(chunk).toString("utf8"); });
+        child.stderr?.on("data", (chunk) => { stderr = (stderr + Buffer.from(chunk).toString("utf8")).slice(-8000); });
+        child.once("error", (err) => { clearTimeout(timer); reject(err); });
+        child.once("exit", (code) => {
+          clearTimeout(timer);
+          if (code !== 0) return reject(new Error((stderr || stdout || "Hermes skill scan exited with " + code).trim()));
+          try {
+            const parsed = JSON.parse((stdout || "{}").trim());
+            resolve({ ok: !!parsed.ok, names: Array.isArray(parsed.names) ? parsed.names.map(String) : [], commands: Array.isArray(parsed.commands) ? parsed.commands.map(String) : [], invocationCommand: "", invocationLoaded: false });
+          } catch (err) {
+            reject(err);
+          }
+        });
       });
-      if (result.status !== 0) throw new Error((result.stderr || result.stdout || "Hermes skill scan exited with " + result.status).trim());
-      const parsed = JSON.parse((result.stdout || "{}").trim());
-      return {
-        ok: !!parsed.ok,
-        names: Array.isArray(parsed.names) ? parsed.names.map(String) : [],
-        commands: Array.isArray(parsed.commands) ? parsed.commands.map(String) : [],
-        invocationCommand: "",
-        invocationLoaded: false
-      };
     }
     try {
+      const hermesConfig = this.ensurePortableSkillConfig();
       const config = readJsonSafe(path$1.join(getAppRoot(), "data", ".openclaw", "openclaw.json")) || {};
       const skillEntries = config?.skills?.entries || {};
       const sourceRoots = getOpenClawSkillSourceRoots(config);
       const sources = [];
-      const seenKeys = new Set();
       for (const rootDir of sourceRoots) {
         for (const item of findSkillSources(rootDir)) {
           const disabled = skillEntries[item.name]?.enabled === false || skillEntries[item.key]?.enabled === false;
           if (disabled) continue;
-          const targetName = uniqueTargetName(safeSkillDirName(item.key || item.name, item.name), seenKeys);
           const stat = fs$1.statSync(item.skillFile);
-          sources.push({ ...item, targetName, skillMtimeMs: Math.round(stat.mtimeMs), rootDir });
+          sources.push({ ...item, skillMtimeMs: Math.round(stat.mtimeMs), rootDir });
         }
       }
       const catalog = writeOpenClawSkillCatalog(sources, sourceRoots);
-      const nextManifest = { version: 3, syncedAt: new Date().toISOString(), sourceRoots, skills: sources.map(({ source, name, key, targetName, skillMtimeMs }) => ({ source, name, key, targetName, skillMtimeMs })) };
-      const oldManifest = readJsonSafe(manifestPath);
-      const unchanged = !!oldManifest && JSON.stringify({ ...oldManifest, syncedAt: nextManifest.syncedAt }) === JSON.stringify(nextManifest);
-      let copied = 0;
-      if (!unchanged) {
-        fs$1.mkdirSync(openClawTargetRoot, { recursive: true });
-        const keepNames = new Set(sources.map((item) => item.targetName.toLowerCase()).concat(["description.md", ".openclaw_sync_manifest.json"]));
-        for (const entry of fs$1.readdirSync(openClawTargetRoot, { withFileTypes: true })) {
-          if (keepNames.has(entry.name.toLowerCase())) continue;
-          fs$1.rmSync(path$1.join(openClawTargetRoot, entry.name), { recursive: true, force: true });
-        }
-        fs$1.writeFileSync(path$1.join(openClawTargetRoot, "DESCRIPTION.md"), "# OpenClaw Skills\n\nOpenClaw skills synchronized from the portable USB skills directory and verified through Hermes native skill command scanning.\n", "utf8");
-        for (const item of sources) {
-          const target = path$1.join(openClawTargetRoot, item.targetName);
-          fs$1.rmSync(target, { recursive: true, force: true });
-          if (fs$1.statSync(item.source).isDirectory()) {
-            fs$1.cpSync(item.source, target, { recursive: true, filter: (sourcePath) => shouldCopySkillPath(item.source, sourcePath) });
-          } else {
-            fs$1.mkdirSync(target, { recursive: true });
-            fs$1.copyFileSync(item.source, path$1.join(target, "SKILL.md"));
-          }
-          copied += 1;
-        }
-        fs$1.writeFileSync(manifestPath, JSON.stringify(nextManifest, null, 2) + "\n", "utf8");
-      }
-      const verification = verifyHermesSkills(this.getPortablePython(), path$1.join(this.getPortableRoot(), "hermes-agent"), this.getHermesEnv());
+      const legacyMirrorManaged = fs$1.existsSync(manifestPath) || fs$1.existsSync(path$1.join(openClawTargetRoot, "DESCRIPTION.md"));
+      if (legacyMirrorManaged) fs$1.rmSync(openClawTargetRoot, { recursive: true, force: true });
+      const verification = await verifyHermesSkills(this.getPortablePython(), path$1.join(this.getPortableRoot(), "hermes-agent"), this.getHermesEnv());
       const visibleSet = new Set([...verification.names, ...verification.commands.map((cmd) => cmd.replace(/^\//, ""))].map(skillSlug));
       const missingNames = sources.map((item) => item.name).filter((name) => !visibleSet.has(skillSlug(name))).slice(0, 50);
       const report = {
         ok: verification.ok,
         checkedAt: new Date().toISOString(),
         sourceCount: sources.length,
-        copied,
-        mirroredCount: sources.length,
+        copied: 0,
+        mirroredCount: 0,
+        directSourceCount: sources.length,
         visibleCount: verification.names.length,
         commandCount: verification.commands.length,
         invocationCommand: "",
         invocationLoaded: false,
         invocationStatus: "not-run",
         usageTracked: fs$1.existsSync(path$1.join(hermesSkillsRoot, ".usage.json")),
-        mirrorRoot: openClawTargetRoot,
-        path: openClawTargetRoot,
+        mirrorRoot: "",
+        path: hermesConfig.sharedSkillsPath,
         reportPath,
         catalogPath: catalog.catalogJson,
         catalogMarkdownPath: catalog.catalogMd,
         openClawReload: reloadOpenClawSkills(),
         sampleCommands: verification.commands.slice(0, 20),
         missingNames,
-        unchanged
+        unchanged: !hermesConfig.changed
       };
       writeJson(reportPath, report);
-      if (!silent) safeSend("hermes-log", { type: "system", msg: "[skills] synced=" + copied + " source=" + report.sourceCount + " visible=" + report.visibleCount + " commands=" + report.commandCount + " report=" + reportPath });
+      if (!silent) safeSend("hermes-log", { type: "system", msg: "[skills] shared-source=" + report.sourceCount + " visible=" + report.visibleCount + " commands=" + report.commandCount + " report=" + reportPath });
       return report;
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -1014,7 +1053,7 @@ class HermesManager {
         installed.push({ name: safeName, path: target });
       }
       ensureOpenClawSkillsConfig(installed);
-      const sync = this.syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
+      const sync = await this.syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const report = { ok: true, url: cleanUrl, repoName, cloneReused: !!clone.reused, installed, installedCount: installed.length, skillsRoot, sync, elapsedMs: Date.now() - startedAt };
       safeSend("hermes-log", { type: "system", msg: "[skill-install] installed=" + installed.length + " synced=" + (sync?.mirroredCount ?? sync?.sourceCount ?? 0) + " url=" + cleanUrl });
       return report;
@@ -1299,6 +1338,7 @@ class HermesManager {
     }
   }
   async start(options = {}) {
+    this.ensurePortableSkillConfig();
     const root = this.getPortableRoot();
     const configServer = path$1.join(root, "lib", "config_server.py");
     const python = path$1.join(root, "venv", "Scripts", "python.exe");
@@ -1672,6 +1712,7 @@ class HermesManager {
     return snap;
   }
   async chat(options = {}) {
+    this.ensurePortableSkillConfig();
     const message = typeof options.message === "string" ? options.message.trim() : "";
     if (!message) {
       return { ok: false, error: "消息不能为空" };
@@ -3011,6 +3052,12 @@ async function ensureOpenClawDirectories() {
       skills: {
         load: {
           extraDirs: [appSkillsDir]
+        },
+        limits: {
+          maxCandidatesPerRoot: 400,
+          maxSkillsLoadedPerSource: 400,
+          maxSkillsInPrompt: 400,
+          maxSkillsPromptChars: 65536
         }
       },
       meta: {
@@ -3460,6 +3507,7 @@ function ensurePortableOpenClawSkillConfig() {
     const config = JSON.parse(fs$1.readFileSync(configPath, "utf8"));
     config.skills ||= {};
     config.skills.load ||= {};
+    config.skills.limits ||= {};
     const current = Array.isArray(config.skills.load.extraDirs) ? config.skills.load.extraDirs : [];
     const next = [];
     const seen = /* @__PURE__ */ new Set();
@@ -3474,10 +3522,22 @@ function ensurePortableOpenClawSkillConfig() {
     }
     addDir("skills");
     for (const entry of current) addDir(entry);
-    if (JSON.stringify(next) !== JSON.stringify(current)) {
+    const requiredLimits = {
+      maxCandidatesPerRoot: 400,
+      maxSkillsLoadedPerSource: 400,
+      maxSkillsInPrompt: 400,
+      maxSkillsPromptChars: 65536
+    };
+    let changed = JSON.stringify(next) !== JSON.stringify(current);
+    for (const [key, value] of Object.entries(requiredLimits)) {
+      if (Number(config.skills.limits[key] || 0) >= value) continue;
+      config.skills.limits[key] = value;
+      changed = true;
+    }
+    if (changed) {
       config.skills.load.extraDirs = next;
       fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
-      console.log("[portable] ensured OpenClaw skills.load.extraDirs:", next.join(", "));
+      console.log("[portable] ensured OpenClaw skill roots and capacity:", next.join(", "));
     }
   } catch (err) {
     console.warn("[portable] failed to ensure OpenClaw skill config:", err instanceof Error ? err.message : String(err));
@@ -22971,6 +23031,51 @@ function getOpenClawSkillSourceRoots(config) {
   }
   return roots;
 }
+function discoverPortableSkillPackages(config) {
+  const packages = [];
+  const invalidDirectories = [];
+  const nameCounts = /* @__PURE__ */ new Map();
+  const roots = getOpenClawSkillSourceRoots(config);
+  for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
+    const rootDir = roots[rootIndex];
+    if (!fs$1.existsSync(rootDir)) continue;
+    for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {
+      const entryPath = path$1.join(rootDir, entry.name);
+      let skillFile = "";
+      let packageName = entry.name;
+      if (entry.isDirectory()) {
+        skillFile = path$1.join(entryPath, "SKILL.md");
+        if (!fs$1.existsSync(skillFile)) {
+          if (rootIndex === 0) invalidDirectories.push({ name: entry.name, path: entryPath, reason: "missing-skill-md" });
+          continue;
+        }
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md") && !entry.name.startsWith(".")) {
+        skillFile = entryPath;
+        packageName = entry.name.replace(/\.md$/i, "");
+      } else {
+        continue;
+      }
+      const meta = parseSkillMeta(skillFile);
+      const name = String(meta?.name || packageName).trim().replace(/^['"]|['"]$/g, "") || packageName;
+      const packageId = `${rootIndex}:${packageName.toLowerCase()}`;
+      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+      packages.push({
+        packageId,
+        packageName,
+        name,
+        cnName: skillNameMap[packageName] || null,
+        description: meta?.description || null,
+        emoji: meta?.emoji || null,
+        source: "local",
+        sourceRoot: rootDir,
+        path: entryPath,
+        skillFile
+      });
+    }
+  }
+  const duplicateNames = Array.from(nameCounts.entries()).filter(([, count]) => count > 1).map(([name, count]) => ({ name, count }));
+  return { packages, roots, invalidDirectories, duplicateNames, uniqueSkillNames: nameCounts.size };
+}
 function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
   electron.ipcMain.handle("open-dashboard", () => {
@@ -23226,7 +23331,6 @@ function registerIPCHandlers({ gateway }) {
     return { ok: true };
   });
   electron.ipcMain.handle("scan-local-skills", async () => {
-    const skillsMap = /* @__PURE__ */ new Map();
     try {
       let config = {};
       let skillEntries = {};
@@ -23238,50 +23342,9 @@ function registerIPCHandlers({ gateway }) {
           console.warn("读取 openclw.json extraDirs 失败:", e.message);
         }
       }
-      for (const resolvedDir of getOpenClawSkillSourceRoots(config)) {
-        if (!fs$1.existsSync(resolvedDir)) {
-          continue;
-        }
-        const entries = fs$1.readdirSync(resolvedDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const skillPath = path$1.join(resolvedDir, entry.name);
-            const skillFile = path$1.join(skillPath, "SKILL.md");
-            if (fs$1.existsSync(skillFile)) {
-              const meta = parseSkillMeta(skillFile);
-              const name = meta?.name || entry.name;
-              if (!skillsMap.has(name)) {
-                skillsMap.set(name, {
-                  name,
-                  cnName: skillNameMap[entry.name] || null,
-                  description: meta?.description || null,
-                  emoji: meta?.emoji || null,
-                  source: "local",
-                  path: skillPath,
-                  enabled: skillEntries[name]?.enabled !== false
-                });
-              }
-            }
-          } else if (entry.name.endsWith(".md")) {
-            const skillFile = path$1.join(resolvedDir, entry.name);
-            const meta = parseSkillMeta(skillFile);
-            const name = meta?.name || entry.name.replace(".md", "");
-            if (!skillsMap.has(name)) {
-              skillsMap.set(name, {
-                name,
-                cnName: skillNameMap[entry.name] || null,
-                description: meta?.description || null,
-                emoji: meta?.emoji || null,
-                source: "local",
-                path: skillFile,
-                enabled: skillEntries[name]?.enabled !== false
-              });
-            }
-          }
-        }
-      }
-      const skills = Array.from(skillsMap.values());
-      return { ok: true, skills };
+      const discovery = discoverPortableSkillPackages(config);
+      const skills = discovery.packages.map((skill) => ({ ...skill, enabled: skillEntries[skill.name]?.enabled !== false && skillEntries[skill.packageName]?.enabled !== false }));
+      return { ok: true, skills, totalPackages: skills.length, uniqueSkillNames: discovery.uniqueSkillNames, duplicateNames: discovery.duplicateNames, invalidDirectories: discovery.invalidDirectories };
     } catch (err) {
       console.error("扫描本地skill失败:", err);
       return { ok: false, error: err.message, skills: [] };
@@ -23305,7 +23368,7 @@ function registerIPCHandlers({ gateway }) {
 
   electron.ipcMain.handle("sync-hermes-skills", async () => {
     try {
-      return getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
+      return await getHermesManager().syncOpenClawSkillsToHermes({ silent: false, reloadOpenClaw: true });
       const hermesSkillsRoot = path$1.join(getAppRoot(), "data", ".hermes", "skills");
       fs$1.mkdirSync(hermesSkillsRoot, { recursive: true });
       let extraDirs = [];

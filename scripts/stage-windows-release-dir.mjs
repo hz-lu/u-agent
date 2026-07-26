@@ -81,6 +81,12 @@ function createOpenClawConfig() {
       load: {
         extraDirs: ["skills"]
       },
+      limits: {
+        maxCandidatesPerRoot: 400,
+        maxSkillsLoadedPerSource: 400,
+        maxSkillsInPrompt: 400,
+        maxSkillsPromptChars: 65536
+      },
       entries: {}
     },
     models: {
@@ -143,7 +149,7 @@ function writeCleanData() {
     "skills:",
     "  auto_skill_enabled: true",
     "  external_dirs:",
-    "    - \"skills\"",
+    "    - \"../../skills\"",
     "paths:",
     "  home: \"data/.hermes/home\"",
     "  logs: \"data/.hermes/logs\"",

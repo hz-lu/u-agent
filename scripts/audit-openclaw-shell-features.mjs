@@ -22,7 +22,7 @@ const source = Object.fromEntries(Object.entries(files).map(([key, filePath]) =>
 const checks = [
   ["main", "Hermes manager", "class HermesManager"],
   ["main", "Hermes chat IPC", "\"hermes:chat\""],
-  ["main", "OpenClaw skills mirrored to Hermes", "syncOpenClawSkillsToHermes"],
+  ["main", "OpenClaw skills shared with Hermes", "syncOpenClawSkillsToHermes"],
   ["main", "OpenClaw model bridge status", "modelBridgeReady"],
   ["main", "OpenAI-compatible provider mapping", "openai-api"],
   ["main", "Portable OpenClaw config path rewrite", "codex-portable-openclaw-config-rewrite"],

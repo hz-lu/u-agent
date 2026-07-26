@@ -14603,7 +14603,7 @@ const _sfc_main$t = {
         const result = await window.uclaw.ipcSyncHermesSkills();
         if (!result?.ok) throw new Error(result?.error || "同步失败");
         const reloadResult = result.openClawReload || null;
-        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，已镜像 ${result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? "已请求" : "未完成"}；调用注入 ${result.invocationLoaded ? "已通过" : "未验证"}${result.invocationCommand ? "（" + result.invocationCommand + "）" : ""}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
+        hermesSyncMessage.value = `OpenClaw ${result.sourceCount ?? result.total ?? 0} 个技能，Hermes 共享源 ${result.directSourceCount ?? result.mirroredCount ?? result.copied ?? 0} 个；Hermes 官方可见 ${result.visibleCount ?? 0} 个，slash 命令 ${result.commandCount ?? 0} 个；OpenClaw 重载${reloadResult?.ok ? "已请求" : "未完成"}。报告：${result.reportPath || result.path || "未生成"}${result.missingNames?.length ? "；未显示样例：" + result.missingNames.slice(0, 5).join(", ") : ""}`;
         await fetchAllSkills();
       } catch (err) {
         hermesSyncMessage.value = "同步失败: " + (err?.message || err);
@@ -14619,7 +14619,7 @@ const _sfc_main$t = {
       if (searchQuery.value) {
         const q = searchQuery.value.toLowerCase();
         list2 = list2.filter(
-          (s) => s.cnName && s.cnName.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)
+          (s) => s.cnName && s.cnName.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || (s.packageName || "").toLowerCase().includes(q)
         );
       }
       return list2;
@@ -14629,10 +14629,7 @@ const _sfc_main$t = {
       try {
         await window.uclaw.ipcToggleSkill(name, enabled);
         const store = useSkillsStore();
-        const skill = store.allSkills.find((s) => s.name === name);
-        if (skill) {
-          skill.enabled = enabled;
-        }
+        for (const skill of store.allSkills.filter((s) => s.name === name)) skill.enabled = enabled;
       } catch (err) {
         console.error("toggle skill failed:", err);
       }
@@ -14702,7 +14699,7 @@ const _sfc_main$t = {
           filteredSkills.value.length > 0 ? (openBlock(), createElementBlock("div", _hoisted_9$h, [
             (openBlock(true), createElementBlock(Fragment, null, renderList(filteredSkills.value, (skill) => {
               return openBlock(), createElementBlock("div", {
-                key: skill.name,
+                key: skill.packageId || skill.path || skill.name,
                 class: "skill-card"
               }, [
                 createBaseVNode("div", _hoisted_10$f, [

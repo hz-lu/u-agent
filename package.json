@@ -28,6 +28,7 @@
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
+    "verify:windows-shared-skills": "node scripts/verify-windows-shared-skill-closure.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "verify:shared-backports": "node scripts/verify-macos-shared-backports.mjs",
     "diagnose:hermes-startup": "node scripts/diagnose-hermes-startup.mjs",
