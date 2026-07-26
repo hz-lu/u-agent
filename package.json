@@ -35,6 +35,7 @@
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
+    "verify:skill-metadata": "node scripts/verify-skill-metadata.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "diagnose:hermes-startup": "node scripts/diagnose-hermes-startup.mjs",
     "diagnose:windows-layout": "node scripts/diagnose-windows-layout.mjs",
