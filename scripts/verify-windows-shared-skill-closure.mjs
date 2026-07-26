@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const portableRoot = path.resolve(process.env.PORTABLE_ROOT || process.argv[2] || "E:\\");
 const skillsRoot = path.join(portableRoot, "skills");
@@ -14,6 +15,8 @@ const skillLimits = {
   maxSkillsInPrompt: 400,
   maxSkillsPromptChars: 65536
 };
+const require = createRequire(import.meta.url);
+const skillMetadata = require(path.join(path.resolve(import.meta.dirname, ".."), "src", "openclaw-shell-app", "dist", "main", "skill-metadata.cjs"));
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -35,30 +38,15 @@ function findPortablePython() {
   return path.join(hermesRoot, "venv", "Scripts", "python.exe");
 }
 
-function parseDeclaredName(skillFile, fallback) {
-  const content = fs.readFileSync(skillFile, "utf8");
-  const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] || "";
-  const raw = frontmatter.match(/^name:\s*(.*?)\s*$/m)?.[1] || fallback;
-  return raw.trim().replace(/^["']|["']$/g, "") || fallback;
-}
-
 function discoverPackages() {
   const directoryEntries = fs.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
-  const packages = [];
-  const invalidDirectories = [];
-  for (const entry of directoryEntries) {
-    const skillFile = path.join(skillsRoot, entry.name, "SKILL.md");
-    if (!fs.existsSync(skillFile)) {
-      invalidDirectories.push(entry.name);
-      continue;
-    }
-    packages.push({ packageName: entry.name, name: parseDeclaredName(skillFile, entry.name) });
-  }
+  const discovery = skillMetadata.discoverSkillPackages(skillsRoot);
+  const packages = discovery.packages.map((item) => ({ packageName: item.relativeName, name: item.meta?.name || item.packageName }));
   return {
     directoryCount: directoryEntries.length,
     packageCount: packages.length,
     uniqueNameCount: new Set(packages.map((item) => item.name)).size,
-    invalidDirectories
+    invalidDirectories: discovery.invalidDirectories.map((item) => item.name)
   };
 }
 

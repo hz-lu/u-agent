@@ -14711,7 +14711,7 @@ const _sfc_main$t = {
                     createBaseVNode("div", _hoisted_13$c, [
                       createBaseVNode("span", _hoisted_14$c, toDisplayString(skill.cnName || skill.name), 1)
                     ]),
-                    createBaseVNode("p", _hoisted_15$c, toDisplayString(skill.description || ""), 1)
+                    createBaseVNode("p", _hoisted_15$c, toDisplayString(skill.description || "暂无技能介绍"), 1)
                   ])
                 ]),
                 createBaseVNode("label", _hoisted_16$c, [

@@ -32,6 +32,8 @@ const checks = [
   ["skillRepository", "OpenClaw native skill import", "openclaw-managed"],
   ["skillRepository", "Hermes generated skill import", "hermes-local"],
   ["skillRepository", "User modification preservation", "canonical-copy-modified"],
+  ["main", "OpenClaw session skill snapshot refresh", "invalidateOpenClawSessionSkillSnapshots"],
+  ["main", "Portable skill metadata parser", "skill-metadata.cjs"],
   ["preload", "Hermes start API", "ipcStartHermes"],
   ["preload", "Hermes status API", "ipcGetHermesStatus"],
   ["preload", "Hermes chat API", "ipcHermesChat"],

@@ -3523,6 +3523,22 @@ function ensurePortableOpenClawSkillConfig() {
     console.warn("[portable] failed to ensure OpenClaw skill config:", err instanceof Error ? err.message : String(err));
   }
 }
+function invalidateOpenClawSessionSkillSnapshots() {
+  const sessionsPath = path$1.join(getDataRoot(), ".openclaw", "agents", "main", "sessions", "sessions.json");
+  try {
+    if (!fs$1.existsSync(sessionsPath)) return 0;
+    const sessions = JSON.parse(fs$1.readFileSync(sessionsPath, "utf8"));
+    const invalidated = portableSkillMetadata.stripSessionSkillSnapshots(sessions);
+    if (invalidated > 0) {
+      atomicWriteFileSync(sessionsPath, JSON.stringify(sessions, null, 2) + "\n", "utf8");
+      console.log(`[skills] invalidated ${invalidated} persisted session snapshot(s); chat history was preserved`);
+    }
+    return invalidated;
+  } catch (error) {
+    console.warn("[skills] failed to invalidate persisted session snapshots:", error?.message || error);
+    return 0;
+  }
+}
 let portableSkillRepositoryWorker = null;
 let portableSkillRepositoryBuffer = "";
 let portableSkillRepositoryStopping = false;
@@ -3665,6 +3681,7 @@ function normalizeOpenClawPluginSkillLinks() {
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
   ensurePortableOpenClawSkillConfig();
+  invalidateOpenClawSessionSkillSnapshots();
   const repair = repairOpenClawRuntimeTemplates(RUNTIME_DIR);
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
@@ -23024,79 +23041,9 @@ async function getGatewayChatHistoryViaMain(payload = {}) {
   const limit = Number(payload.limit || 200);
   return gatewayRpcViaMain("chat.history", { sessionKey, limit }, payload);
 }
+const portableSkillMetadata = require(path$1.join(__dirname, "skill-metadata.cjs"));
 function parseSkillMeta(skillFilePath) {
-  try {
-    const content = fs$1.readFileSync(skillFilePath, "utf-8");
-    const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    if (!match) {
-      return null;
-    }
-    const frontmatter = match[1];
-    const lines = frontmatter.split(/\r?\n/);
-    const result = {};
-    let currentKey = null;
-    let currentValue = "";
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const indentMatch = line.match(/^(\s*)(\w+):\s*(.*)$/);
-      if (indentMatch) {
-        if (currentKey !== null) {
-          result[currentKey] = currentValue.trim();
-        }
-        currentKey = indentMatch[2];
-        currentValue = indentMatch[3];
-      } else if (currentKey !== null && (line.match(/^\s+\|/) || line.match(/^\s+>/))) {
-        currentValue = lines[++i] || "";
-        while (i < lines.length && lines[i].match(/^\s{2,}[^:#]/)) {
-          currentValue += "\n" + lines[i];
-          i++;
-        }
-        i--;
-      } else if (currentKey !== null && line.match(/^\s+- /)) {
-        currentValue += "\n" + line;
-      } else if (currentKey !== null && line.match(/^\s{2,}.*:/) && !line.match(/^\s+- .*:/)) {
-        const nested = line.match(/^\s{2,}([\w-]+):\s*(.*)$/);
-        if (nested) {
-          if (!result[currentKey]) result[currentKey] = {};
-          result[currentKey][nested[1]] = nested[2] || "";
-        }
-      } else if (currentKey !== null && line.match(/^\s{2,}/) && currentKey !== "description") {
-        currentValue += " " + line.trim();
-      }
-    }
-    if (currentKey !== null) {
-      result[currentKey] = currentValue.trim();
-    }
-    let emoji = result.emoji || null;
-    if (!emoji && result.metadata) {
-      try {
-        const metadata = JSON.parse(result.metadata);
-        emoji = metadata.clawdbot?.emoji || metadata.openclaw?.emoji || null;
-      } catch {
-        if (!emoji) {
-          const emojiMatch = result.metadata.match(/"emoji"\s*:\s*["']([\p{Emoji}]+)/u);
-          if (emojiMatch) {
-            emoji = emojiMatch[1];
-          }
-        }
-      }
-    }
-    if (!emoji) {
-      const frontmatterEmojiMatch = frontmatter.match(/"emoji"\s*:\s*["']([\p{Emoji}]+)/u);
-      if (frontmatterEmojiMatch) {
-        emoji = frontmatterEmojiMatch[1];
-      }
-    }
-    return {
-      name: result.name || null,
-      description: result.description || null,
-      emoji,
-      raw: result
-    };
-  } catch (err) {
-    console.error("parseSkillMeta error:", err);
-    return null;
-  }
+  return portableSkillMetadata.parseSkillMeta(skillFilePath);
 }
 function getOpenClawSkillSourceRoots(config) {
   const roots = [];
@@ -23118,50 +23065,56 @@ function getOpenClawSkillSourceRoots(config) {
   }
   return roots;
 }
-function discoverPortableSkillPackages(config) {
-  const packages = [];
-  const invalidDirectories = [];
+async function discoverPortableSkillPackages(config) {
   const nameCounts = /* @__PURE__ */ new Map();
   const roots = [path$1.join(getAppRoot(), "skills")];
-  for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
-    const rootDir = roots[rootIndex];
-    if (!fs$1.existsSync(rootDir)) continue;
-    for (const entry of fs$1.readdirSync(rootDir, { withFileTypes: true })) {
-      const entryPath = path$1.join(rootDir, entry.name);
-      let skillFile = "";
-      let packageName = entry.name;
-      if (entry.isDirectory()) {
-        skillFile = path$1.join(entryPath, "SKILL.md");
-        if (!fs$1.existsSync(skillFile)) {
-          if (rootIndex === 0) invalidDirectories.push({ name: entry.name, path: entryPath, reason: "missing-skill-md" });
-          continue;
-        }
-      } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md") && !entry.name.startsWith(".")) {
-        skillFile = entryPath;
-        packageName = entry.name.replace(/\.md$/i, "");
-      } else {
-        continue;
-      }
-      const meta = parseSkillMeta(skillFile);
-      const name = String(meta?.name || packageName).trim().replace(/^['"]|['"]$/g, "") || packageName;
-      const packageId = `${rootIndex}:${packageName.toLowerCase()}`;
-      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
-      packages.push({
-        packageId,
-        packageName,
-        name,
-        cnName: skillNameMap[packageName] || null,
-        description: meta?.description || null,
-        emoji: meta?.emoji || null,
-        source: "local",
-        sourceRoot: rootDir,
-        path: entryPath,
-        skillFile
-      });
-    }
-  }
+  const rootDir = roots[0];
+  const workerScript = path$1.join(__dirname, "skill-metadata.cjs");
+  const bundledNode = process.platform === "win32" ? path$1.join(getAppRoot(), "runtime", "node.exe") : path$1.join(getAppRoot(), "runtime", "node");
+  const command = fs$1.existsSync(bundledNode) ? bundledNode : process.execPath;
+  const env2 = { ...process.env, ELECTRON_RUN_AS_NODE: fs$1.existsSync(bundledNode) ? process.env.ELECTRON_RUN_AS_NODE || "" : "1" };
+  const discovery = await new Promise((resolve, reject) => {
+    const child = child_process.spawn(command, [workerScript, rootDir], { cwd: getAppRoot(), env: env2, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish(reject, new Error("skill metadata scan timed out"));
+    }, 3e4);
+    child.stdout?.on("data", (chunk) => stdout += Buffer.from(chunk).toString("utf8"));
+    child.stderr?.on("data", (chunk) => stderr += Buffer.from(chunk).toString("utf8"));
+    child.once("error", (error) => finish(reject, error));
+    child.once("exit", (code) => {
+      if (code !== 0) return finish(reject, new Error((stderr || `skill metadata worker exited ${code}`).trim()));
+      try { finish(resolve, JSON.parse(stdout.trim())); } catch (error) { finish(reject, new Error(`invalid skill metadata worker output: ${error.message}`)); }
+    });
+  });
+  const packages = (discovery.packages || []).map((item) => {
+    const { entryPath, skillFile, packageName, relativeName } = item;
+    const name = String(item.name || packageName).trim().replace(/^['"]|['"]$/g, "") || packageName;
+    nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+    return {
+      packageId: `0:${relativeName.toLowerCase()}`,
+      packageName,
+      name,
+      cnName: skillNameMap[packageName] || null,
+      description: item.description || null,
+      emoji: item.emoji || null,
+      source: "local",
+      sourceRoot: rootDir,
+      path: entryPath,
+      skillFile
+    };
+  });
   const duplicateNames = Array.from(nameCounts.entries()).filter(([, count]) => count > 1).map(([name, count]) => ({ name, count }));
-  return { packages, roots, invalidDirectories, duplicateNames, uniqueSkillNames: nameCounts.size };
+  return { packages, roots, invalidDirectories: discovery.invalidDirectories || [], duplicateNames, uniqueSkillNames: nameCounts.size };
 }
 function registerIPCHandlers({ gateway }) {
   const { appRoot, configDir, configPath, openclawEntry, dataRoot } = getPaths();
@@ -23430,7 +23383,7 @@ function registerIPCHandlers({ gateway }) {
           console.warn("读取 openclw.json extraDirs 失败:", e.message);
         }
       }
-      const discovery = discoverPortableSkillPackages(config);
+      const discovery = await discoverPortableSkillPackages(config);
       const skills = discovery.packages.map((skill) => ({ ...skill, enabled: skillEntries[skill.name]?.enabled !== false && skillEntries[skill.packageName]?.enabled !== false }));
       return { ok: true, skills, totalPackages: skills.length, uniqueSkillNames: discovery.uniqueSkillNames, duplicateNames: discovery.duplicateNames, invalidDirectories: discovery.invalidDirectories };
     } catch (err) {
