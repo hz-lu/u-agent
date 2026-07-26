@@ -36,7 +36,7 @@ for (const relativePath of [
 }
 
 const restore = read("scripts/restore-openclaw-shell.mjs");
-assert(restore.includes("normalizeGitHubSkillUrl"), "scripts/restore-openclaw-shell.mjs: restore script must preserve GitHub URL normalization");
-assert(!restore.includes("return { url };"), "scripts/restore-openclaw-shell.mjs: restore script must not restore raw GitHub URL handling");
+assert(restore.includes('path.join(projectRoot, "src", "openclaw-shell-app")'), "scripts/restore-openclaw-shell.mjs: restore must deploy source containing GitHub skill URL normalization");
+assert(!restore.includes("function patchHermesSkillBridge"), "scripts/restore-openclaw-shell.mjs: restore must not inject a separate Hermes skill bridge");
 
 console.log("Hermes skill install flow checks passed");

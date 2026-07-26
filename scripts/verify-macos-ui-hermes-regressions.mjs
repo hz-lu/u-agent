@@ -48,7 +48,7 @@ for (const mainPath of [
 }
 
 const restoreScript = read("scripts/restore-openclaw-shell.mjs");
-assert(!restoreScript.includes('chatCommand.args.join(" ")'), "scripts/restore-openclaw-shell.mjs: restore script must not reintroduce raw Hermes args logging");
-assert(restoreScript.includes("--oneshot [message redacted]"), "scripts/restore-openclaw-shell.mjs: restore script should preserve redacted Hermes logging");
+assert(restoreScript.includes('path.join(projectRoot, "src", "openclaw-shell-app")'), "scripts/restore-openclaw-shell.mjs: restore must deploy canonical source UI");
+assert(!restoreScript.includes("function patchHermesLogAndWechatDiagnostics"), "scripts/restore-openclaw-shell.mjs: restore must not reintroduce historical logging patches");
 
 console.log("macOS UI/Hermes regression checks passed");

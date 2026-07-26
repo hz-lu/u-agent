@@ -46,8 +46,7 @@ for (const relativePath of [
 }
 
 const restore = read("scripts/restore-openclaw-shell.mjs");
-assert(restore.includes("function getOpenClawSkillSourceRoots(config)"), "scripts/restore-openclaw-shell.mjs: restore script must preserve root skill source scanning");
-assert(restore.includes("ensurePortableOpenClawSkillConfig"), "scripts/restore-openclaw-shell.mjs: restore script must preserve OpenClaw skill config repair");
-assert(restore.includes("scheduleOpenClawHistorySync(sessionKey, { immediate: true })"), "scripts/restore-openclaw-shell.mjs: restore script must preserve final history refresh");
+assert(restore.includes('path.join(projectRoot, "src", "openclaw-shell-app")'), "scripts/restore-openclaw-shell.mjs: restore must deploy source containing skill sync behavior");
+assert(!restore.includes("function patchHermesSkillManagement"), "scripts/restore-openclaw-shell.mjs: restore must not patch skill management onto a baseline bundle");
 
 console.log("OpenClaw chat and skill sync checks passed");

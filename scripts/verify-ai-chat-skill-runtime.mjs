@@ -71,12 +71,8 @@ for (const relativePath of [
 }
 
 const restore = read("scripts/restore-openclaw-shell.mjs");
-assert(restore.includes("isComposingInput"), "scripts/restore-openclaw-shell.mjs: restore script must preserve IME-safe send handling");
-assert(restore.includes("buildHermesMessageWithAttachments"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes attachment context");
-assert(restore.includes("reloadOpenClaw === true"), "scripts/restore-openclaw-shell.mjs: restore script must preserve opt-in OpenClaw skill reload");
-assert(restore.includes('event.key === "Escape"') && restore.includes('document.addEventListener("keydown"'), "scripts/restore-openclaw-shell.mjs: restore script must preserve Escape-close image preview");
-assert(restore.includes('async (code, signal)') && restore.includes("interrupted") && restore.includes("exitSignal"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes interrupted exit classification");
-assert(restore.includes("codex-hermes-chat-readiness-wait"), "scripts/restore-openclaw-shell.mjs: restore script must preserve Hermes chat readiness wait");
-assert(!restore.includes("skillRefreshTimer"), "scripts/restore-openclaw-shell.mjs: restore script must not restore timer-based skill scanning");
+assert(restore.includes('path.join(projectRoot, "src", "openclaw-shell-app")'), "scripts/restore-openclaw-shell.mjs: restore must deploy the canonical source app");
+assert(restore.includes("fs.cpSync(sourceApp, stagingApp, { recursive: true })"), "scripts/restore-openclaw-shell.mjs: restore must copy source without renderer patch injection");
+assert(!restore.includes("function patchHermesAiChat"), "scripts/restore-openclaw-shell.mjs: restore must not contain the historical AI chat patch layer");
 
 console.log("AI chat skill runtime checks passed");
