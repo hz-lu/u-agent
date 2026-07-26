@@ -3,13 +3,22 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePortableRoot } from "./portable-root.mjs";
 
-const usbRoot = resolvePortableRoot();
+const resolvedRoot = resolvePortableRoot();
+const releaseRoot = path.join(process.cwd(), "release", "macos-usb-root-exfat");
+const hasHermesVenvPython = (root) => [
+  path.join(root, "runtime", "HermesPortable", "venv", "bin", "python"),
+  path.join(root, "runtime", "HermesPortable", "venv", "Scripts", "python.exe")
+].some((candidate) => fs.existsSync(candidate));
+const usbRoot = !process.env.AGENT_HUB_ROOT?.trim()
+  && !hasHermesVenvPython(resolvedRoot)
+  && hasHermesVenvPython(releaseRoot)
+  ? releaseRoot
+  : resolvedRoot;
 const hermesRoot = path.join(usbRoot, "runtime", "HermesPortable");
 const dataRoot = path.join(usbRoot, "data", ".hermes");
 const sourceRoot = path.join(hermesRoot, "hermes-agent");
-const venvPythonExe = path.join(hermesRoot, "venv", "Scripts", "python.exe");
 const pythonExe = findPortablePython();
-const venvSitePackages = path.join(hermesRoot, "venv", "Lib", "site-packages");
+const venvSitePackages = findVenvSitePackages();
 const skillsRoot = path.join(usbRoot, "skills");
 const mirrorRoot = path.join(dataRoot, "skills", "openclaw");
 const reportPath = path.join(dataRoot, "reports", "skills", "visibility-last.json");
@@ -33,6 +42,12 @@ function writeJson(filePath, value) {
 }
 
 function findPortablePython() {
+  if (process.platform !== "win32") {
+    for (const name of ["python", "python3"]) {
+      const candidate = path.join(hermesRoot, "venv", "bin", name);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
   const exact = path.join(hermesRoot, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
   if (fs.existsSync(exact)) return exact;
   const pyRoot = path.join(hermesRoot, "python");
@@ -45,7 +60,27 @@ function findPortablePython() {
       else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
     }
   }
-  return venvPythonExe;
+  return process.platform === "win32"
+    ? path.join(hermesRoot, "venv", "Scripts", "python.exe")
+    : path.join(hermesRoot, "venv", "bin", "python");
+}
+
+function findVenvSitePackages() {
+  const windowsPath = path.join(hermesRoot, "venv", "Lib", "site-packages");
+  if (fs.existsSync(windowsPath)) return windowsPath;
+  const libRoot = path.join(hermesRoot, "venv", "lib");
+  if (!fs.existsSync(libRoot)) return "";
+  const stack = [libRoot];
+  while (stack.length) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.name === "site-packages") return full;
+      stack.push(full);
+    }
+  }
+  return "";
 }
 
 function writeHermesConfig() {
@@ -78,6 +113,9 @@ function buildHermesEnv() {
   const config = path.join(dataRoot, "config");
   const logs = path.join(dataRoot, "logs");
   const tmp = path.join(dataRoot, "tmp");
+  const venvBin = process.platform === "win32"
+    ? path.join(hermesRoot, "venv", "Scripts")
+    : path.join(hermesRoot, "venv", "bin");
   for (const dir of [dataRoot, home, cache, config, logs, tmp, path.join(dataRoot, "skills")]) mkdirp(dir);
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
   return {
@@ -99,7 +137,7 @@ function buildHermesEnv() {
     TMP: tmp,
     TEMP: tmp,
     [pathKey]: [
-      path.join(hermesRoot, "venv", "Scripts"),
+      venvBin,
       path.join(hermesRoot, "node"),
       path.dirname(pythonExe),
       process.env[pathKey] || ""
@@ -234,12 +272,14 @@ function verifyOfficialVisibility() {
   const script = [
     "import json, sys",
     `sys.path.insert(0, ${JSON.stringify(sourceRoot)})`,
-    "from agent.skill_commands import reload_skills, get_skill_commands",
+    "from agent.skill_commands import reload_skills, get_skill_commands, build_preloaded_skills_prompt",
     "result = reload_skills()",
     "commands = get_skill_commands()",
     "names = sorted(set((info or {}).get('name') or key.lstrip('/') for key, info in commands.items()))",
     "cmd_keys = sorted(commands.keys())",
-    "print(json.dumps({'ok': True, 'reload': result, 'commands': cmd_keys, 'names': names}, ensure_ascii=False))"
+    "identifiers = [str((commands.get(key) or {}).get('skill_dir') or (commands.get(key) or {}).get('name') or key.lstrip('/')) for key in cmd_keys[:2]]",
+    "prompt, loaded, missing = build_preloaded_skills_prompt(identifiers, task_id='openclawpro-verify') if identifiers else ('', [], [])",
+    "print(json.dumps({'ok': True, 'reload': result, 'commands': cmd_keys, 'names': names, 'multiSkill': {'requested': identifiers, 'loaded': loaded, 'missing': missing, 'promptBuilt': bool(prompt)}}, ensure_ascii=False))"
   ].join("; ");
   const result = spawnSync(pythonExe, ["-c", script], {
     cwd: dataRoot,
@@ -260,6 +300,10 @@ try {
   const rows = listOpenClawSkills();
   const sync = syncMirror(rows);
   const visibility = verifyOfficialVisibility();
+  const multiSkill = visibility.multiSkill || {};
+  if ((multiSkill.requested || []).length > 0 && (!multiSkill.promptBuilt || (multiSkill.missing || []).length > 0)) {
+    throw new Error(`Hermes official multi-skill preload failed: ${(multiSkill.missing || []).join(", ") || "prompt not built"}`);
+  }
   const visible = new Set([...(visibility.names || []), ...(visibility.commands || []).map((cmd) => cmd.replace(/^\//, ""))].map(skillSlug));
   report = {
     ok: true,
@@ -269,9 +313,9 @@ try {
     mirroredCount: rows.length,
     visibleCount: visibility.names?.length || 0,
     commandCount: visibility.commands?.length || 0,
-    invocationCommand: "",
-    invocationLoaded: false,
-    invocationStatus: "not-run",
+    invocationCommand: (multiSkill.requested || []).join(", "),
+    invocationLoaded: (multiSkill.loaded || []).length === (multiSkill.requested || []).length,
+    invocationStatus: (multiSkill.requested || []).length > 0 ? "verified" : "no-skills",
     usageTracked: fs.existsSync(path.join(dataRoot, "skills", ".usage.json")),
     mirrorRoot,
     path: mirrorRoot,

@@ -38,6 +38,11 @@ const http2 = require("http2");
 const require$$4$1 = require("assert");
 const require$$1$1 = require("tty");
 const zlib = require("zlib");
+const {
+  buildOpenClawSkillMessage,
+  normalizeSelectedSkills,
+  routeCompleteSkillSet
+} = require("./chat-skill-routing.cjs");
 const LICENSE_SALT = "uclaw-license-v1";
 const LICENSE_ITERATIONS = 1e5;
 const LICENSE_KEYLEN = 32;
@@ -521,6 +526,8 @@ class HermesManager {
     this._lastAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
     this._lastWritableAppleDoubleCleanupAt = 0;
     this._lastWritableAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
+    this._skillCommandCache = null;
+    this._skillCommandCacheAt = 0;
   }
   getHermesDataRoot() {
     return path$1.join(getAppRoot(), "data", ".hermes");
@@ -1773,6 +1780,121 @@ class HermesManager {
     this._lastStatusSnapshot = snap;
     this._lastStatusAt = Date.now();
     return snap;
+  }
+  runHermesSkillCommandBridge(payload = {}) {
+    const python = this.getPortablePython();
+    const sourceRoot = path$1.join(this.getPortableRoot(), "hermes-agent");
+    if (!fs$1.existsSync(python)) {
+      return Promise.reject(new Error("Hermes portable Python was not found: " + python));
+    }
+    if (!fs$1.existsSync(path$1.join(sourceRoot, "agent", "skill_commands.py"))) {
+      return Promise.reject(new Error("Hermes official skill command module was not found: " + sourceRoot));
+    }
+    const script = [
+      "import json, sys",
+      "sys.path.insert(0, " + JSON.stringify(sourceRoot) + ")",
+      "from agent.skill_commands import get_skill_commands, reload_skills, resolve_skill_command_key, build_skill_invocation_message, build_preloaded_skills_prompt",
+      "payload = json.load(sys.stdin)",
+      "action = payload.get('action', 'list')",
+      "reload_skills()",
+      "commands = get_skill_commands()",
+      "result = {'ok': True}",
+      "if action == 'list':",
+      "    result['skills'] = [{'command': key, 'name': (info or {}).get('name') or key.lstrip('/'), 'description': (info or {}).get('description') or '', 'invocable': True, 'source': 'hermes-official-skill-commands'} for key, info in sorted(commands.items())]",
+      "else:",
+      "    raw_commands = [str(item or '').lstrip('/') for item in (payload.get('commands') or []) if str(item or '').strip()]",
+      "    keys = [resolve_skill_command_key(item) for item in raw_commands]",
+      "    missing = [raw_commands[index] for index, key in enumerate(keys) if not key]",
+      "    keys = [key for key in keys if key]",
+      "    instruction = str(payload.get('instruction') or '')",
+      "    task_id = str(payload.get('taskId') or 'openclawpro-oneshot')",
+      "    message = None",
+      "    loaded = []",
+      "    if not missing and len(keys) == 1:",
+      "        message = build_skill_invocation_message(keys[0], instruction, task_id=task_id)",
+      "        loaded = [str((commands.get(keys[0]) or {}).get('name') or keys[0].lstrip('/'))] if message else []",
+      "    elif not missing and len(keys) > 1:",
+      "        identifiers = [str((commands.get(key) or {}).get('skill_dir') or (commands.get(key) or {}).get('name') or key.lstrip('/')) for key in keys]",
+      "        prompt, loaded, missing_from_prompt = build_preloaded_skills_prompt(identifiers, task_id=task_id)",
+      "        missing.extend([str(item) for item in missing_from_prompt])",
+      "        message = '\\n\\n'.join(part for part in (prompt, instruction) if part) if not missing else None",
+      "    result.update({'found': bool(message), 'commands': keys, 'loaded': loaded, 'missing': missing, 'message': message or ''})",
+      "print('__UCLAW_SKILL_JSON__' + json.dumps(result, ensure_ascii=False))"
+    ].join("\n");
+    return new Promise((resolve, reject) => {
+      const child = child_process.spawn(python, ["-c", script], {
+        cwd: path$1.join(getAppRoot(), "data", ".hermes"),
+        env: this.getHermesEnv(),
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+        finish(reject, new Error("Hermes skill command bridge timed out"));
+      }, 45000);
+      child.stdout?.on("data", (chunk) => {
+        stdout += Buffer.from(chunk).toString("utf8");
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr = (stderr + Buffer.from(chunk).toString("utf8")).slice(-8000);
+      });
+      child.once("error", (error) => finish(reject, error));
+      child.once("exit", (code) => {
+        if (code !== 0) {
+          finish(reject, new Error((stderr || stdout || `Hermes skill bridge exited ${code}`).trim()));
+          return;
+        }
+        const line = stdout.split(/\r?\n/).reverse().find(
+          (item) => item.startsWith("__UCLAW_SKILL_JSON__")
+        );
+        if (!line) {
+          finish(reject, new Error("Hermes skill bridge returned no structured result"));
+          return;
+        }
+        try {
+          finish(resolve, JSON.parse(line.slice("__UCLAW_SKILL_JSON__".length)));
+        } catch (error) {
+          finish(reject, error);
+        }
+      });
+      child.stdin?.end(JSON.stringify(payload));
+    });
+  }
+  async listHermesSkillCommands(options = {}) {
+    const now = Date.now();
+    if (!options.force && this._skillCommandCache && now - this._skillCommandCacheAt < 60000) {
+      return this._skillCommandCache;
+    }
+    const result = await this.runHermesSkillCommandBridge({ action: "list" });
+    const skills = Array.isArray(result?.skills) ? result.skills : [];
+    this._skillCommandCache = skills;
+    this._skillCommandCacheAt = now;
+    return skills;
+  }
+  async prepareHermesSkillInvocation(commands, instruction, taskId) {
+    const result = await this.runHermesSkillCommandBridge({
+      action: "invoke",
+      commands,
+      instruction,
+      taskId: taskId || "openclawpro-oneshot"
+    });
+    if (!result?.found) {
+      const missing = Array.isArray(result?.missing) ? result.missing.join("、") : "未知技能";
+      throw new Error("Hermes 无法完整加载所选技能：" + missing);
+    }
+    return result;
   }
   async chat(options = {}) {
     const message = typeof options.message === "string" ? options.message.trim() : "";
@@ -23680,6 +23802,240 @@ function registerIPCHandlers({ gateway }) {
   electron.ipcMain.handle("store-set", async (_, { key, value }) => {
     runtimeStore[key] = value;
     return { ok: true };
+  });
+  let openClawChatSkillCache = null;
+  let openClawChatSkillCacheAt = 0;
+
+  async function runOpenClawSkillsCli() {
+    const openClawEntry = path$1.join(
+      getAppRoot(),
+      "runtime",
+      "node_modules",
+      "openclaw",
+      "openclaw.mjs"
+    );
+    if (!fs$1.existsSync(openClawEntry)) {
+      throw new Error("OpenClaw official CLI was not found: " + openClawEntry);
+    }
+    const command = getPortableNodeChildCommand(openClawEntry, ["skills", "list", "--json"]);
+    return new Promise((resolve, reject) => {
+      const openClawRoot = path$1.join(getDataRoot(), ".openclaw");
+      const child = child_process.spawn(command.command, command.args, {
+        cwd: getAppRoot(),
+        env: {
+          ...command.env,
+          OPENCLAW_HOME: openClawRoot,
+          OPENCLAW_STATE_DIR: openClawRoot,
+          HOME: path$1.join(openClawRoot, "home"),
+          USERPROFILE: path$1.join(openClawRoot, "home")
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback(value);
+      };
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+        }
+        finish(reject, new Error("OpenClaw official skill scan timed out"));
+      }, 45000);
+      child.stdout?.on("data", (chunk) => {
+        stdout += Buffer.from(chunk).toString("utf8");
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr = (stderr + Buffer.from(chunk).toString("utf8")).slice(-8000);
+      });
+      child.once("error", (error) => finish(reject, error));
+      child.once("exit", (code) => {
+        if (code !== 0) {
+          finish(reject, new Error((stderr || stdout || `OpenClaw skill scan exited ${code}`).trim()));
+          return;
+        }
+        try {
+          finish(resolve, JSON.parse(stdout.trim()));
+        } catch (error) {
+          finish(reject, error);
+        }
+      });
+    });
+  }
+
+  async function listPortableChatSkillCatalog() {
+    await requestPortableSkillRepositoryReconcile({ reason: "chat-skill-catalog" });
+    const canonicalRoot = path$1.join(getAppRoot(), "skills");
+    const discovery = await runPortableSkillMetadataDiscovery(canonicalRoot);
+    return (discovery.packages || []).map((item) => ({
+      id: String(item.relativeName || item.packageName || item.name),
+      packageId: String(item.relativeName || item.packageName || item.name),
+      name: String(item.name || item.packageName || ""),
+      command: "/skill " + String(item.name || item.packageName || ""),
+      description: String(item.description || ""),
+      source: "portable-skill-catalog",
+      invocable: false
+    })).filter((item) => item.name);
+  }
+
+  async function listOpenClawChatSkills(options = {}) {
+    const now = Date.now();
+    if (!options.force && openClawChatSkillCache && now - openClawChatSkillCacheAt < 60000) {
+      return openClawChatSkillCache;
+    }
+    try {
+      if (!gateway.isGatewayReady()) throw new Error("Gateway is not ready");
+      const result = await gatewayRpcViaMain(
+        "commands.list",
+        { agentId: "main", scope: "text", includeArgs: true },
+        { timeoutMs: 15000 }
+      );
+      const skills = (Array.isArray(result?.commands) ? result.commands : [])
+        .filter((item) => item?.source === "skill")
+        .map((item) => ({
+          id: String(item.key || item.name),
+          name: String(item.skillName || item.name || ""),
+          command: Array.isArray(item.textAliases) && item.textAliases[0]
+            ? String(item.textAliases[0])
+            : "/" + String(item.name || ""),
+          description: String(item.description || ""),
+          source: "openclaw-official-commands-list",
+          invocable: true
+        }))
+        .filter((item) => item.name);
+      if (skills.length) {
+        openClawChatSkillCache = skills;
+        openClawChatSkillCacheAt = now;
+        return skills;
+      }
+    } catch (error) {
+      console.warn("[chat-skills] OpenClaw commands.list unavailable:", error?.message || error);
+    }
+    try {
+      const official = await runOpenClawSkillsCli();
+      const skills = (Array.isArray(official?.skills) ? official.skills : [])
+        .filter((item) => item?.eligible && item?.userInvocable && item?.commandVisible)
+        .map((item) => ({
+          id: String(item.id || item.name),
+          name: String(item.name || ""),
+          command: "/skill " + String(item.name || ""),
+          description: String(item.description || ""),
+          source: "openclaw-official-skills-cli",
+          invocable: true
+        }))
+        .filter((item) => item.name);
+      if (skills.length) {
+        openClawChatSkillCache = skills;
+        openClawChatSkillCacheAt = now;
+        return skills;
+      }
+    } catch (error) {
+      console.warn("[chat-skills] OpenClaw official CLI unavailable:", error?.message || error);
+    }
+    return listPortableChatSkillCatalog();
+  }
+
+  async function loadChatSkillCatalog(mode, options = {}) {
+    if (mode === "hermes") {
+      return getHermesManager().listHermesSkillCommands(options);
+    }
+    if (mode === "openclaw") {
+      return listOpenClawChatSkills(options);
+    }
+    const [openclaw, hermes] = await Promise.all([
+      listOpenClawChatSkills(options),
+      getHermesManager().listHermesSkillCommands(options).catch((error) => {
+        console.warn("[chat-skills] Hermes official catalog unavailable:", error?.message || error);
+        return [];
+      })
+    ]);
+    const merged = /* @__PURE__ */ new Map();
+    for (const [agent, rows] of [["openclaw", openclaw], ["hermes", hermes]]) {
+      for (const row of rows) {
+        const key = String(row.name || "").trim().toLowerCase();
+        if (!key) continue;
+        const current = merged.get(key) || {
+          id: row.id || key,
+          name: row.name,
+          command: row.command,
+          description: row.description || "",
+          availability: { openclaw: false, hermes: false },
+          invocable: true,
+          source: "collaboration-catalog"
+        };
+        current.availability[agent] = row.invocable !== false;
+        if (!current.description && row.description) current.description = row.description;
+        merged.set(key, current);
+      }
+    }
+    return Array.from(merged.values());
+  }
+
+  electron.ipcMain.handle("list-chat-skills", async (_, payload = {}) => {
+    const mode = ["openclaw", "hermes", "collab"].includes(payload?.mode)
+      ? payload.mode
+      : "openclaw";
+    try {
+      const skills = await loadChatSkillCatalog(mode, { force: payload?.force === true });
+      return { ok: true, mode, skills };
+    } catch (error) {
+      return { ok: false, mode, error: error?.message || String(error), skills: [] };
+    }
+  });
+
+  electron.ipcMain.handle("prepare-chat-skill-request", async (_, payload = {}) => {
+    const mode = ["openclaw", "hermes", "collab"].includes(payload?.mode)
+      ? payload.mode
+      : "openclaw";
+    const selectedSkills = normalizeSelectedSkills(payload?.selectedSkills);
+    const instruction = String(payload?.instruction || "").trim();
+    try {
+      const [openclaw, hermes] = await Promise.all([
+        mode === "hermes" ? Promise.resolve([]) : listOpenClawChatSkills(),
+        mode === "openclaw"
+          ? Promise.resolve([])
+          : getHermesManager().listHermesSkillCommands().catch(() => [])
+      ]);
+      const route = routeCompleteSkillSet(mode, selectedSkills, {
+        openclaw,
+        hermes,
+        gatewayReady: gateway.isGatewayReady()
+      });
+      if (!route.ok) {
+        return { ...route, requestedMode: mode, displayInstruction: instruction };
+      }
+      let runtimeMessage = "";
+      if (route.executionAgent === "openclaw") {
+        runtimeMessage = buildOpenClawSkillMessage(route.selectedSkills, instruction);
+      } else {
+        const prepared = await getHermesManager().prepareHermesSkillInvocation(
+          route.selectedSkills.map((item) => item.command || item.name),
+          instruction,
+          payload?.taskId
+        );
+        runtimeMessage = prepared.message;
+      }
+      return {
+        ...route,
+        requestedMode: mode,
+        displayInstruction: instruction,
+        runtimeMessage
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        requestedMode: mode,
+        displayInstruction: instruction,
+        selectedSkills,
+        error: error?.message || String(error)
+      };
+    }
   });
   electron.ipcMain.handle("scan-local-skills", async () => {
     try {

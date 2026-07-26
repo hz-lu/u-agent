@@ -16,6 +16,7 @@ for (const required of [
   path.join(sourceDist, "main", "index.js"),
   path.join(sourceDist, "main", "skill-metadata.cjs"),
   path.join(sourceDist, "main", "skill-repository-worker.cjs"),
+  path.join(sourceDist, "main", "chat-skill-routing.cjs"),
   path.join(sourceDist, "preload", "index.js"),
   path.join(sourceDist, "assets", "assets", "main-DIeui7ZO.js"),
   path.join(sourceDist, "assets", "main-CAx6YYDG.css"),
