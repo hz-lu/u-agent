@@ -5,6 +5,7 @@ const projectRoot = path.resolve(import.meta.dirname, "..");
 const shellRoot = path.join(projectRoot, "src", "openclaw-shell-app");
 const files = {
   main: path.join(shellRoot, "dist", "main", "index.js"),
+  skillRepository: path.join(shellRoot, "dist", "main", "skill-repository-worker.cjs"),
   preload: path.join(shellRoot, "dist", "preload", "index.js"),
   renderer: path.join(shellRoot, "dist", "assets", "assets", "main-DIeui7ZO.js"),
   styles: path.join(shellRoot, "dist", "assets", "main-CAx6YYDG.css"),
@@ -26,6 +27,11 @@ const checks = [
   ["main", "OpenClaw model bridge status", "modelBridgeReady"],
   ["main", "OpenAI-compatible provider mapping", "openai-api"],
   ["main", "Portable OpenClaw config path rewrite", "codex-portable-openclaw-config-rewrite"],
+  ["main", "Portable skill repository lifecycle", "startPortableSkillRepositoryWorker"],
+  ["skillRepository", "Canonical root skill repository", "const canonicalRoot = path.join(portableRoot, \"skills\")"],
+  ["skillRepository", "OpenClaw native skill import", "openclaw-managed"],
+  ["skillRepository", "Hermes generated skill import", "hermes-local"],
+  ["skillRepository", "User modification preservation", "canonical-copy-modified"],
   ["preload", "Hermes start API", "ipcStartHermes"],
   ["preload", "Hermes status API", "ipcGetHermesStatus"],
   ["preload", "Hermes chat API", "ipcHermesChat"],

@@ -44,6 +44,11 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   // 鍚敤/绂佺敤 skill
   ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke("toggle-skill", { skillName, enabled }),
   ipcSyncHermesSkills: () => electron.ipcRenderer.invoke("sync-hermes-skills"),
+  onSkillRepositoryUpdated: (callback) => {
+    const listener = (_, report) => callback(report);
+    electron.ipcRenderer.on("skills-repository-updated", listener);
+    return () => electron.ipcRenderer.removeListener("skills-repository-updated", listener);
+  },
   ipcGetHermesLogs: (options) => electron.ipcRenderer.invoke("hermes:getLogs", options),
   ipcGetWeChatDiagnostics: () => electron.ipcRenderer.invoke("wechat:diagnostics"),
   // WeChat plugin

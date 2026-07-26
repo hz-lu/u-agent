@@ -154,7 +154,7 @@ function writeCleanData() {
     "  home: \"data/.hermes/home\"",
     "  logs: \"data/.hermes/logs\"",
     "  memories: \"data/.hermes/memories\"",
-    "  skills: \"data/.hermes/skills\"",
+    "  skills: \"../../skills\"",
     ""
   ].join("\n"));
   for (const dir of ["home", "config", "cache", "logs", "memories", "skills", "tmp", "cron", "sandboxes"]) {

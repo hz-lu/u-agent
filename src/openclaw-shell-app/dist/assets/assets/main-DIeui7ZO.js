@@ -14637,12 +14637,15 @@ const _sfc_main$t = {
     function handleSkillVisibilityChange() {
       if (!document.hidden) refreshLocalSkills();
     }
+    let stopRepositoryUpdates = null;
     onMounted(() => {
       refreshLocalSkills();
       document.addEventListener("visibilitychange", handleSkillVisibilityChange);
+      stopRepositoryUpdates = window.uclaw.onSkillRepositoryUpdated?.(() => refreshLocalSkills()) || null;
     });
     onUnmounted(() => {
       document.removeEventListener("visibilitychange", handleSkillVisibilityChange);
+      stopRepositoryUpdates?.();
     });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$t, [

@@ -604,7 +604,7 @@ class HermesManager {
       HERMES_HOME: data,
       HERMES_LOG_DIR: path$1.join(data, "logs"),
       HERMES_MEMORY_PATH: path$1.join(data, "memories"),
-      HERMES_SKILLS_PATH: path$1.join(data, "skills"),
+      HERMES_SKILLS_PATH: path$1.join(getAppRoot(), "skills"),
       TMP: path$1.join(data, "tmp"),
       TEMP: path$1.join(data, "tmp"),
       HERMES_BROWSER_OPENED: "1",
@@ -796,10 +796,11 @@ class HermesManager {
       });
     }
     try {
+      await requestPortableSkillRepositoryReconcile();
       const hermesConfig = this.ensurePortableSkillConfig();
       const config = readJsonSafe(path$1.join(getAppRoot(), "data", ".openclaw", "openclaw.json")) || {};
       const skillEntries = config?.skills?.entries || {};
-      const sourceRoots = getOpenClawSkillSourceRoots(config);
+      const sourceRoots = [path$1.join(getAppRoot(), "skills")];
       const sources = [];
       for (const rootDir of sourceRoots) {
         for (const item of findSkillSources(rootDir)) {
@@ -1093,7 +1094,7 @@ class HermesManager {
         "  home: " + JSON.stringify(path$1.join(data, "home")),
         "  logs: " + JSON.stringify(path$1.join(data, "logs")),
         "  memories: " + JSON.stringify(memoryDir),
-        "  skills: " + JSON.stringify(path$1.join(data, "skills")),
+        "  skills: " + JSON.stringify(path$1.join(getAppRoot(), "skills")),
         ""
       ].join("\n");
       fs$1.writeFileSync(configPath, yaml, "utf8");
@@ -1229,24 +1230,7 @@ class HermesManager {
     const nodeBin = process.platform === "win32" ? path$1.join(nodeDir, "node.exe") : path$1.join(nodeDir, "bin", "node");
     const npmBin = process.platform === "win32" ? path$1.join(nodeDir, "npm.cmd") : path$1.join(nodeDir, "bin", "npm");
     const data = path$1.join(getAppRoot(), "data", ".hermes");
-    const skillsRoot = path$1.join(data, "skills");
-    function countHermesSkills(rootDir) {
-      const seen = /* @__PURE__ */ new Set();
-      function walk(dir) {
-        if (!fs$1.existsSync(dir)) return;
-        for (const entry of fs$1.readdirSync(dir, { withFileTypes: true })) {
-          const full = path$1.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            if (fs$1.existsSync(path$1.join(full, "SKILL.md")) || fs$1.existsSync(path$1.join(full, "DESCRIPTION.md"))) seen.add(path$1.relative(rootDir, full).replace(/\\/g, "/"));
-            walk(full);
-          } else if (/^(SKILL|DESCRIPTION)\.md$/i.test(entry.name)) {
-            seen.add(path$1.relative(rootDir, dir).replace(/\\/g, "/") || entry.name);
-          }
-        }
-      }
-      walk(rootDir);
-      return seen.size;
-    }
+    const skillsRoot = path$1.join(getAppRoot(), "skills");
     function readJsonSafe(filePath) {
       try {
         if (!fs$1.existsSync(filePath)) return null;
@@ -1262,11 +1246,7 @@ class HermesManager {
     const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));
     const skillGrowthReady = !!skillGrowthReport?.ok || !!(skillReport?.ok && (skillReport?.visibleCount || 0) > 0 && (skillReport?.commandCount || 0) > 0);
     const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);
-    const skillCount = reportedSkillCount || (this._skillCountCache && Date.now() - this._skillCountCache.checkedAt < 60000 ? this._skillCountCache.count : fast ? 0 : (() => {
-      const count = countHermesSkills(skillsRoot);
-      this._skillCountCache = { checkedAt: Date.now(), count };
-      return count;
-    })());
+    const skillCount = reportedSkillCount || Number(portableSkillRepositoryLastReport?.canonicalPackageCount || 0);
     const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || "";
     return {
       status: this.status,
@@ -3543,6 +3523,112 @@ function ensurePortableOpenClawSkillConfig() {
     console.warn("[portable] failed to ensure OpenClaw skill config:", err instanceof Error ? err.message : String(err));
   }
 }
+let portableSkillRepositoryWorker = null;
+let portableSkillRepositoryBuffer = "";
+let portableSkillRepositoryStopping = false;
+let portableSkillRepositoryRestartCount = 0;
+let portableSkillRepositoryLastReport = null;
+const portableSkillRepositoryWaiters = [];
+function handlePortableSkillRepositoryReport(report) {
+  if (!report || report.type !== "skill-repository") return;
+  portableSkillRepositoryLastReport = report;
+  if (report.ok) {
+    portableSkillRepositoryRestartCount = 0;
+    if (report.changedCount > 0) {
+      console.log("[skill-repository] reconciled", JSON.stringify({ changedCount: report.changedCount, elapsedMs: report.elapsedMs }));
+      safeSend("skills-repository-updated", report);
+    }
+  } else {
+    console.error("[skill-repository] reconcile failed:", report.error || "unknown error");
+    safeSend("skills-repository-updated", report);
+  }
+  while (portableSkillRepositoryWaiters.length) {
+    const waiter = portableSkillRepositoryWaiters.shift();
+    clearTimeout(waiter.timer);
+    waiter.resolve(report);
+  }
+}
+function startPortableSkillRepositoryWorker() {
+  if (portableSkillRepositoryWorker && !portableSkillRepositoryWorker.killed) return portableSkillRepositoryWorker;
+  const workerScript = path$1.join(__dirname, "skill-repository-worker.cjs");
+  if (!fs$1.existsSync(workerScript)) {
+    console.warn("[skill-repository] worker is missing:", workerScript);
+    return null;
+  }
+  const bundledNode = process.platform === "win32" ? path$1.join(getAppRoot(), "runtime", "node.exe") : path$1.join(getAppRoot(), "runtime", "node");
+  const command = fs$1.existsSync(bundledNode) ? bundledNode : process.execPath;
+  const env2 = {
+    ...process.env,
+    OPENCLAW_PORTABLE_ROOT: getAppRoot(),
+    ELECTRON_RUN_AS_NODE: fs$1.existsSync(bundledNode) ? process.env.ELECTRON_RUN_AS_NODE || "" : "1"
+  };
+  portableSkillRepositoryStopping = false;
+  portableSkillRepositoryWorker = child_process.spawn(command, [workerScript, getAppRoot()], {
+    cwd: getAppRoot(),
+    env: env2,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true
+  });
+  portableSkillRepositoryWorker.stdout?.on("data", (chunk) => {
+    portableSkillRepositoryBuffer += Buffer.from(chunk).toString("utf8");
+    const lines = portableSkillRepositoryBuffer.split(/\r?\n/);
+    portableSkillRepositoryBuffer = lines.pop() || "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { handlePortableSkillRepositoryReport(JSON.parse(line)); } catch { console.warn("[skill-repository] invalid worker output:", line.slice(0, 500)); }
+    }
+  });
+  portableSkillRepositoryWorker.stderr?.on("data", (chunk) => {
+    console.warn("[skill-repository]", Buffer.from(chunk).toString("utf8").trim());
+  });
+  portableSkillRepositoryWorker.once("error", (error) => {
+    console.error("[skill-repository] worker error:", error.message);
+  });
+  portableSkillRepositoryWorker.once("exit", (code, signal) => {
+    portableSkillRepositoryWorker = null;
+    if (portableSkillRepositoryStopping) return;
+    console.warn("[skill-repository] worker exited:", code, signal || "");
+    while (portableSkillRepositoryWaiters.length) {
+      const waiter = portableSkillRepositoryWaiters.shift();
+      clearTimeout(waiter.timer);
+      waiter.resolve({ ok: false, exited: true, error: `skill repository worker exited (${code ?? signal ?? "unknown"})` });
+    }
+    if (portableSkillRepositoryRestartCount < 3) {
+      portableSkillRepositoryRestartCount += 1;
+      setTimeout(startPortableSkillRepositoryWorker, 1000 * portableSkillRepositoryRestartCount);
+    }
+  });
+  return portableSkillRepositoryWorker;
+}
+function requestPortableSkillRepositoryReconcile(timeoutMs = 30000) {
+  const worker = startPortableSkillRepositoryWorker();
+  if (!worker?.stdin?.writable) return Promise.resolve({ ok: false, skipped: true, error: "skill repository worker is unavailable" });
+  return new Promise((resolve) => {
+    const waiter = {
+      resolve,
+      timer: setTimeout(() => {
+        const index = portableSkillRepositoryWaiters.indexOf(waiter);
+        if (index >= 0) portableSkillRepositoryWaiters.splice(index, 1);
+        resolve({ ok: false, timeout: true, error: "skill repository reconcile timed out" });
+      }, timeoutMs)
+    };
+    portableSkillRepositoryWaiters.push(waiter);
+    worker.stdin.write("reconcile\n");
+  });
+}
+function stopPortableSkillRepositoryWorker() {
+  portableSkillRepositoryStopping = true;
+  const worker = portableSkillRepositoryWorker;
+  portableSkillRepositoryWorker = null;
+  if (worker && !worker.killed) {
+    try { worker.kill(); } catch {}
+  }
+  while (portableSkillRepositoryWaiters.length) {
+    const waiter = portableSkillRepositoryWaiters.shift();
+    clearTimeout(waiter.timer);
+    waiter.resolve({ ok: false, stopped: true });
+  }
+}
 function normalizeOpenClawPluginSkillLinks() {
   /* codex-openclaw-plugin-skill-link-normalize */
   try {
@@ -4042,6 +4128,7 @@ function setupLifecycle({ getGateway }) {
   electron.app.on("before-quit", async () => {
     console.log(`应用退出前事件触发`);
     electron.app.isQuitting = true;
+    stopPortableSkillRepositoryWorker();
     flushGatewayDiskLogs();
     if (hermesManager) {
       await hermesManager.stop();
@@ -23035,7 +23122,7 @@ function discoverPortableSkillPackages(config) {
   const packages = [];
   const invalidDirectories = [];
   const nameCounts = /* @__PURE__ */ new Map();
-  const roots = getOpenClawSkillSourceRoots(config);
+  const roots = [path$1.join(getAppRoot(), "skills")];
   for (let rootIndex = 0; rootIndex < roots.length; rootIndex += 1) {
     const rootDir = roots[rootIndex];
     if (!fs$1.existsSync(rootDir)) continue;
@@ -23332,6 +23419,7 @@ function registerIPCHandlers({ gateway }) {
   });
   electron.ipcMain.handle("scan-local-skills", async () => {
     try {
+      await requestPortableSkillRepositoryReconcile();
       let config = {};
       let skillEntries = {};
       if (fs$1.existsSync(configPath)) {
@@ -24472,6 +24560,7 @@ electron.app.whenReady().then(async () => {
   updateSplash("正在清理旧程序...", 4);
   await extractRuntime();
   await ensureOpenClawDirectories();
+  requestPortableSkillRepositoryReconcile().catch((error) => console.warn("[skill-repository] initial reconcile failed:", error?.message || error));
   updateSplash("正在加载微信插件...", 80);
   registerWechatIPCHandler({ gateway });
   updateSplash("正在加载飞书插件...", 85);
