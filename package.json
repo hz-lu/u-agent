@@ -31,6 +31,7 @@
     "verify:windows-shared-skills": "node scripts/verify-windows-shared-skill-closure.mjs",
     "verify:portable-skill-repository": "node scripts/verify-portable-skill-repository.mjs",
     "verify:skill-metadata": "node scripts/verify-skill-metadata.mjs",
+    "verify:chat-skill-commands": "node scripts/verify-chat-skill-commands.mjs",
     "verify:openclaw": "node scripts/verify-openclaw-runtime.mjs",
     "verify:shared-backports": "node scripts/verify-macos-shared-backports.mjs",
     "diagnose:hermes-startup": "node scripts/diagnose-hermes-startup.mjs",

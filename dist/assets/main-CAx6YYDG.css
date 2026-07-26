@@ -6247,6 +6247,33 @@ html.light .history-empty[data-v-48c21956] {
   color: var(--text-secondary);
   font-size: 12px;
 }
+.skill-command-menu[data-v-351db0cb] {
+  width: min(720px, calc(100vw - 140px));
+  max-height: min(420px, 50vh);
+  overflow-y: auto;
+}
+.skill-command-item[data-v-351db0cb] {
+  align-items: flex-start;
+}
+.skill-command-item .cmd-menu-name[data-v-351db0cb] {
+  min-width: 180px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-command-item .cmd-menu-desc[data-v-351db0cb] {
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.skill-command-state[data-v-351db0cb] {
+  padding: 14px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
 .action-btn[data-v-351db0cb] {
   width: 32px;
   height: 32px;

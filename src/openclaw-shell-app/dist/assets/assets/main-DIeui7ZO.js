@@ -25361,9 +25361,12 @@ const _sfc_main$c = {
   props: {
     modelValue: { type: String, default: "" },
     isReady: { type: Boolean, default: false },
-    sending: { type: Boolean, default: false }
+    sending: { type: Boolean, default: false },
+    skills: { type: Array, default: () => [] },
+    skillMode: { type: String, default: "openclaw" },
+    skillsLoading: { type: Boolean, default: false }
   },
-  emits: ["update:modelValue", "send", "stop", "command"],
+  emits: ["update:modelValue", "send", "stop", "command", "skill", "requestSkills"],
   setup(__props, { expose: __expose, emit: __emit }) {
     const props = __props;
     const emit2 = __emit;
@@ -25378,10 +25381,29 @@ const _sfc_main$c = {
     const fileInputRef = /* @__PURE__ */ ref(null);
     const cmdWrapRef = /* @__PURE__ */ ref(null);
     const commands = [
+      { name: "/skill", desc: "选择并调用已安装技能" },
       { name: "/new", desc: "新建会话" },
       { name: "/reset", desc: "重置当前会话" },
       { name: "/stop", desc: "停止生成" }
     ];
+    const visibleCommands = computed(() => props.skillMode === "collab" ? commands.filter((item) => item.name !== "/skill") : commands);
+    function resolveSkillQuery(value) {
+      if (props.skillMode === "collab") return null;
+      const text2 = String(value || "").trim();
+      if (text2.length >= 2 && "/skill".startsWith(text2.toLowerCase())) return "";
+      const match = text2.match(/^\/skill(?:\s+([\s\S]*))?$/i);
+      return match ? String(match[1] || "").trim().toLowerCase() : null;
+    }
+    const skillQuery = computed(() => {
+      return resolveSkillQuery(localText.value);
+    });
+    const filteredSkills = computed(() => {
+      const query = skillQuery.value;
+      if (query === null) return [];
+      const rows = Array.isArray(props.skills) ? props.skills : [];
+      if (!query) return rows;
+      return rows.filter((skill) => [skill?.name, skill?.command, skill?.description].some((value) => String(value || "").toLowerCase().includes(query)));
+    });
     const placeholderText = computed(() => {
       if (props.sending) return "\u7b49\u5f85\u56de\u590d...";
       if (!props.isReady) return "等待 Gateway 就绪...";
@@ -25405,6 +25427,10 @@ const _sfc_main$c = {
     function handleInput(e) {
       const val = e.target.value;
       emit2("update:modelValue", val);
+      if (resolveSkillQuery(val) !== null) {
+        showCmdMenu.value = false;
+        emit2("requestSkills");
+      }
       autoResize();
     }
     function handleKeydown(e) {
@@ -25522,9 +25548,23 @@ const _sfc_main$c = {
     }
     function executeCommand(cmdName) {
       showCmdMenu.value = false;
+      if (cmdName === "/skill" && props.skillMode !== "collab") {
+        localText.value = "/skill";
+        emit2("update:modelValue", "/skill");
+        emit2("requestSkills");
+        nextTick(() => textareaRef.value?.focus());
+        return;
+      }
       emit2("command", cmdName);
       localText.value = "";
       emit2("update:modelValue", "");
+    }
+    function executeSkill(skill) {
+      if (!skill?.command) return;
+      emit2("skill", skill);
+      localText.value = "";
+      emit2("update:modelValue", "");
+      nextTick(autoResize);
     }
     __expose({ focus: () => textareaRef.value?.focus() });
     function handleClickOutside(e) {
@@ -25634,7 +25674,7 @@ const _sfc_main$c = {
                 ], -1)
               ])], 8, _hoisted_10$4),
               showCmdMenu.value ? (openBlock(), createElementBlock("div", _hoisted_11$3, [
-                (openBlock(), createElementBlock(Fragment, null, renderList(commands, (cmd) => {
+                (openBlock(true), createElementBlock(Fragment, null, renderList(visibleCommands.value, (cmd) => {
                   return createBaseVNode("div", {
                     key: cmd.name,
                     class: "cmd-menu-item",
@@ -25643,7 +25683,28 @@ const _sfc_main$c = {
                     createBaseVNode("span", _hoisted_13$2, toDisplayString(cmd.name), 1),
                     createBaseVNode("span", _hoisted_14$2, toDisplayString(cmd.desc), 1)
                   ], 8, _hoisted_12$2);
-                }), 64))
+                }), 128))
+              ])) : createCommentVNode("", true),
+              skillQuery.value !== null ? (openBlock(), createElementBlock("div", {
+                key: 1,
+                class: "cmd-menu skill-command-menu"
+              }, [
+                __props.skillsLoading ? (openBlock(), createElementBlock("div", {
+                  key: "loading",
+                  class: "skill-command-state"
+                }, "正在读取可用技能...")) : filteredSkills.value.length ? (openBlock(true), createElementBlock(Fragment, { key: "skills" }, renderList(filteredSkills.value, (skill) => {
+                  return openBlock(), createElementBlock("div", {
+                    key: skill.command,
+                    class: "cmd-menu-item skill-command-item",
+                    onClick: ($event) => executeSkill(skill)
+                  }, [
+                    createBaseVNode("span", _hoisted_13$2, toDisplayString(skill.command), 1),
+                    createBaseVNode("span", _hoisted_14$2, toDisplayString(skill.description || skill.name || "暂无技能介绍"), 1)
+                  ], 8, _hoisted_12$2);
+                }), 128)) : (openBlock(), createElementBlock("div", {
+                  key: "empty",
+                  class: "skill-command-state"
+                }, "没有找到匹配的可调用技能"))
               ])) : createCommentVNode("", true)
             ], 512),
             withDirectives(createBaseVNode("textarea", {
@@ -26189,6 +26250,8 @@ const _sfc_main$9 = {
     const hermesActiveTaskId = /* @__PURE__ */ ref("");
     const collabActiveTaskId = /* @__PURE__ */ ref("");
     const hermesProgressLines = /* @__PURE__ */ ref([]);
+    const chatSkillCatalogs = /* @__PURE__ */ ref({ openclaw: [], hermes: [] });
+    const chatSkillLoadingMode = /* @__PURE__ */ ref("");
     const messagesArea = /* @__PURE__ */ ref(null);
     const messagesEnd = /* @__PURE__ */ ref(null);
     const autoScroll = /* @__PURE__ */ ref(true);
@@ -26230,6 +26293,25 @@ const _sfc_main$9 = {
       if (agentMode.value === "collab") return collabSending.value;
       return !!store.sending || !!store.hasPendingOpenClawMessage;
     });
+    const activeChatSkills = computed(() => agentMode.value === "collab" ? [] : chatSkillCatalogs.value[agentMode.value] || []);
+    const activeChatSkillsLoading = computed(() => chatSkillLoadingMode.value === agentMode.value);
+    let unsubscribeChatSkillUpdates = null;
+    async function loadChatSkills(force = false) {
+      const mode = agentMode.value;
+      if (mode === "collab" || !window.uclaw?.ipcListChatSkills) return;
+      if (!force && chatSkillCatalogs.value[mode]?.length) return;
+      if (chatSkillLoadingMode.value === mode) return;
+      chatSkillLoadingMode.value = mode;
+      try {
+        const result = await window.uclaw.ipcListChatSkills({ mode, force });
+        if (!result?.ok) throw new Error(result?.error || "技能命令读取失败");
+        chatSkillCatalogs.value = { ...chatSkillCatalogs.value, [mode]: Array.isArray(result.skills) ? result.skills : [] };
+      } catch (error) {
+        showToast("技能列表读取失败：" + (error?.message || error), true);
+      } finally {
+        if (chatSkillLoadingMode.value === mode) chatSkillLoadingMode.value = "";
+      }
+    }
     function isPlaceholderSessionModelId(modelId) {
       const text2 = String(modelId || "").trim();
       return !text2 || text2 === "cifu-tech-default" || text2.includes("请填写模型名称") || text2.toLowerCase() === "please-fill-model-name";
@@ -26276,6 +26358,11 @@ const _sfc_main$9 = {
       if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
       if (hermesActiveTaskId.value) resumeHermesTask(hermesActiveTaskId.value, "hermes");
       if (collabActiveTaskId.value) resumeHermesTask(collabActiveTaskId.value, "collab");
+      if (window.uclaw?.onSkillRepositoryUpdated) {
+        unsubscribeChatSkillUpdates = window.uclaw.onSkillRepositoryUpdated(() => {
+          chatSkillCatalogs.value = { openclaw: [], hermes: [] };
+        });
+      }
       nextTick(() => scrollToBottom());
     });
     async function handleRefreshModels() {
@@ -26971,6 +27058,10 @@ const _sfc_main$9 = {
           store.sendMessage(text2, attachments);
           scrollToBottom();
         },
+        skill(skill) {
+          if (skill?.command) store.sendMessage(skill.command);
+          scrollToBottom();
+        },
         command(cmd) {
           store.handleCommand(cmd);
           if (cmd === "/new" || cmd === "/reset") scrollToBottom();
@@ -26983,6 +27074,10 @@ const _sfc_main$9 = {
         send(text2, attachments) {
           hermesInputText.value = "";
           sendHermesMessage(text2, attachments);
+        },
+        skill(skill) {
+          hermesInputText.value = "";
+          if (skill?.command) sendHermesMessage(skill.command);
         },
         command(cmd) {
           if (cmd === "/new" || cmd === "/reset") {
@@ -27021,6 +27116,8 @@ const _sfc_main$9 = {
         },
         stop() {
           cancelActiveHermesTask("collab");
+        },
+        skill() {
         }
       }
     };
@@ -27032,6 +27129,9 @@ const _sfc_main$9 = {
     }
     function handleCommand(cmd) {
       currentChatAdapter().command(cmd);
+    }
+    function handleSkill(skill) {
+      currentChatAdapter().skill?.(skill);
     }
     function handleStop() {
       currentChatAdapter().stop();
@@ -27150,6 +27250,7 @@ const _sfc_main$9 = {
       window.removeEventListener("uclaw-hermes-chat-state", handleHermesStateEvent);
       window.removeEventListener("uclaw-active-model-changed", handleActiveModelChanged);
       if (window.uclaw?.ipcOffHermesChatProgress) window.uclaw.ipcOffHermesChatProgress(handleHermesChatProgress);
+      if (typeof unsubscribeChatSkillUpdates === "function") unsubscribeChatSkillUpdates();
     });
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$9, [
@@ -27346,10 +27447,15 @@ const _sfc_main$9 = {
                 "onUpdate:modelValue": ($event) => agentMode.value === "openclaw" ? unref(store).inputText = $event : hermesInputText.value = $event,
                 isReady: activeReady.value,
                 sending: activeSending.value,
+                skills: activeChatSkills.value,
+                skillMode: agentMode.value,
+                skillsLoading: activeChatSkillsLoading.value,
                 onSend: handleSend,
                 onStop: handleStop,
-                onCommand: handleCommand
-              }, null, 8, ["modelValue", "isReady", "sending"])
+                onCommand: handleCommand,
+                onSkill: handleSkill,
+                onRequestSkills: loadChatSkills
+              }, null, 8, ["modelValue", "isReady", "sending", "skills", "skillMode", "skillsLoading"])
             ])
           ])
         ])),

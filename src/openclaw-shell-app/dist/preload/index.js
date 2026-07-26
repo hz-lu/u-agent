@@ -41,6 +41,7 @@ electron.contextBridge.exposeInMainWorld("uclaw", {
   ipcOnGatewayLog: (callback) => electron.ipcRenderer.on("gateway-log", (_, log) => callback(log)),
   // 鎵爜鏈湴skill
   ipcScanLocalSkills: () => electron.ipcRenderer.invoke("scan-local-skills"),
+  ipcListChatSkills: (options) => electron.ipcRenderer.invoke("list-chat-skills", options),
   // 鍚敤/绂佺敤 skill
   ipcToggleSkill: (skillName, enabled) => electron.ipcRenderer.invoke("toggle-skill", { skillName, enabled }),
   ipcSyncHermesSkills: () => electron.ipcRenderer.invoke("sync-hermes-skills"),
