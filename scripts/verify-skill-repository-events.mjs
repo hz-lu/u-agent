@@ -9,6 +9,12 @@ const portableRoot = fs.mkdtempSync(path.join(os.tmpdir(), "openclawpro-skill-ev
 const sourceSkill = path.join(portableRoot, "data", ".openclaw", "skills", "event-skill");
 const canonicalSkill = path.join(portableRoot, "skills", "event-skill");
 
+for (let index = 0; index < 300; index += 1) {
+  const directory = path.join(portableRoot, "skills", `existing-${String(index).padStart(3, "0")}`);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, "SKILL.md"), `---\nname: existing-${index}\ndescription: fixture\n---\n`, "utf8");
+}
+
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
@@ -79,6 +85,7 @@ function waitForReport(predicate, timeoutMs = 10000) {
 try {
   const startup = await waitForReport((report) => report.trigger === "startup");
   assert(startup.ok, startup.error || "startup reconcile failed");
+  assert(startup.canonicalPackageCount === undefined, "live worker startup must not traverse the canonical repository for diagnostics");
   await new Promise((resolve) => setTimeout(resolve, 750));
 
   const startedAt = Date.now();

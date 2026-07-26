@@ -271,7 +271,9 @@ async function reconcile(forceEmit = false, reason = "requested") {
     suppressCanonicalWatch();
     await writeManifest(manifest);
     const changedCount = changes.added.length + changes.updated.length + changes.removed.length + changes.conflicts.length;
-    const canonicalPackageCount = changedCount || once || forceEmit ? await countCanonicalPackages() : void 0;
+    // The live worker never walks the entire canonical repository just to count it.
+    // UI metadata scans own that diagnostic; --once keeps the count for release tests.
+    const canonicalPackageCount = once ? await countCanonicalPackages() : void 0;
     const report = { type: "skill-repository", ok: true, portableRoot, canonicalRoot, discovered: discovered.length, canonicalPackageCount, changedCount, changes, trigger: reason, catalogChanged: changedCount > 0 || reason === "watch", elapsedMs: Date.now() - startedAt };
     if (changedCount || once || forceEmit) emit(report);
     return report;

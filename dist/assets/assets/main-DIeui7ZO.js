@@ -25581,7 +25581,7 @@ const _sfc_main$c = {
       }
       localText.value = "";
       emit2("update:modelValue", "");
-      showSkillMenu.value = true;
+      showSkillMenu.value = false;
       nextTick(autoResize);
     }
     function removeSelectedSkill(skill) {

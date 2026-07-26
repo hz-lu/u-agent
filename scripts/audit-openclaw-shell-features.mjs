@@ -30,6 +30,8 @@ const checks = [
   ["main", "Portable skill repository lifecycle", "startPortableSkillRepositoryWorker"],
   ["main", "Deferred skill repository startup", "setTimeout(() => {\n    startPortableSkillRepositoryWorker();\n  }, 12e3)"],
   ["main", "Graceful portable process shutdown", "shutdownComplete = true"],
+  ["main", "Non-blocking Hermes memory sampling", "child_process.spawn(\"tasklist\""],
+  ["main", "Persistent Hermes chat skill cache", "hermes-chat-skills.json"],
   ["skillRepository", "Canonical root skill repository", "const canonicalRoot = path.join(portableRoot, \"skills\")"],
   ["skillRepository", "OpenClaw native skill import", "openclaw-managed"],
   ["skillRepository", "Hermes generated skill import", "hermes-local"],
@@ -57,6 +59,7 @@ const checks = [
   ["renderer", "Deferred multi-skill selection", "selectedSkills.value"],
   ["renderer", "Compatibility-aware collaborative skill routing", "sendCollaborativeSkillMessage"],
   ["styles", "Hermes chat topbar overflow guard", ".hermes-chat-status"],
+  ["styles", "Offline document overflow reset", "#app {\n  width: 100%;"],
   ["renderer", "Hermes environment checks", "Hermes 模型桥接"],
   ["styles", "Home Hermes styles", "home-hermes-card"],
   ["styles", "Hermes chat styles", "hermes-chat-status"],
@@ -73,6 +76,8 @@ const results = checks.map(([fileKey, name, marker]) => ({
 }));
 
 const failed = results.filter((item) => !item.ok);
+if (source.main.includes('execFileSync("tasklist"')) failed.push({ name: "Synchronous tasklist regression", file: path.relative(projectRoot, files.main), ok: false, marker: 'execFileSync("tasklist")' });
+if (source.styles.includes("div {\n  transition: all")) failed.push({ name: "Global div transition regression", file: path.relative(projectRoot, files.styles), ok: false, marker: "div transition: all" });
 console.log(JSON.stringify({
   ok: failed.length === 0,
   checkedAt: new Date().toISOString(),

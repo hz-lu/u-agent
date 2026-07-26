@@ -516,6 +516,9 @@ class HermesManager {
     this._lastStatusSnapshot = null;
     this._lastStatusAt = 0;
     this._statusRefreshInFlight = null;
+    this._memoryRefreshInFlight = null;
+    this._lastMemoryRefreshAt = 0;
+    this._portablePythonPath = "";
     this._skillCommandCache = null;
     this._skillCommandCacheAt = 0;
   }
@@ -567,9 +570,10 @@ class HermesManager {
     return { command: this.getHermesBin(), args };
   }
   getPortablePython() {
+    if (this._portablePythonPath) return this._portablePythonPath;
     const root = this.getPortableRoot();
     const exact = path$1.join(root, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
-    if (fs$1.existsSync(exact)) return exact;
+    if (fs$1.existsSync(exact)) return this._portablePythonPath = exact;
     const pyRoot = path$1.join(root, "python");
     const stack = [pyRoot];
     while (stack.length) {
@@ -578,7 +582,7 @@ class HermesManager {
       for (const entry of fs$1.readdirSync(dir, { withFileTypes: true })) {
         const full = path$1.join(dir, entry.name);
         if (entry.isDirectory()) stack.push(full);
-        else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return full;
+        else if (entry.isFile() && entry.name.toLowerCase() === "python.exe") return this._portablePythonPath = full;
       }
     }
     return path$1.join(root, "venv", "Scripts", "python.exe");
@@ -1308,16 +1312,36 @@ class HermesManager {
       this.memoryMb = 0;
       return;
     }
-    try {
-      if (process.platform === "win32") {
-        const raw = child_process.execFileSync("tasklist", ["/FI", "PID eq " + pid, "/FO", "CSV", "/NH"], { encoding: "utf8", timeout: 3000 });
-        const fields = [...raw.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
-        const memKb = Number((fields[4] || "").replace(/[^0-9]/g, ""));
-        if (Number.isFinite(memKb) && memKb > 0) this.memoryMb = Math.round(memKb / 1024 * 10) / 10;
-      }
-    } catch {
-      this.memoryMb = 0;
-    }
+    if (process.platform !== "win32" || this._memoryRefreshInFlight || Date.now() - this._lastMemoryRefreshAt < 15e3) return;
+    this._lastMemoryRefreshAt = Date.now();
+    const child = child_process.spawn("tasklist", ["/FI", "PID eq " + pid, "/FO", "CSV", "/NH"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    });
+    this._memoryRefreshInFlight = child;
+    let raw = "";
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (this._memoryRefreshInFlight === child) this._memoryRefreshInFlight = null;
+    };
+    child.stdout?.on("data", (chunk) => {
+      raw = (raw + Buffer.from(chunk).toString("utf8")).slice(-4096);
+    });
+    child.once("error", finish);
+    child.once("exit", () => {
+      const fields = [...raw.matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+      const memKb = Number((fields[4] || "").replace(/[^0-9]/g, ""));
+      if (Number.isFinite(memKb) && memKb > 0) this.memoryMb = Math.round(memKb / 1024 * 10) / 10;
+      finish();
+    });
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish();
+    }, 3e3);
+    timer.unref?.();
   }
   async start(options = {}) {
     this.ensurePortableSkillConfig();
@@ -1760,10 +1784,34 @@ class HermesManager {
   async listHermesSkillCommands(options = {}) {
     const now = Date.now();
     if (!options.force && this._skillCommandCache && now - this._skillCommandCacheAt < 6e4) return this._skillCommandCache;
+    const cachePath = path$1.join(getAppRoot(), "data", ".agent-hub", "hermes-chat-skills.json");
+    const skillsRoot = path$1.join(getAppRoot(), "skills");
+    if (!options.force) {
+      try {
+        const [cacheText, rootStat] = await Promise.all([
+          fs$1.promises.readFile(cachePath, "utf8"),
+          fs$1.promises.stat(skillsRoot)
+        ]);
+        const cached = JSON.parse(cacheText);
+        const rootMtimeMs = Math.round(rootStat.mtimeMs);
+        if (cached?.rootMtimeMs === rootMtimeMs && Array.isArray(cached.skills) && cached.skills.length) {
+          this._skillCommandCache = cached.skills;
+          this._skillCommandCacheAt = now;
+          return cached.skills;
+        }
+      } catch {}
+    }
     const result = await this.runHermesSkillCommandBridge({ action: "list" });
     const skills = Array.isArray(result?.skills) ? result.skills : [];
     this._skillCommandCache = skills;
     this._skillCommandCacheAt = now;
+    if (skills.length) {
+      try {
+        const rootMtimeMs = Math.round((await fs$1.promises.stat(skillsRoot)).mtimeMs);
+        await fs$1.promises.mkdir(path$1.dirname(cachePath), { recursive: true });
+        await fs$1.promises.writeFile(cachePath, JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), rootMtimeMs, skills }) + "\n", "utf8");
+      } catch {}
+    }
     return skills;
   }
   async resolveHermesSkillInvocation(message) {
@@ -3666,6 +3714,7 @@ function handlePortableSkillRepositoryReport(report) {
         hermesManager._skillCommandCache = null;
         hermesManager._skillCommandCacheAt = 0;
       }
+      fs$1.promises.rm(path$1.join(getAppRoot(), "data", ".agent-hub", "hermes-chat-skills.json"), { force: true }).catch(() => {});
       setTimeout(() => invalidateOpenClawSessionSkillSnapshots(), 250).unref?.();
       safeSend("skills-repository-updated", report);
     }

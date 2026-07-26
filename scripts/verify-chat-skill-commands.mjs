@@ -44,6 +44,8 @@ for (const marker of [
 assert(source.styles.includes(".skill-command-menu"), "skill command menu styles are missing");
 assert(source.styles.includes(".selected-skill-chip"), "selected skill chip styles are missing");
 assert(!source.renderer.includes('props.skillMode === "collab" ? commands.filter'), "collaboration mode must expose the compatibility-aware skill picker");
+const executeSkillBlock = source.renderer.slice(source.renderer.indexOf("function executeSkill(skill)"), source.renderer.indexOf("function removeSelectedSkill(skill)"));
+assert(executeSkillBlock.includes("showSkillMenu.value = false"), "selecting a skill must close the large picker while retaining selected chips");
 
 console.log(JSON.stringify({
   ok: true,
