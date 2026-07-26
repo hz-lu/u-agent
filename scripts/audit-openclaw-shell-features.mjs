@@ -60,6 +60,8 @@ const checks = [
   ["renderer", "Compatibility-aware collaborative skill routing", "sendCollaborativeSkillMessage"],
   ["styles", "Hermes chat topbar overflow guard", ".hermes-chat-status"],
   ["styles", "Offline document overflow reset", "#app {\n  width: 100%;"],
+  ["styles", "Main workspace flex width containment", "flex: 1 1 0;\n  width: 0;\n  min-width: 0;\n  margin-left: 256px;"],
+  ["styles", "AI chat viewport containment", "height: calc(100vh - 80px);\n  flex: 1 1 auto;"],
   ["renderer", "Hermes environment checks", "Hermes 模型桥接"],
   ["styles", "Home Hermes styles", "home-hermes-card"],
   ["styles", "Hermes chat styles", "hermes-chat-status"],

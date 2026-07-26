@@ -6666,16 +6666,22 @@ html.light .history-empty[data-v-48c21956] {
   opacity: 0.9;
 }.ai-chat-view[data-v-f16be7f3] {
   height: calc(100vh - 80px);
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   background: var(--background);
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 .chat-layout[data-v-f16be7f3] {
   flex: 1;
   display: flex;
   min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .session-panel[data-v-f16be7f3] {
   width: 260px;
@@ -6839,6 +6845,8 @@ html.light .history-empty[data-v-48c21956] {
 }
 .messages-area[data-v-f16be7f3] {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 16px;
@@ -8110,6 +8118,8 @@ to {
 }
 .main-app-layout {
   min-height: 100vh;
+  width: 100%;
+  overflow: hidden;
   background: var(--background);
   color: var(--text-primary);
 }
@@ -8124,7 +8134,9 @@ to {
   overflow: hidden;
 }
 .main-app-main-wrapper {
-  flex: 1;
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
   margin-left: 256px;
   margin-top: 38px;
   display: flex;
@@ -8133,6 +8145,8 @@ to {
 }
 .main-app-page-content {
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   padding-top: 42px;
   overflow: hidden;
   display: flex;
@@ -8395,6 +8409,18 @@ to {
 .user-content-wrap[data-v-fd7d93a3],
 .ai-body[data-v-fd7d93a3] {
   overflow: visible;
+}
+
+.message-bubble[data-v-fd7d93a3],
+.user-message[data-v-fd7d93a3],
+.ai-message[data-v-fd7d93a3] {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.user-content-wrap[data-v-fd7d93a3] {
+  flex: 0 1 auto;
 }
 
 .user-content-wrap[data-v-fd7d93a3],
