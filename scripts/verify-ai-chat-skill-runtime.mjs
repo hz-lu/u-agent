@@ -15,6 +15,10 @@ function assertRenderer(relativePath) {
   const source = read(relativePath);
   assert(source.includes("isComposingInput"), `${relativePath}: ChatInput must track IME composition state`);
   assert(source.includes("e.isComposing") && source.includes("e.keyCode === 229"), `${relativePath}: Enter send must ignore IME/composition confirmation`);
+  assert(source.includes("submit: { type: Function, required: true }"), `${relativePath}: ChatInput must use an explicit async submit prop`);
+  assert(source.includes("if (!result?.accepted) return result"), `${relativePath}: rejected sends must preserve text, attachments, and selected skills`);
+  assert(source.includes("function selectChatSkill(skill)"), `${relativePath}: ChatInput must support selecting skills without sending`);
+  assert(source.includes("selectedSkills.value = []"), `${relativePath}: accepted sends must clear selected skill tags`);
   assert(source.includes("onCompositionstart") && source.includes("onCompositionend"), `${relativePath}: textarea must wire composition events`);
   assert(source.includes("function previewAttachment(att)"), `${relativePath}: pending attachments need a preview handler`);
   assert(source.includes("onClick: ($event) => previewAttachment(att)"), `${relativePath}: attachment chips must open preview on click`);

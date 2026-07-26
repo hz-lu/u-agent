@@ -25337,6 +25337,18 @@ const _hoisted_3$b = {
   key: 0,
   class: "attachments-preview"
 };
+const _hoisted_skill_tags = {
+  key: 0,
+  class: "selected-skill-tags"
+};
+const _hoisted_skill_name = { class: "selected-skill-name" };
+const _hoisted_skill_menu = {
+  key: 0,
+  class: "skill-picker-menu"
+};
+const _hoisted_skill_menu_status = { class: "skill-picker-status" };
+const _hoisted_skill_item_name = { class: "skill-picker-name" };
+const _hoisted_skill_item_desc = { class: "skill-picker-desc" };
 const _hoisted_4$9 = ["src"];
 const _hoisted_5$9 = {
   key: 1,
@@ -25361,15 +25373,24 @@ const _sfc_main$c = {
   props: {
     modelValue: { type: String, default: "" },
     isReady: { type: Boolean, default: false },
-    sending: { type: Boolean, default: false }
+    sending: { type: Boolean, default: false },
+    mode: { type: String, default: "openclaw" },
+    submit: { type: Function, required: true }
   },
-  emits: ["update:modelValue", "send", "stop", "command"],
+  emits: ["update:modelValue", "stop", "command"],
   setup(__props, { expose: __expose, emit: __emit }) {
     const props = __props;
     const emit2 = __emit;
     const localText = /* @__PURE__ */ ref(props.modelValue);
     const showCmdMenu = /* @__PURE__ */ ref(false);
     const attachments = /* @__PURE__ */ ref([]);
+    const selectedSkills = /* @__PURE__ */ ref([]);
+    const chatSkillCatalog = /* @__PURE__ */ ref([]);
+    const showSkillMenu = /* @__PURE__ */ ref(false);
+    const skillLoading = /* @__PURE__ */ ref(false);
+    const skillError = /* @__PURE__ */ ref("");
+    const skillQuery = /* @__PURE__ */ ref("");
+    const submitting = /* @__PURE__ */ ref(false);
     const dragOver = /* @__PURE__ */ ref(false);
     const dragCounter = /* @__PURE__ */ ref(0);
     const isComposingInput = /* @__PURE__ */ ref(false);
@@ -25377,7 +25398,9 @@ const _sfc_main$c = {
     const textareaRef = /* @__PURE__ */ ref(null);
     const fileInputRef = /* @__PURE__ */ ref(null);
     const cmdWrapRef = /* @__PURE__ */ ref(null);
+    let skillLoadGeneration = 0;
     const commands = [
+      { name: "/skill", desc: "选择一个或多个技能" },
       { name: "/new", desc: "新建会话" },
       { name: "/reset", desc: "重置当前会话" },
       { name: "/stop", desc: "停止生成" }
@@ -25388,11 +25411,24 @@ const _sfc_main$c = {
       return "输入消息... (Enter 发送)";
     });
     const canSend = computed(() => {
-      return !!(localText.value.trim() || attachments.value.length);
+      return !submitting.value && !!(localText.value.trim() || attachments.value.length || selectedSkills.value.length);
+    });
+    const filteredChatSkills = computed(() => {
+      const query = skillQuery.value.trim().toLowerCase();
+      if (!query) return chatSkillCatalog.value;
+      return chatSkillCatalog.value.filter((skill) => [skill?.name, skill?.command, skill?.description].some(
+        (value) => String(value || "").toLowerCase().includes(query)
+      ));
     });
     watch(() => props.modelValue, (v) => {
       localText.value = v;
       autoResize();
+    });
+    watch(() => props.mode, () => {
+      skillLoadGeneration += 1;
+      chatSkillCatalog.value = [];
+      skillError.value = "";
+      showSkillMenu.value = false;
     });
     function autoResize() {
       nextTick(() => {
@@ -25405,7 +25441,61 @@ const _sfc_main$c = {
     function handleInput(e) {
       const val = e.target.value;
       emit2("update:modelValue", val);
+      updateSkillQuery(val);
       autoResize();
+    }
+    async function loadChatSkills() {
+      const listSkills = window.uclaw?.ipcListChatSkills;
+      if (!listSkills) {
+        skillError.value = "当前程序壳不支持会话技能目录。";
+        return;
+      }
+      skillLoading.value = true;
+      skillError.value = "";
+      const generation = ++skillLoadGeneration;
+      const mode = props.mode;
+      try {
+        const result = await listSkills({ mode });
+        if (generation !== skillLoadGeneration || mode !== props.mode) return;
+        if (!result?.ok) throw new Error(result?.error || "技能目录加载失败");
+        chatSkillCatalog.value = Array.isArray(result.skills) ? result.skills : [];
+      } catch (error) {
+        if (generation !== skillLoadGeneration) return;
+        chatSkillCatalog.value = [];
+        skillError.value = error?.message || String(error);
+      } finally {
+        if (generation === skillLoadGeneration) skillLoading.value = false;
+      }
+    }
+    function updateSkillQuery(value) {
+      const match = String(value || "").match(/^\/ski(?:ll?)?(?:\s+(.*))?$/i);
+      if (!match) {
+        showSkillMenu.value = false;
+        return;
+      }
+      skillQuery.value = match[1] || "";
+      showCmdMenu.value = false;
+      showSkillMenu.value = true;
+      if (!chatSkillCatalog.value.length && !skillLoading.value) loadChatSkills();
+    }
+    function skillIdentity(skill) {
+      return String(skill?.name || skill?.command || "").trim().toLowerCase();
+    }
+    function selectChatSkill(skill) {
+      const identity = skillIdentity(skill);
+      if (!identity || skill?.invocable === false) return;
+      if (!selectedSkills.value.some((item) => skillIdentity(item) === identity)) {
+        selectedSkills.value = [...selectedSkills.value, skill];
+      }
+      localText.value = "";
+      emit2("update:modelValue", "");
+      skillQuery.value = "";
+      showSkillMenu.value = false;
+      nextTick(() => textareaRef.value?.focus());
+    }
+    function removeSelectedSkill(identity) {
+      selectedSkills.value = selectedSkills.value.filter((skill) => skillIdentity(skill) !== identity);
+      nextTick(() => textareaRef.value?.focus());
     }
     function handleKeydown(e) {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -25415,6 +25505,7 @@ const _sfc_main$c = {
       }
       if (e.key === "Escape") {
         showCmdMenu.value = false;
+        showSkillMenu.value = false;
       }
     }
     function handleCompositionStart() {
@@ -25508,20 +25599,38 @@ const _sfc_main$c = {
         window.uclaw?.ipcOpenExternalUrl?.(url) || window.open(url, "_blank");
       }
     }
-    function handleSend() {
+    async function handleSend() {
       const text2 = localText.value.trim();
       if (!canSend.value) return;
-      emit2("send", text2 || "", attachments.value.length ? [...attachments.value] : void 0);
-      localText.value = "";
-      emit2("update:modelValue", "");
-      attachments.value = [];
-      nextTick(autoResize);
+      submitting.value = true;
+      try {
+        const result = await props.submit(text2 || "", attachments.value.length ? [...attachments.value] : void 0, [...selectedSkills.value]);
+        if (!result?.accepted) return result;
+        localText.value = "";
+        emit2("update:modelValue", "");
+        attachments.value = [];
+        selectedSkills.value = [];
+        showSkillMenu.value = false;
+        nextTick(autoResize);
+        return result;
+      } catch (error) {
+        return { accepted: false, error: error?.message || String(error) };
+      } finally {
+        submitting.value = false;
+      }
     }
     function toggleCmdMenu() {
       showCmdMenu.value = !showCmdMenu.value;
     }
     function executeCommand(cmdName) {
       showCmdMenu.value = false;
+      if (cmdName === "/skill") {
+        localText.value = "/skill ";
+        emit2("update:modelValue", localText.value);
+        updateSkillQuery(localText.value);
+        nextTick(() => textareaRef.value?.focus());
+        return;
+      }
       emit2("command", cmdName);
       localText.value = "";
       emit2("update:modelValue", "");
@@ -25531,6 +25640,7 @@ const _sfc_main$c = {
       if (cmdWrapRef.value && !cmdWrapRef.value.contains(e.target)) {
         showCmdMenu.value = false;
       }
+      if (!e.target?.closest?.(".chat-input-area")) showSkillMenu.value = false;
     }
     onMounted(() => document.addEventListener("click", handleClickOutside));
     onUnmounted(() => document.removeEventListener("click", handleClickOutside));
@@ -25577,6 +25687,36 @@ const _sfc_main$c = {
                 }, "✕", 8, _hoisted_7$7)
               ], 2);
             }), 128))
+          ])) : createCommentVNode("", true),
+          selectedSkills.value.length ? (openBlock(), createElementBlock("div", _hoisted_skill_tags, [
+            (openBlock(true), createElementBlock(Fragment, null, renderList(selectedSkills.value, (skill) => {
+              return openBlock(), createElementBlock("div", {
+                key: skillIdentity(skill),
+                class: "selected-skill-tag"
+              }, [
+                createBaseVNode("span", _hoisted_skill_name, toDisplayString(skill.name), 1),
+                createBaseVNode("button", {
+                  type: "button",
+                  class: "selected-skill-remove",
+                  title: "移除技能",
+                  onClick: ($event) => removeSelectedSkill(skillIdentity(skill))
+                }, "×", 8, _hoisted_7$7)
+              ]);
+            }), 128))
+          ])) : createCommentVNode("", true),
+          showSkillMenu.value ? (openBlock(), createElementBlock("div", _hoisted_skill_menu, [
+            skillLoading.value ? (openBlock(), createElementBlock("div", _hoisted_skill_menu_status, "正在读取技能...")) : skillError.value ? (openBlock(), createElementBlock("div", _hoisted_skill_menu_status, toDisplayString(skillError.value), 1)) : filteredChatSkills.value.length ? (openBlock(true), createElementBlock(Fragment, { key: 2 }, renderList(filteredChatSkills.value, (skill) => {
+              return openBlock(), createElementBlock("button", {
+                key: skill.id || skill.name,
+                type: "button",
+                class: normalizeClass(["skill-picker-item", { disabled: skill.invocable === false }]),
+                disabled: skill.invocable === false,
+                onClick: ($event) => selectChatSkill(skill)
+              }, [
+                createBaseVNode("span", _hoisted_skill_item_name, toDisplayString(skill.name), 1),
+                createBaseVNode("span", _hoisted_skill_item_desc, toDisplayString(skill.description || (skill.invocable === false ? "待同步后可调用" : skill.command)), 1)
+              ], 10, _hoisted_12$2);
+            }), 128)) : (openBlock(), createElementBlock("div", _hoisted_skill_menu_status, "没有匹配的技能"))
           ])) : createCommentVNode("", true),
           createBaseVNode("div", _hoisted_8$7, [
             createBaseVNode("button", {
@@ -27027,8 +27167,14 @@ const _sfc_main$9 = {
     function currentChatAdapter() {
       return chatAdapters[agentMode.value] || chatAdapters.openclaw;
     }
-    function handleSend(text2, attachments) {
-      currentChatAdapter().send(text2, attachments);
+    async function handleSend(text2, attachments, selectedSkills = []) {
+      try {
+        currentChatAdapter().send(text2, attachments, selectedSkills);
+        return { accepted: true };
+      } catch (error) {
+        showToast(error?.message || String(error), true);
+        return { accepted: false, error: error?.message || String(error) };
+      }
     }
     function handleCommand(cmd) {
       currentChatAdapter().command(cmd);
@@ -27346,10 +27492,11 @@ const _sfc_main$9 = {
                 "onUpdate:modelValue": ($event) => agentMode.value === "openclaw" ? unref(store).inputText = $event : hermesInputText.value = $event,
                 isReady: activeReady.value,
                 sending: activeSending.value,
-                onSend: handleSend,
+                mode: agentMode.value,
+                submit: handleSend,
                 onStop: handleStop,
                 onCommand: handleCommand
-              }, null, 8, ["modelValue", "isReady", "sending"])
+              }, null, 8, ["modelValue", "isReady", "sending", "mode"])
             ])
           ])
         ])),

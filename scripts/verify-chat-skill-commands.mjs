@@ -8,6 +8,7 @@ const sourceRoot = path.join(projectRoot, "src", "openclaw-shell-app", "dist");
 const routingPath = path.join(sourceRoot, "main", "chat-skill-routing.cjs");
 const mainPath = path.join(sourceRoot, "main", "index.js");
 const preloadPath = path.join(sourceRoot, "preload", "index.js");
+const rendererPath = path.join(sourceRoot, "assets", "assets", "main-DIeui7ZO.js");
 const require = createRequire(import.meta.url);
 
 const {
@@ -75,6 +76,7 @@ assert.equal((multiMessage.match(/skill-a/g) || []).length, 1);
 
 const main = fs.readFileSync(mainPath, "utf8");
 const preload = fs.readFileSync(preloadPath, "utf8");
+const renderer = fs.readFileSync(rendererPath, "utf8");
 for (const marker of [
   'item?.source === "skill"',
   "runHermesSkillCommandBridge",
@@ -91,5 +93,22 @@ assert(preload.includes("ipcListChatSkills"));
 assert(preload.includes("ipcPrepareChatSkillRequest"));
 assert(!main.includes("expandedSkillPrompt="));
 assert(!main.includes("runtimeMessage="));
+
+for (const marker of [
+  "submit: { type: Function, required: true }",
+  "const selectedSkills = /* @__PURE__ */ ref([])",
+  'name: "/skill"',
+  "window.uclaw?.ipcListChatSkills",
+  "function selectChatSkill(skill)",
+  "function removeSelectedSkill(identity)",
+  "await props.submit(text2 || \"\", attachments.value.length ? [...attachments.value] : void 0, [...selectedSkills.value])",
+  "if (!result?.accepted) return result"
+]) {
+  assert(renderer.includes(marker), `renderer is missing ${marker}`);
+}
+const selectSkillBody = renderer.match(/function selectChatSkill\(skill\) \{([\s\S]*?)\n    \}/)?.[1] || "";
+assert(selectSkillBody, "renderer is missing selectChatSkill body");
+assert(!selectSkillBody.includes("handleSend("), "selecting a skill must not send the message");
+assert(!selectSkillBody.includes("props.submit("), "selecting a skill must not call submit");
 
 console.log("Chat skill command checks passed");

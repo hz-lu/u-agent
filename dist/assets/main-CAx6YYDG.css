@@ -6132,6 +6132,44 @@ html.light .history-empty[data-v-48c21956] {
   flex-wrap: wrap;
   padding-bottom: 2px;
 }
+.selected-skill-tags[data-v-351db0cb] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 2px;
+}
+.selected-skill-tag[data-v-351db0cb] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--blue) 45%, var(--border));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--blue) 10%, var(--surface));
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.selected-skill-name[data-v-351db0cb] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.selected-skill-remove[data-v-351db0cb] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  line-height: 16px;
+}
+.selected-skill-remove[data-v-351db0cb]:hover {
+  background: var(--surface-variant);
+  color: var(--text-primary);
+}
 .attachment-chip[data-v-351db0cb] {
   display: flex;
   align-items: center;
@@ -6259,6 +6297,61 @@ html.light .history-empty[data-v-48c21956] {
   min-width: 56px;
 }
 .cmd-menu-desc[data-v-351db0cb] {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.skill-picker-menu[data-v-351db0cb] {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 210;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.skill-picker-item[data-v-351db0cb] {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.skill-picker-item[data-v-351db0cb]:hover {
+  background: var(--surface-variant);
+}
+.skill-picker-item.disabled[data-v-351db0cb] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.skill-picker-name[data-v-351db0cb] {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  font-weight: 600;
+}
+.skill-picker-desc[data-v-351db0cb] {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.skill-picker-status[data-v-351db0cb] {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
   color: var(--text-secondary);
   font-size: 12px;
 }
