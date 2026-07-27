@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { ensureMacIcon } from "./lib/macos-icon.mjs";
+import { verifyMacosHermesRuntime } from "./verify-macos-hermes-runtime.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const platformId = process.env.MACOS_PORTABLE_PLATFORM || (process.arch === "arm64" ? "macos-arm64" : "macos-x64");
@@ -422,20 +423,10 @@ function shouldCopyHermesPath(relPath) {
 function rewriteHermesVenvScripts(root) {
   const binDir = path.join(root, "venv", "bin");
   if (!fs.existsSync(binDir)) return;
-  const pythonWrapper = [
-    "#!/bin/sh",
-    "DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
-    "ROOT=\"$(CDPATH= cd -- \"$DIR/../..\" && pwd)\"",
-    "export PYTHONHOME=\"$ROOT/python\"",
-    "export PYTHONPATH=\"$ROOT/venv/lib/python3.12/site-packages${PYTHONPATH:+:$PYTHONPATH}\"",
-    "exec \"$ROOT/python/bin/python3.12\" \"$@\"",
-    ""
-  ].join("\n");
   for (const name of ["python", "python3", "python3.12"]) {
     const filePath = path.join(binDir, name);
     fs.rmSync(filePath, { force: true });
-    fs.writeFileSync(filePath, pythonWrapper, "utf8");
-    fs.chmodSync(filePath, 0o755);
+    fs.symlinkSync("../../python/bin/python3.12", filePath);
   }
   for (const entry of fs.readdirSync(binDir, { withFileTypes: true })) {
     const filePath = path.join(binDir, entry.name);
@@ -685,6 +676,10 @@ function main() {
   const exfatReport = exfatCompat ? makeExfatCompatible() : null;
   signMacosApp();
   const report = runtimeReport();
+  const hermesReport = verifyMacosHermesRuntime(releaseRoot, platformId.endsWith("arm64") ? "arm64" : "x64");
+  if (!hermesReport.ok) {
+    fail(`macOS Hermes runtime 校验失败:\n${hermesReport.errors.map((item) => `- ${item}`).join("\n")}`);
+  }
   writeReleaseDocs(report, exfatReport);
   console.log(JSON.stringify({
     ok: true,
@@ -693,6 +688,7 @@ function main() {
     app: path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName)),
     launcher: usbRootLayout ? path.join(releaseRoot, appBundleName) : path.join(releaseRoot, "OpenClawPro.command"),
     runtime: report,
+    hermesRuntime: hermesReport,
     exfat: exfatReport
   }, null, 2));
 }

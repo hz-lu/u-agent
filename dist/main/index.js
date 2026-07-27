@@ -647,6 +647,7 @@ class HermesManager {
       if (fs$1.existsSync(venvPython)) return venvPython;
       const venvPython3 = path$1.join(root, "venv", "bin", "python3");
       if (fs$1.existsSync(venvPython3)) return venvPython3;
+      return venvPython;
     }
     const exact = path$1.join(root, "python", "cpython-3.12.13-windows-x86_64-none", "python.exe");
     if (fs$1.existsSync(exact)) return exact;
@@ -679,6 +680,7 @@ class HermesManager {
       if (!fs$1.existsSync(dir)) fs$1.mkdirSync(dir, { recursive: true });
     }
     const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
+    const pythonHome = process.platform === "win32" ? "" : path$1.join(root, "python");
     return {
       ...process.env,
       COPYFILE_DISABLE: "1",
@@ -695,6 +697,7 @@ class HermesManager {
       HERMES_BROWSER_OPENED: "1",
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
+      ...pythonHome ? { PYTHONHOME: pythonHome } : {},
       PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path$1.delimiter),
       [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path$1.delimiter)
     };
