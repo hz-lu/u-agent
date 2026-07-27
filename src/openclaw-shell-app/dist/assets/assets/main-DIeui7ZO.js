@@ -26466,7 +26466,7 @@ const _sfc_main$9 = {
           if (report?.catalogChanged) openFreshSessionForSkillCatalog();
         });
       }
-      nextTick(() => scrollToBottom());
+      nextTick(() => scrollToBottom(true));
     });
     async function handleRefreshModels() {
       loadingModels.value = true;
@@ -26525,7 +26525,7 @@ const _sfc_main$9 = {
       if (mode === "hermes" && collabSending.value) collabRunState.value = "协同仍在后台执行，可切回协同查看。";
       if (mode === "collab" && hermesSending.value) hermesRunState.value = "Hermes 仍在后台执行，可切回 Hermes 查看。";
       localStorage.setItem("uclaw_agent_mode", mode);
-      nextTick(() => scrollToBottom(0));
+      nextTick(() => scrollToBottom(true));
     }
     function saveHermesSession() {
       try {
@@ -26583,7 +26583,7 @@ const _sfc_main$9 = {
       }
     }
     function handleHermesStateEvent() {
-      nextTick(() => scrollToBottom(0));
+      nextTick(() => scrollToBottom());
     }
     function handleActiveModelChanged() {
       const sk = store.activeSessionKey;
@@ -26772,7 +26772,8 @@ const _sfc_main$9 = {
         appendHermesAssistant("已停止当前 Hermes 任务。", "Hermes Agent", "done");
       }
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
     }
     async function runHermesChatBackground(payload) {
       const taskId = `hermes-chat-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -26995,7 +26996,8 @@ const _sfc_main$9 = {
           status: "done"
         }];
         saveHermesSession();
-        scrollToBottom();
+        autoScroll.value = true;
+        scrollToBottom(true);
       }
       const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (hermesSending.value) {
@@ -27100,7 +27102,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       hermesRunState.value = "协同执行中：OpenClaw 先出草案，Hermes 再复核整理。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       const beforeLength = store.currentMessages.length;
       try {
         if (!store.isReady && !gatewayAvailable.value) {
@@ -27161,7 +27164,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       collabRunState.value = "正在根据技能兼容性选择执行方。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       const openClawCompatible = selected.every((skill) => skill.executors?.openclaw !== false && !!commandForSkill(skill, "openclaw"));
       const hermesCompatible = selected.every((skill) => skill.executors?.hermes !== false && !!commandForSkill(skill, "hermes"));
       let openClawError = "";
@@ -27230,7 +27234,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       collabRunState.value = "协同执行中：OpenClaw 生成内部草案，Hermes 输出统一最终答案。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       const beforeLength = store.currentMessages.length;
       try {
         if (!store.isReady && !gatewayAvailable.value) {
@@ -27296,11 +27301,15 @@ const _sfc_main$9 = {
       openclaw: {
         send(text2, attachments, skills = []) {
           store.sendMessage(buildOpenClawSkillRequest(text2, skills), attachments);
-          scrollToBottom();
+          autoScroll.value = true;
+          scrollToBottom(true);
         },
         command(cmd) {
           store.handleCommand(cmd);
-          if (cmd === "/new" || cmd === "/reset") scrollToBottom();
+          if (cmd === "/new" || cmd === "/reset") {
+            autoScroll.value = true;
+            scrollToBottom(true);
+          }
         },
         stop() {
           store.abortMessage();
@@ -27423,8 +27432,10 @@ const _sfc_main$9 = {
       }
       showClearDialog.value = false;
     }
-    function scrollToBottom() {
+    function scrollToBottom(force = false) {
+      if (!force && !autoScroll.value) return;
       nextTick(() => {
+        if (!force && !autoScroll.value) return;
         const el = messagesArea.value;
         if (!el) return;
         el.scrollTop = el.scrollHeight;
@@ -27438,7 +27449,7 @@ const _sfc_main$9 = {
     }
     watch(() => store.activeSessionKey, () => {
       autoScroll.value = true;
-      scrollToBottom(0);
+      scrollToBottom(true);
     });
     // OpenClaw 流式消息不做深度调试拷贝，避免 Hermes 长任务并发时拖慢渲染进程。
     watch(() => store.currentMessages.length, () => {
@@ -27450,7 +27461,7 @@ const _sfc_main$9 = {
       const last = msgs[msgs.length - 1];
       return last?.content?.slice(-20) || "";
     }, () => {
-      if (autoScroll.value) scrollToBottom(0);
+      if (autoScroll.value) scrollToBottom();
     });
     function handleProfileSave(p2) {
       store.saveProfile(p2);

@@ -5109,7 +5109,7 @@ function patchHermesSingleFlightQueue(mainFile, rendererFile) {
     ].join("\n");
     sendBlock = queueHelpers + sendBlock.replace(
       '    async function sendHermesMessage(text2, attachments = []) {\n      const content = (text2 || "").trim();\n      if (!content) return;',
-      '    async function sendHermesMessage(text2, attachments = [], options = {}) {\n      const content = (text2 || "").trim();\n      if (!content) return;\n      const now = Date.now();\n      const userMessageId = options.userMessageId || `hermes-user-${now}-${Math.random().toString(36).slice(2, 7)}`;\n      if (!options.userMessageId) {\n        hermesMessages.value = [...hermesMessages.value, { id: userMessageId, role: "user", content, attachments, timestamp: now, status: "done" }];\n        saveHermesSession();\n        scrollToBottom();\n      }'
+      '    async function sendHermesMessage(text2, attachments = [], options = {}) {\n      const content = (text2 || "").trim();\n      if (!content) return;\n      const now = Date.now();\n      const userMessageId = options.userMessageId || `hermes-user-${now}-${Math.random().toString(36).slice(2, 7)}`;\n      if (!options.userMessageId) {\n        hermesMessages.value = [...hermesMessages.value, { id: userMessageId, role: "user", content, attachments, timestamp: now, status: "done" }];\n        saveHermesSession();\n        autoScroll.value = true;\n        scrollToBottom(true);\n      }'
     );
     sendBlock = sendBlock.replace(
       /        if \(hermesSending\.value && !recovered\) \{[\s\S]*?\n          return;\n        \}/,
@@ -5188,8 +5188,36 @@ function patchJuly27ScrollHermesAndPortablePython(mainFile, rendererFile, styles
   );
   rendererSource = rendererSource.replace(
     /    function scrollToBottom\(duration = 300\) \{[\s\S]*?\n    \}\n    function handleScroll\(\) \{/,
-    '    function scrollToBottom() {\n      nextTick(() => {\n        const el = messagesArea.value;\n        if (!el) return;\n        el.scrollTop = el.scrollHeight;\n      });\n    }\n    function handleScroll() {'
+    '    function scrollToBottom(force = false) {\n      if (!force && !autoScroll.value) return;\n      nextTick(() => {\n        if (!force && !autoScroll.value) return;\n        const el = messagesArea.value;\n        if (!el) return;\n        el.scrollTop = el.scrollHeight;\n      });\n    }\n    function handleScroll() {'
   );
+  rendererSource = rendererSource.replace('      nextTick(() => scrollToBottom());', '      nextTick(() => scrollToBottom(true));');
+  rendererSource = rendererSource.replace('      nextTick(() => scrollToBottom(0));', '      nextTick(() => scrollToBottom(true));');
+  rendererSource = rendererSource.replace(
+    '    function handleHermesStateEvent() {\n      nextTick(() => scrollToBottom(0));\n    }',
+    '    function handleHermesStateEvent() {\n      nextTick(() => scrollToBottom());\n    }'
+  );
+  rendererSource = rendererSource.replace(
+    '          store.sendMessage(buildOpenClawSkillRequest(text2, skills), attachments);\n          scrollToBottom();',
+    '          store.sendMessage(buildOpenClawSkillRequest(text2, skills), attachments);\n          autoScroll.value = true;\n          scrollToBottom(true);'
+  );
+  rendererSource = rendererSource.replace(
+    '          if (cmd === "/new" || cmd === "/reset") scrollToBottom();',
+    '          if (cmd === "/new" || cmd === "/reset") {\n            autoScroll.value = true;\n            scrollToBottom(true);\n          }'
+  );
+  rendererSource = rendererSource.replace(
+    '      autoScroll.value = true;\n      scrollToBottom(0);',
+    '      autoScroll.value = true;\n      scrollToBottom(true);'
+  );
+  for (const runStateLine of [
+    '      hermesRunState.value = "协同执行中：OpenClaw 先出草案，Hermes 再复核整理。";',
+    '      collabRunState.value = "正在根据技能兼容性选择执行方。";',
+    '      collabRunState.value = "协同执行中：OpenClaw 生成内部草案，Hermes 输出统一最终答案。";'
+  ]) {
+    rendererSource = rendererSource.replace(
+      runStateLine + '\n      saveHermesSession();\n      scrollToBottom();',
+      runStateLine + '\n      saveHermesSession();\n      autoScroll.value = true;\n      scrollToBottom(true);'
+    );
+  }
   rendererSource = rendererSource.replace(
     '      const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;',
     '      const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;\n      if (status?.skillsReady && skillSourceCount > 0 && !status.skillVisibleCount) status.skillVisibleCount = skillSourceCount;'

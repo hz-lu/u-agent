@@ -62,6 +62,7 @@ const checks = [
   ["renderer", "Hermes chat persistence", "uclaw_hermes_chat_state"],
   ["renderer", "Hermes bounded pending messages", "hermesPendingMessages.value.length >= 3"],
   ["renderer", "Hermes task-scoped progress", "payload.taskId !== hermesActiveTaskId.value"],
+  ["renderer", "User-controlled chat autoscroll", "if (!force && !autoScroll.value) return"],
   ["renderer", "Hermes skill sync UI", "同步到 Hermes"],
   ["renderer", "Chat /skill picker", "skill-command-menu"],
   ["renderer", "Deferred multi-skill selection", "selectedSkills.value"],
