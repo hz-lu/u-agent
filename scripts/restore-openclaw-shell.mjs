@@ -4945,6 +4945,102 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   fs.writeFileSync(rendererFile, rendererSource, "utf8");
 }
 
+function patchJuly27ScrollHermesAndPortablePython(mainFile, rendererFile, stylesFile) {
+  let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
+  mainSource = mainSource.replace(
+    '  const usbRuntime = path$1.join(getAppRoot(), "runtime");\n  const paths = [];',
+    '  const usbRuntime = path$1.join(getAppRoot(), "runtime");\n  const portablePythonDir = path$1.join(usbRuntime, "python3");\n  const paths = [];'
+  );
+  mainSource = mainSource.replace(
+    '  const runtimePath = paths[0] || RUNTIME_DIR;\n  const dnsHookPath = writeDnsHook();',
+    '  const runtimePath = paths[0] || RUNTIME_DIR;\n  if (fs$1.existsSync(path$1.join(portablePythonDir, process.platform === "win32" ? "python.exe" : "bin/python3"))) {\n    paths.unshift(portablePythonDir);\n  }\n  const dnsHookPath = writeDnsHook();'
+  );
+  mainSource = mainSource.replace(
+    '    OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, "workspace"),',
+    '    OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, "workspace"),\n    OPENCLAW_PORTABLE_ROOT: getAppRoot(),'
+  );
+  mainSource = mainSource.replace(
+    '    PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,\n    NODE_OPTIONS: nodeOptions,',
+    '    PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,\n    PYTHONUTF8: "1",\n    PYTHONIOENCODING: "utf-8",\n    PYTHONNOUSERSITE: "1",\n    NODE_OPTIONS: nodeOptions,'
+  );
+  mainSource = mainSource.replace(
+    '  verifyEnvironment() {\n    return this.snapshot({ fast: true });\n  }',
+    '  async verifyEnvironment() {\n    return await this.getStatus({ fast: false });\n  }'
+  );
+  const reportAnchor = '    const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));\n    const skillGrowthReady = !!skillGrowthReport?.ok || !!(skillReport?.ok && (skillReport?.visibleCount || 0) > 0 && (skillReport?.commandCount || 0) > 0);';
+  const reportReplacement = [
+    '    const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));',
+    '    let hermesConfigText = "";',
+    '    try {',
+    '      const hermesConfigPath = path$1.join(data, "config.yaml");',
+    '      if (fs$1.existsSync(hermesConfigPath)) hermesConfigText = fs$1.readFileSync(hermesConfigPath, "utf8");',
+    '    } catch {',
+    '    }',
+    '    const memoryConfigured = /memory_enabled\\s*:\\s*true/i.test(hermesConfigText);',
+    '    const skillGrowthConfigured = /auto_skill_enabled\\s*:\\s*true/i.test(hermesConfigText);',
+    '    const skillGrowthReady = skillGrowthConfigured || !!skillGrowthReport?.ok;'
+  ].join("\n");
+  mainSource = mainSource.replace(reportAnchor, reportReplacement);
+  mainSource = mainSource.replace(
+    '    const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);\n    const skillCount = reportedSkillCount || Number(portableSkillRepositoryLastReport?.canonicalPackageCount || 0);',
+    '    let rootSkillCount = 0;\n    try {\n      if (fs$1.existsSync(skillsRoot)) rootSkillCount = fs$1.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;\n    } catch {\n    }\n    const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);\n    const skillCount = reportedSkillCount || Number(portableSkillRepositoryLastReport?.canonicalPackageCount || 0) || rootSkillCount;'
+  );
+  mainSource = mainSource.replace(
+    '      memoryReady: !!memoryReport?.ok,\n      memoryWritable: !!memoryReport?.memoryWritable && !!memoryReport?.userWritable,',
+    '      memoryReady: memoryConfigured || !!memoryReport?.ok,\n      memoryWritable: memoryConfigured && fs$1.existsSync(data) || !!memoryReport?.memoryWritable && !!memoryReport?.userWritable,'
+  );
+  fs.writeFileSync(mainFile, mainSource, "utf8");
+
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+  rendererSource = rendererSource.replace(
+    '        if (lines[lines.length - 1] !== text) hermesProgressLines.value = [...lines, text];',
+    '        if (lines[lines.length - 1] !== text) hermesProgressLines.value = [...lines, text];\n        upsertHermesProgress(text, payload?.stage || "working", "running");'
+  );
+  rendererSource = rendererSource.replace(
+    /    function scrollToBottom\(duration = 300\) \{[\s\S]*?\n    \}\n    function handleScroll\(\) \{/,
+    '    function scrollToBottom() {\n      nextTick(() => {\n        const el = messagesArea.value;\n        if (!el) return;\n        el.scrollTop = el.scrollHeight;\n      });\n    }\n    function handleScroll() {'
+  );
+  rendererSource = rendererSource.replace(
+    '      const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;',
+    '      const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;\n      if (status?.skillsReady && skillSourceCount > 0 && !status.skillVisibleCount) status.skillVisibleCount = skillSourceCount;'
+  );
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+
+  let stylesSource = fs.readFileSync(stylesFile, "utf8");
+  if (!stylesSource.includes("codex-page-scroll-containers")) {
+    stylesSource += [
+      "",
+      "/* codex-page-scroll-containers */",
+      ".main-app-layout {",
+      "  height: 100vh;",
+      "}",
+      ".main-app-main-wrapper {",
+      "  height: calc(100vh - 38px);",
+      "  min-height: 0;",
+      "}",
+      ".main-app-page-content {",
+      "  min-height: 0;",
+      "  overflow-y: auto;",
+      "  overflow-x: hidden;",
+      "}",
+      ".home-home-view[data-v-16de922d],",
+      ".model-model-view[data-v-f6e73322],",
+      ".env-check-env-check-view[data-v-45f28415] {",
+      "  flex: 1 1 auto;",
+      "  min-height: 0;",
+      "  overflow-y: auto;",
+      "  overflow-x: hidden;",
+      "  box-sizing: border-box;",
+      "}",
+      ".home-home-view[data-v-16de922d] > * {",
+      "  flex-shrink: 0;",
+      "}",
+      ""
+    ].join("\n");
+  }
+  fs.writeFileSync(stylesFile, stylesSource, "utf8");
+}
+
 if (!fs.existsSync(backupRoot)) {
   console.error(`Baseline app is missing: ${backupRoot}`);
   process.exit(1);
@@ -5014,6 +5110,7 @@ copyFile(path.join(backupRoot, "dist", "assets", "main-CAx6YYDG.css"), rendererS
 patchHermesHomeStyles(rendererStyleTarget);
 patchHermesAiChatStyles(rendererStyleTarget);
 patchHermesUxStyles(rendererStyleTarget);
+patchJuly27ScrollHermesAndPortablePython(mainProcessTarget, rendererTarget, rendererStyleTarget);
 copyFile(baselineHtml, path.join(targetApp, "dist", "assets", "main", "index.html"));
 copyFile(baselineHermesFrame, path.join(targetApp, "dist", "assets", "hermes-frame.html"));
 

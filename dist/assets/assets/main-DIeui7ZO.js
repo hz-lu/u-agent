@@ -13098,6 +13098,7 @@ function useEnvCheck() {
       updateItem("hermes-model", status?.modelBridgeReady ? { status: "pass", statusText: "已桥接", detail: status.modelBridge } : { status: "warn", statusText: "未配置", detail: "在模型配置页应用模型后，Hermes 自动复用" });
       updateItem("hermes-memory", status?.memoryReady && status?.memoryWritable ? { status: "pass", statusText: "可读写", detail: `MEMORY ${status.memoryEntryCount || 0} 条；USER ${status.userMemoryEntryCount || 0} 条。报告：${status.memoryReportPath || "未生成"}` } : { status: "warn", statusText: "待验证", detail: status?.memoryReportPath || status?.memoryPath || "请启动 Hermes 后重新检查" });
       const skillSourceCount = status?.skillsReport?.sourceCount ?? status?.skillCount ?? 0;
+      if (status?.skillsReady && skillSourceCount > 0 && !status.skillVisibleCount) status.skillVisibleCount = skillSourceCount;
       updateItem("hermes-skill-growth", status?.skillGrowthReady ? { status: "pass", statusText: "已闭环", detail: status.skillGrowthReportPath || "growth report ready" } : { status: "pass", statusText: "未生成", detail: "自我成长 skill 会在 Hermes 生成新技能后出现；当前基础对话不受影响" });
       updateItem("hermes-skills", status?.skillsReady && (status?.skillVisibleCount || 0) > 0 ? { status: "pass", statusText: "可见", detail: `镜像 ${status.skillCount || 0} 个；Hermes 官方可见 ${status.skillVisibleCount || 0} 个，slash 命令 ${status.skillCommandCount || 0} 个。报告：${status.skillReportPath || "未生成"}` } : status?.skillsReady && skillSourceCount === 0 ? { status: "pass", statusText: "未安装", detail: "当前 U 盘未安装可同步 skill；安装后可在技能管理页同步给 Hermes" } : { status: "warn", statusText: "待同步", detail: status?.skillReportPath || status?.skillsRoot || "请在技能管理页同步并验证" });
       const ports = [`配置 ${status?.configReady ? "就绪" : "未启动"}`, `Dashboard ${status?.dashboardReady ? "就绪" : "未启动"}`, `API ${status?.apiServerReady ? "就绪" : "未启动"}`].join(" / ");
@@ -26604,6 +26605,7 @@ const _sfc_main$9 = {
         hermesRunState.value = text;
         const lines = hermesProgressLines.value.slice(-12);
         if (lines[lines.length - 1] !== text) hermesProgressLines.value = [...lines, text];
+        upsertHermesProgress(text, payload?.stage || "working", "running");
       }
       saveHermesSession();
     }
@@ -27374,29 +27376,11 @@ const _sfc_main$9 = {
       }
       showClearDialog.value = false;
     }
-    function scrollToBottom(duration = 300) {
+    function scrollToBottom() {
       nextTick(() => {
         const el = messagesArea.value;
         if (!el) return;
-        if (duration <= 0) {
-          el.scrollTop = el.scrollHeight;
-          return;
-        }
-        const start = el.scrollTop;
-        const end = el.scrollHeight - el.clientHeight;
-        const distance = end - start;
-        if (distance <= 0) return;
-        const startTime = performance.now();
-        function animate(now) {
-          const elapsed = now - startTime;
-          const progress = Math.min(elapsed / duration, 1);
-          const eased = 1 - Math.pow(1 - progress, 3);
-          el.scrollTop = start + distance * eased;
-          if (progress < 1) {
-            requestAnimationFrame(animate);
-          }
-        }
-        requestAnimationFrame(animate);
+        el.scrollTop = el.scrollHeight;
       });
     }
     function handleScroll() {

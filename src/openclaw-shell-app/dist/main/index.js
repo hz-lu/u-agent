@@ -1250,9 +1250,22 @@ class HermesManager {
     const memoryReport = readJsonSafe(path$1.join(data, "reports", "memory", "persistence-last.json"));
     const skillReport = readJsonSafe(path$1.join(data, "reports", "skills", "visibility-last.json"));
     const skillGrowthReport = readJsonSafe(path$1.join(data, "reports", "skills", "growth-last.json"));
-    const skillGrowthReady = !!skillGrowthReport?.ok || !!(skillReport?.ok && (skillReport?.visibleCount || 0) > 0 && (skillReport?.commandCount || 0) > 0);
+    let hermesConfigText = "";
+    try {
+      const hermesConfigPath = path$1.join(data, "config.yaml");
+      if (fs$1.existsSync(hermesConfigPath)) hermesConfigText = fs$1.readFileSync(hermesConfigPath, "utf8");
+    } catch {
+    }
+    const memoryConfigured = /memory_enabled\s*:\s*true/i.test(hermesConfigText);
+    const skillGrowthConfigured = /auto_skill_enabled\s*:\s*true/i.test(hermesConfigText);
+    const skillGrowthReady = skillGrowthConfigured || !!skillGrowthReport?.ok;
+    let rootSkillCount = 0;
+    try {
+      if (fs$1.existsSync(skillsRoot)) rootSkillCount = fs$1.readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
+    } catch {
+    }
     const reportedSkillCount = Number(skillReport?.mirroredCount || skillReport?.sourceCount || 0);
-    const skillCount = reportedSkillCount || Number(portableSkillRepositoryLastReport?.canonicalPackageCount || 0);
+    const skillCount = reportedSkillCount || Number(portableSkillRepositoryLastReport?.canonicalPackageCount || 0) || rootSkillCount;
     const primaryModel = openClawConfig?.agents?.defaults?.model?.primary || "";
     return {
       status: this.status,
@@ -1260,8 +1273,8 @@ class HermesManager {
       memoryMb: this.memoryMb,
       iterations: this.iterations,
       memoryPath: path$1.join(data, "memories"),
-      memoryReady: !!memoryReport?.ok,
-      memoryWritable: !!memoryReport?.memoryWritable && !!memoryReport?.userWritable,
+      memoryReady: memoryConfigured || !!memoryReport?.ok,
+      memoryWritable: memoryConfigured && fs$1.existsSync(data) || !!memoryReport?.memoryWritable && !!memoryReport?.userWritable,
       memoryEntryCount: memoryReport?.memoryEntryCount || 0,
       userMemoryEntryCount: memoryReport?.userEntryCount || 0,
       memoryReportPath: memoryReport?.reportPath || path$1.join(data, "reports", "memory", "persistence-last.json"),
@@ -1300,8 +1313,8 @@ class HermesManager {
       launcherLogPath: path$1.join(this.getHermesLogsRoot(), "launcher.log")
     };
   }
-  verifyEnvironment() {
-    return this.snapshot({ fast: true });
+  async verifyEnvironment() {
+    return await this.getStatus({ fast: false });
   }
   emitStatus() {
     safeSend("hermes-status", this.snapshot({ fast: true }));
@@ -3853,6 +3866,7 @@ function getGatewayEnv() {
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
   normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");
+  const portablePythonDir = path$1.join(usbRuntime, "python3");
   const paths = [];
   if (fs$1.existsSync(path$1.join(RUNTIME_DIR, "openclaw.cmd")) || fs$1.existsSync(path$1.join(RUNTIME_DIR, "node_modules"))) {
     paths.push(RUNTIME_DIR);
@@ -3861,6 +3875,9 @@ function getGatewayEnv() {
     paths.push(usbRuntime);
   }
   const runtimePath = paths[0] || RUNTIME_DIR;
+  if (fs$1.existsSync(path$1.join(portablePythonDir, process.platform === "win32" ? "python.exe" : "bin/python3"))) {
+    paths.unshift(portablePythonDir);
+  }
   const dnsHookPath = writeDnsHook();
   const nodeOptions = [
     // Windows 上 NODE_OPTIONS 中的反斜杠会被 Node.js 解析为转义字符，
@@ -3885,10 +3902,14 @@ function getGatewayEnv() {
     OPENCLAW_CONFIG: path$1.join(portableStateRoot, "openclaw.json"),
     OPENCLAW_CONFIG_PATH: path$1.join(portableStateRoot, "openclaw.json"),
     OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, "workspace"),
+    OPENCLAW_PORTABLE_ROOT: getAppRoot(),
     TMP: portableTmp,
     TEMP: portableTmp,
     NODE_PATH: path$1.join(runtimePath, "node_modules"),
     PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONNOUSERSITE: "1",
     NODE_OPTIONS: nodeOptions,
     NO_PROXY: noProxy,
     NO_COLOR: "1"

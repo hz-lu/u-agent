@@ -169,6 +169,8 @@ const checks = {
   openClawZip: exists("runtime/openclaw.zip"),
   openClawCommandOnUsb: exists("runtime/openclaw.cmd"),
   openClawNodeOnUsb: exists("runtime/node.exe"),
+  openClawSkillPython: exists("runtime/python3/python.exe"),
+  openClawStockSkillPythonDeps: ["pydantic", "requests", "yaml", "pytz", "pyarrow", "akshare"].every((name) => hasUsablePath(`runtime/python3/Lib/site-packages/${name}`)),
   openClawPackageEntry: exists("runtime/node_modules/openclaw/openclaw.mjs"),
   openClawPackageJson: exists("runtime/node_modules/openclaw/package.json"),
   openClawDist: exists("runtime/node_modules/openclaw/dist"),
@@ -204,7 +206,7 @@ const report = {
   checkedAt: new Date().toISOString(),
   usbRoot,
   summary: {
-    windowsPortableUsable: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.openClawPackageEntry && checks.openClawDist && checks.hermesWindowsRuntime && checks.hermesWindowsSource && checks.dataDir,
+    windowsPortableUsable: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.openClawSkillPython && checks.openClawStockSkillPythonDeps && checks.openClawPackageEntry && checks.openClawDist && checks.hermesWindowsRuntime && checks.hermesWindowsSource && checks.dataDir,
     zeroInstallWindowsMostlyReady: checks.windowsApp && checks.openClawZip && checks.openClawNodeOnUsb && checks.openClawPackageEntry && checks.openClawDist && checks.hermesWindowsPython && checks.hermesWindowsNode && checks.hermesWindowsSource,
     strictZeroTraceReady: checks.dataDir && !checks.legacyHermesDataInRuntime && runtimeManifestAudit.forbiddenPresent.length === 0,
     threePlatformNativeReady: checks.hermesWindowsRuntime && checks.hermesMacArm64Runtime && checks.hermesMacX64Runtime && checks.hermesLinuxX64Runtime && checks.hermesLinuxArm64Runtime && checks.macLauncher && checks.linuxLauncher,

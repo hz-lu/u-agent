@@ -319,6 +319,20 @@ function sha256(filePath) {
   return hash.digest("hex");
 }
 
+function assertOpenClawSkillPython(runtimeRoot) {
+  const python = path.join(runtimeRoot, "python3", "python.exe");
+  if (!fs.existsSync(python)) fail(`Portable OpenClaw skill Python is missing: ${python}`);
+  const requiredModules = ["pydantic", "requests", "yaml", "pytz", "numpy", "pandas", "pyarrow", "akshare"];
+  const probe = spawnSync(python, ["-c", `import ${requiredModules.join(", ")}`], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 60 * 1000
+  });
+  if (probe.status !== 0) {
+    fail(`Portable OpenClaw skill Python dependencies are incomplete:\n${probe.stderr || probe.stdout}`);
+  }
+}
+
 const manifest = readJsonRequired(manifestSourcePath);
 const windowsSpec = manifest?.platforms?.["windows-x64"];
 if (!windowsSpec) fail("runtime manifest is missing platforms.windows-x64");
@@ -352,6 +366,7 @@ if (!sourceRuntimeRoot) {
 
   const missing = requiredRuntimePaths.filter((relPath) => !hasUsablePath(stagingRoot, relPath));
   if (missing.length) fail(`Runtime zip is incomplete:\n${missing.map((relPath) => `- ${relPath}`).join("\n")}`);
+  assertOpenClawSkillPython(stagingRuntimeRoot);
 
   if (runtimeProfile === "slim") {
     mkdirp(releaseRoot);
@@ -382,6 +397,7 @@ if (!sourceRuntimeRoot) {
 const forbiddenRuntimePaths = Array.isArray(manifest.forbiddenRuntimePaths) ? manifest.forbiddenRuntimePaths : [];
 const runtimeEntries = [
   ["node.exe", "node.exe"],
+  ["python3", "python3"],
   ["openclaw.cmd", "openclaw.cmd"],
   ["openclaw.zip", "openclaw.zip"],
   [path.join("node_modules", "openclaw"), path.join("node_modules", "openclaw")],
@@ -407,6 +423,7 @@ const forbiddenPresent = forbiddenRuntimePaths.filter((relPath) => fs.existsSync
 if (runtimeOnlyRequired.length || forbiddenPresent.length) {
   fail(JSON.stringify({ ok: false, missing: runtimeOnlyRequired, forbiddenPresent }, null, 2));
 }
+assertOpenClawSkillPython(stagingRuntimeRoot);
 
 mkdirp(releaseRoot);
 const files = listFiles(stagingRoot);

@@ -39,6 +39,8 @@ const checks = [
   ["skillRepository", "Event-triggered repository sync", "scheduleWatchedReconcile"],
   ["skillRepository", "Low-frequency repository fallback", "10 * 60 * 1000"],
   ["main", "OpenClaw session skill snapshot refresh", "invalidateOpenClawSessionSkillSnapshots"],
+  ["main", "Portable Python exposed to OpenClaw skills", "OPENCLAW_PORTABLE_ROOT: getAppRoot()"],
+  ["main", "Hermes environment uses live port checks", "return await this.getStatus({ fast: false })"],
   ["main", "Portable skill metadata parser", "skill-metadata.cjs"],
   ["main", "Agent chat skill command catalog", "list-chat-skills"],
   ["main", "Hermes official skill invocation bridge", "build_skill_invocation_message"],
@@ -57,10 +59,12 @@ const checks = [
   ["renderer", "Hermes skill sync UI", "同步到 Hermes"],
   ["renderer", "Chat /skill picker", "skill-command-menu"],
   ["renderer", "Deferred multi-skill selection", "selectedSkills.value"],
+  ["renderer", "Hermes progress shown inside chat", "upsertHermesProgress(text, payload?.stage || \"working\", \"running\")"],
   ["renderer", "Compatibility-aware collaborative skill routing", "sendCollaborativeSkillMessage"],
   ["styles", "Hermes chat topbar overflow guard", ".hermes-chat-status"],
+  ["styles", "Scrollable home page", ".home-home-view[data-v-16de922d]"],
   ["styles", "Offline document overflow reset", "#app {\n  width: 100%;"],
-  ["styles", "Main workspace flex width containment", "flex: 1 1 0;\n  width: 0;\n  min-width: 0;\n  margin-left: 256px;"],
+  ["styles", "Main workspace flex width containment", ".main-app-main-wrapper {\n  flex: 1 1 0;\n  height: calc(100vh - 38px);\n  min-height: 0;\n  width: 0;"],
   ["styles", "AI chat viewport containment", "height: calc(100vh - 80px);\n  flex: 1 1 auto;"],
   ["renderer", "Hermes environment checks", "Hermes 模型桥接"],
   ["styles", "Home Hermes styles", "home-hermes-card"],
@@ -80,6 +84,9 @@ const results = checks.map(([fileKey, name, marker]) => ({
 const failed = results.filter((item) => !item.ok);
 if (source.main.includes('execFileSync("tasklist"')) failed.push({ name: "Synchronous tasklist regression", file: path.relative(projectRoot, files.main), ok: false, marker: 'execFileSync("tasklist")' });
 if (source.styles.includes("div {\n  transition: all")) failed.push({ name: "Global div transition regression", file: path.relative(projectRoot, files.styles), ok: false, marker: "div transition: all" });
+if (source.renderer.includes("function scrollToBottom(duration = 300)")) failed.push({ name: "Chat auto-scroll animation regression", file: path.relative(projectRoot, files.renderer), ok: false, marker: "animated scrollToBottom" });
+if (!source.styles.includes(".home-home-view[data-v-16de922d] > * {\n  flex-shrink: 0;")) failed.push({ name: "Home cards may shrink instead of scroll", file: path.relative(projectRoot, files.styles), ok: false, marker: "home child flex-shrink: 0" });
+if (!source.styles.includes("overflow-y: auto;\n  overflow-x: hidden;\n  display: flex;\n  flex-direction: column;")) failed.push({ name: "Main page scrolling missing", file: path.relative(projectRoot, files.styles), ok: false, marker: "main page overflow-y: auto" });
 console.log(JSON.stringify({
   ok: failed.length === 0,
   checkedAt: new Date().toISOString(),
