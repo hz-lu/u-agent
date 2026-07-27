@@ -117,6 +117,22 @@ function patchHermesRuntimeEnv(filePath) {
       "        changed = true;",
       "      }",
       "    }",
+      "    config.tools ||= {};",
+      "    config.tools.web ||= {};",
+      "    config.tools.web.fetch ||= {};",
+      "    config.tools.web.fetch.ssrfPolicy ||= {};",
+      "    if (config.tools.web.fetch.ssrfPolicy.allowRfc2544BenchmarkRange !== true) {",
+      "      config.tools.web.fetch.ssrfPolicy.allowRfc2544BenchmarkRange = true;",
+      "      changed = true;",
+      "    }",
+      "    const search = config.tools.web.search ||= {};",
+      "    const configuredSearchProvider = typeof search.provider === \"string\" && search.provider.trim();",
+      "    const configuredSearchKey = search.apiKey || Object.values(search).some((value) => value && typeof value === \"object\" && value.apiKey);",
+      "    const searchEnvKey = process.env.BRAVE_API_KEY || process.env.PERPLEXITY_API_KEY || process.env.TAVILY_API_KEY;",
+      "    if (!configuredSearchProvider && !configuredSearchKey && !searchEnvKey && typeof search.enabled !== \"boolean\") {",
+      "      search.enabled = false;",
+      "      changed = true;",
+      "    }",
       "    if (changed) fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + \"\\n\", \"utf8\");",
       "  } catch (err) {",
       "    console.warn(\"[portable] failed to rewrite OpenClaw config paths:\", err instanceof Error ? err.message : String(err));",
@@ -1097,6 +1113,41 @@ function patchHermesRuntimeEnv(filePath) {
   source = source.replaceAll("\n    this.syncOpenClawSkillsToHermes({ silent: false });", "");
   source = source.replaceAll("\n    this.repairShims();", "");
 
+  fs.writeFileSync(filePath, source, "utf8");
+}
+
+function patchPortableNetworkPolicyAndHermesWarnings(filePath) {
+  let source = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n");
+  if (!source.includes("HERMES_ALLOWLIST_WARNING")) {
+    const classAnchor = "class HermesManager {";
+    const helper = [
+      'const HERMES_ALLOWLIST_WARNING = "No user allowlists configured. All unauthorized users will be denied.";',
+      'const HERMES_ALLOWLIST_NOTICE = "Hermes 外部消息渠道当前采用默认拒绝策略；桌面本地对话不受影响。";',
+      "function formatHermesUserFacingLog(type, msg) {",
+      '  const text = String(msg || "");',
+      "  if (!text.includes(HERMES_ALLOWLIST_WARNING)) return { type, msg };",
+      "  const lines = text.split(/\\r?\\n/);",
+      "  let hasOtherContent = false;",
+      "  const localized = lines.map((line) => {",
+      '    if (line.includes(HERMES_ALLOWLIST_WARNING)) return "[安全策略] " + HERMES_ALLOWLIST_NOTICE;',
+      "    if (line.trim()) hasOtherContent = true;",
+      "    return line;",
+      '  }).join("\\n");',
+      '  return { type: hasOtherContent ? type : "system", msg: localized };',
+      "}",
+      classAnchor
+    ].join("\n");
+    if (!source.includes(classAnchor)) throw new Error("Could not find HermesManager for warning localization.");
+    source = source.replace(classAnchor, helper);
+  }
+  source = source.replace(
+    '    safeSend("hermes-log", { type, msg });',
+    '    safeSend("hermes-log", formatHermesUserFacingLog(type, msg));'
+  );
+  source = source.replace(
+    '        for (const line of lines) rows.push({ type: name.includes("error") ? "stderr" : "system", msg: "[" + name + "] " + line, file: name });',
+    '        for (const line of lines) {\n          const formatted = formatHermesUserFacingLog(name.includes("error") ? "stderr" : "system", "[" + name + "] " + line);\n          rows.push({ ...formatted, file: name });\n        }'
+  );
   fs.writeFileSync(filePath, source, "utf8");
 }
 
@@ -5085,6 +5136,7 @@ patchHermesPortablePythonLaunch(mainProcessTarget);
 patchMainProcessStability(mainProcessTarget);
 patchHermesSkillBridge(mainProcessTarget);
 patchHermesLogAndWechatDiagnostics(mainProcessTarget);
+patchPortableNetworkPolicyAndHermesWarnings(mainProcessTarget);
 patchWeChatGatewayStability(mainProcessTarget);
 patchHermesTrayMenu(mainProcessTarget);
 const preloadTarget = path.join(targetApp, "dist", "preload", "index.js");

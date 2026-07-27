@@ -495,6 +495,20 @@ class WechatManager extends EventEmitter {
   }
 }
 
+const HERMES_ALLOWLIST_WARNING = "No user allowlists configured. All unauthorized users will be denied.";
+const HERMES_ALLOWLIST_NOTICE = "Hermes 外部消息渠道当前采用默认拒绝策略；桌面本地对话不受影响。";
+function formatHermesUserFacingLog(type, msg) {
+  const text = String(msg || "");
+  if (!text.includes(HERMES_ALLOWLIST_WARNING)) return { type, msg };
+  const lines = text.split(/\r?\n/);
+  let hasOtherContent = false;
+  const localized = lines.map((line) => {
+    if (line.includes(HERMES_ALLOWLIST_WARNING)) return "[安全策略] " + HERMES_ALLOWLIST_NOTICE;
+    if (line.trim()) hasOtherContent = true;
+    return line;
+  }).join("\n");
+  return { type: hasOtherContent ? type : "system", msg: localized };
+}
 class HermesManager {
   constructor({ dataDir }) {
     this.dataDir = dataDir;
@@ -546,7 +560,7 @@ class HermesManager {
   }
   emitLog(type, msg) {
     this.writeLauncherLog(type, msg);
-    safeSend("hermes-log", { type, msg });
+    safeSend("hermes-log", formatHermesUserFacingLog(type, msg));
   }
   getPortableRoot() {
     const envRoot = process.env.HERMES_PORTABLE_ROOT?.trim();
@@ -3684,6 +3698,22 @@ function ensurePortableOpenClawSkillConfig() {
       maxSkillsPromptChars: 65536
     };
     let changed = JSON.stringify(next) !== JSON.stringify(current);
+    config.tools ||= {};
+    config.tools.web ||= {};
+    config.tools.web.fetch ||= {};
+    config.tools.web.fetch.ssrfPolicy ||= {};
+    if (config.tools.web.fetch.ssrfPolicy.allowRfc2544BenchmarkRange !== true) {
+      config.tools.web.fetch.ssrfPolicy.allowRfc2544BenchmarkRange = true;
+      changed = true;
+    }
+    const search = config.tools.web.search ||= {};
+    const configuredSearchProvider = typeof search.provider === "string" && search.provider.trim();
+    const configuredSearchKey = search.apiKey || Object.values(search).some((value) => value && typeof value === "object" && value.apiKey);
+    const searchEnvKey = process.env.BRAVE_API_KEY || process.env.PERPLEXITY_API_KEY || process.env.TAVILY_API_KEY;
+    if (!configuredSearchProvider && !configuredSearchKey && !searchEnvKey && typeof search.enabled !== "boolean") {
+      search.enabled = false;
+      changed = true;
+    }
     for (const [key, value] of Object.entries(requiredLimits)) {
       if (Number(config.skills.limits[key] || 0) >= value) continue;
       config.skills.limits[key] = value;
@@ -23777,7 +23807,10 @@ function registerIPCHandlers({ gateway }) {
       try {
         if (!fs$1.existsSync(filePath)) continue;
         const lines = readFileTailLines(filePath, limit, 192 * 1024);
-        for (const line of lines) rows.push({ type: name.includes("error") ? "stderr" : "system", msg: "[" + name + "] " + line, file: name });
+        for (const line of lines) {
+          const formatted = formatHermesUserFacingLog(name.includes("error") ? "stderr" : "system", "[" + name + "] " + line);
+          rows.push({ ...formatted, file: name });
+        }
       } catch (err) {
         rows.push({ type: "stderr", msg: "[" + name + "] read failed: " + err.message, file: name });
       }
