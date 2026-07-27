@@ -26294,6 +26294,7 @@ const _sfc_main$9 = {
     const hermesActiveTaskId = /* @__PURE__ */ ref("");
     const collabActiveTaskId = /* @__PURE__ */ ref("");
     const hermesProgressLines = /* @__PURE__ */ ref([]);
+    const hermesPendingMessages = /* @__PURE__ */ ref([]);
     const chatSkillCatalogs = /* @__PURE__ */ ref({ openclaw: [], hermes: [], collab: [] });
     const chatSkillLoadingMode = /* @__PURE__ */ ref("");
     const messagesArea = /* @__PURE__ */ ref(null);
@@ -26529,7 +26530,7 @@ const _sfc_main$9 = {
     function saveHermesSession() {
       try {
         const compactMessages = (items) => (Array.isArray(items) ? items.slice(-80).map((item) => ({ ...item, content: typeof item.content === "string" && item.content.length > 3e4 ? item.content.slice(0, 12e3) + "\n\n[中间内容已折叠，完整输出请查看 Hermes 运行日志。]\n\n" + item.content.slice(-12e3) : item.content })) : []);
-        const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value, hermesActiveTaskId: hermesActiveTaskId.value, collabActiveTaskId: collabActiveTaskId.value };
+        const state = { savedAt: Date.now(), hermesMessages: compactMessages(hermesMessages.value), collabMessages: compactMessages(collabMessages.value), input: hermesInputText.value, mode: agentMode.value, runState: hermesRunState.value, collabRunState: collabRunState.value, hermesSending: hermesSending.value, collabSending: collabSending.value, hermesActiveTaskId: hermesActiveTaskId.value, collabActiveTaskId: collabActiveTaskId.value, hermesPendingMessages: hermesPendingMessages.value.slice(0, 3) };
         window.__uclawHermesChatState = state;
         clearTimeout(window.__uclawHermesChatSaveTimer);
         window.__uclawHermesChatSaveTimer = setTimeout(() => {
@@ -26553,6 +26554,7 @@ const _sfc_main$9 = {
           if (typeof liveState.collabRunState === "string") collabRunState.value = liveState.collabRunState;
           hermesActiveTaskId.value = typeof liveState.hermesActiveTaskId === "string" ? liveState.hermesActiveTaskId : "";
           collabActiveTaskId.value = typeof liveState.collabActiveTaskId === "string" ? liveState.collabActiveTaskId : "";
+          hermesPendingMessages.value = Array.isArray(liveState.hermesPendingMessages) ? liveState.hermesPendingMessages.slice(0, 3) : [];
           hermesSending.value = !!hermesActiveTaskId.value;
           collabSending.value = !!collabActiveTaskId.value;
           if (["openclaw", "hermes", "collab"].includes(liveState.mode)) agentMode.value = liveState.mode;
@@ -26571,6 +26573,7 @@ const _sfc_main$9 = {
           if (typeof state.collabRunState === "string") collabRunState.value = state.collabRunState;
           hermesActiveTaskId.value = typeof state.hermesActiveTaskId === "string" ? state.hermesActiveTaskId : "";
           collabActiveTaskId.value = typeof state.collabActiveTaskId === "string" ? state.collabActiveTaskId : "";
+          hermesPendingMessages.value = Array.isArray(state.hermesPendingMessages) ? state.hermesPendingMessages.slice(0, 3) : hermesPendingMessages.value;
           hermesSending.value = !!hermesActiveTaskId.value;
           collabSending.value = !!collabActiveTaskId.value;
         }
@@ -26592,6 +26595,7 @@ const _sfc_main$9 = {
       saveHermesSession();
     }
     function handleHermesChatProgress(payload) {
+      if (payload?.mode !== "collab" && payload?.sessionId !== "openclaw-hermes-collab" && payload?.taskId && hermesActiveTaskId.value && payload.taskId !== hermesActiveTaskId.value) return;
       const now = Date.now();
       const lastPayload = window.__uclawHermesProgressLast || {};
       const key = `${payload?.mode || ""}:${payload?.sessionId || ""}:${payload?.stage || ""}:${payload?.detail || ""}`;
@@ -26734,6 +26738,7 @@ const _sfc_main$9 = {
       } finally {
         saveHermesSession();
         scrollToBottom();
+        if (mode === "hermes") drainHermesPendingMessages();
       }
     }
     async function cancelActiveHermesTask(mode = "hermes") {
@@ -26775,10 +26780,9 @@ const _sfc_main$9 = {
       else hermesActiveTaskId.value = taskId;
       saveHermesSession();
       try {
-        const waitPromise = waitForHermesChatResult(taskId);
         const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });
         if (!started?.pending || !started.taskId) return started;
-        return await waitPromise;
+        return await waitForHermesChatResult(taskId);
       } finally {
         if (payload?.sessionId === "openclaw-hermes-collab") {
           if (collabActiveTaskId.value === taskId) collabActiveTaskId.value = "";
@@ -26797,7 +26801,10 @@ const _sfc_main$9 = {
       const id = window.__uclawHermesActiveProgressId || `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;
       window.__uclawHermesActiveProgressId = id;
       const lines = Array.isArray(window.__uclawHermesProgressLines) ? window.__uclawHermesProgressLines : [];
-      if (content && lines[lines.length - 1] !== content) lines.push(content);
+      const previousStage = window.__uclawHermesProgressLastStage || "";
+      if (content && stage === "waiting" && previousStage === "waiting" && lines.length) lines[lines.length - 1] = content;
+      else if (content && lines[lines.length - 1] !== content) lines.push(content);
+      window.__uclawHermesProgressLastStage = stage;
       window.__uclawHermesProgressLines = lines.slice(-20);
       const output = window.__uclawHermesProgressLines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
       const progressMessage = {
@@ -26834,6 +26841,7 @@ const _sfc_main$9 = {
       }
       window.__uclawHermesActiveProgressId = null;
       window.__uclawHermesProgressLines = [];
+      window.__uclawHermesProgressLastStage = "";
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
@@ -26956,30 +26964,68 @@ const _sfc_main$9 = {
       if (!names.length) return content;
       return `/skill ${names.join(",")}${content ? " " + content : ""}`;
     }
-    async function sendHermesMessage(text2, attachments = []) {
+    function removeHermesMessage(messageId) {
+      if (!messageId) return;
+      hermesMessages.value = hermesMessages.value.filter((message) => message.id !== messageId);
+    }
+    function drainHermesPendingMessages() {
+      if (hermesSending.value || window.__uclawHermesQueueDraining || !hermesPendingMessages.value.length) return;
+      const next = hermesPendingMessages.value.shift();
+      if (!next) return;
+      removeHermesMessage(next.pendingStatusId);
+      saveHermesSession();
+      window.__uclawHermesQueueDraining = true;
+      Promise.resolve(sendHermesMessage(next.content, next.attachments || [], { userMessageId: next.userMessageId, fromQueue: true })).finally(() => {
+        window.__uclawHermesQueueDraining = false;
+        drainHermesPendingMessages();
+      });
+    }
+    async function sendHermesMessage(text2, attachments = [], options = {}) {
       const content = (text2 || "").trim();
       if (!content) return;
+      const now = Date.now();
+      const userMessageId = options.userMessageId || `hermes-user-${now}-${Math.random().toString(36).slice(2, 7)}`;
+      if (!options.userMessageId) {
+        hermesMessages.value = [...hermesMessages.value, {
+          id: userMessageId,
+          role: "user",
+          content,
+          attachments,
+          timestamp: now,
+          status: "done"
+        }];
+        saveHermesSession();
+        scrollToBottom();
+      }
       const { message: hermesMessage, attachments: hermesAttachments } = buildHermesMessageWithAttachments(content, attachments);
       if (hermesSending.value) {
         const recovered = await clearRecoveredHermesTask(hermesActiveTaskId.value, "hermes");
         if (hermesSending.value && !recovered) {
-          appendHermesAssistant("Hermes 正在处理上一条消息，本条暂未发送。请等待当前回复完成后再发送，或点击停止后重新发送。", "Hermes 系统", "done");
-          hermesRunState.value = "Hermes 正在处理上一条消息。";
+          if (hermesPendingMessages.value.length >= 3) {
+            appendHermesAssistant("Hermes 当前已有 3 条待处理消息。为避免任务堆积，本条消息已显示但不会自动执行；请等待或停止当前任务后重新发送。", "Hermes 系统", "error");
+            hermesRunState.value = "Hermes 待处理消息已达到上限。";
+            saveHermesSession();
+            scrollToBottom();
+            return;
+          }
+          const pendingStatusId = `hermes-pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          hermesPendingMessages.value = [...hermesPendingMessages.value, { content, attachments, userMessageId, pendingStatusId }];
+          hermesMessages.value = [...hermesMessages.value, {
+            id: pendingStatusId,
+            role: "assistant",
+            content: "消息已收到，正在等待上一条 Hermes 任务完成，之后会自动处理。",
+            model: "Hermes Agent",
+            timestamp: Date.now(),
+            status: "streaming",
+            _streaming: true
+          }];
+          hermesRunState.value = `Hermes 正在处理上一条消息，另有 ${hermesPendingMessages.value.length} 条等待处理。`;
+          saveHermesSession();
           scrollToBottom();
           return;
         }
       }
       const requestMode = "hermes";
-      const now = Date.now();
-      const userMessage = {
-        id: `hermes-user-${now}`,
-        role: "user",
-        content,
-        attachments,
-        timestamp: now,
-        status: "done"
-      };
-      hermesMessages.value = [...hermesMessages.value, userMessage];
       hermesSending.value = true;
       window.__uclawHermesActiveProgressId = `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;
       window.__uclawHermesProgressLines = [];
@@ -27031,6 +27077,7 @@ const _sfc_main$9 = {
         hermesSending.value = false;
         saveHermesSession();
         scrollToBottom();
+        drainHermesPendingMessages();
       }
     }
     async function sendCollaborativeMessage(text2, attachments = []) {

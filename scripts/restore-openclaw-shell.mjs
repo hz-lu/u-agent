@@ -4996,6 +4996,145 @@ function patchGatewayReadinessAndPerfStabilizer(mainFile, rendererFile) {
   fs.writeFileSync(rendererFile, rendererSource, "utf8");
 }
 
+function patchHermesSingleFlightQueue(mainFile, rendererFile) {
+  let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
+  if (!mainSource.includes("this.chatSessionTasks")) {
+    mainSource = mainSource.replace(
+      "    this.chatChildren = /* @__PURE__ */ new Map();\n    this.chatRunMeta = /* @__PURE__ */ new Map();",
+      "    this.chatChildren = /* @__PURE__ */ new Map();\n    this.chatRunMeta = /* @__PURE__ */ new Map();\n    this.chatSessionTasks = /* @__PURE__ */ new Map();"
+    );
+    mainSource = mainSource.replace(
+      '        mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",\n        startedAt: Date.now()',
+      '        mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",\n        taskId: options.taskId || "",\n        startedAt: Date.now()'
+    );
+    const chatStart = mainSource.indexOf('  electron.ipcMain.handle("hermes:chat", async (_, options) => {');
+    const chatEnd = mainSource.indexOf('  electron.ipcMain.handle("hermes:chatResult", async (_, taskId) => {', chatStart);
+    if (chatStart < 0 || chatEnd < 0) throw new Error("Could not find Hermes chat IPC for single-flight patch.");
+    const chatReplacement = [
+      '  electron.ipcMain.handle("hermes:chat", async (_, options) => {',
+      '    const chatOptions = options || {};',
+      '    if (!chatOptions.background) {',
+      '      return await getHermesManager().chat(chatOptions);',
+      '    }',
+      '    const manager = getHermesManager();',
+      '    const sessionId = chatOptions.sessionId || "hermes-ai-chat";',
+      '    const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);',
+      '    const activeTaskId = manager.chatSessionTasks.get(sessionId);',
+      '    if (activeTaskId && activeTaskId !== taskId) {',
+      '      return { ok: false, pending: false, busy: true, taskId: activeTaskId, error: "Hermes is already processing a message in this conversation." };',
+      '    }',
+      '    manager.chatSessionTasks.set(sessionId, taskId);',
+      '    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] accepted background task " + taskId + " session=" + sessionId + " messageLength=" + String(chatOptions.message || "").length });',
+      '    setTimeout(() => {',
+      '      manager.chat({ ...chatOptions, taskId }).then((result) => {',
+      '        const payload = { taskId, sessionId, mode: sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now(), runId: result?.runId, runDir: result?.runDir, stdoutPath: result?.stdoutPath, stderrPath: result?.stderrPath };',
+      '        hermesChatResults.set(taskId, payload);',
+      '        safeSend("hermes-chat-result", payload);',
+      '      }).catch((err) => {',
+      '        const payload = { taskId, sessionId, mode: sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };',
+      '        hermesChatResults.set(taskId, payload);',
+      '        safeSend("hermes-chat-result", payload);',
+      '      }).finally(() => {',
+      '        if (manager.chatSessionTasks.get(sessionId) === taskId) manager.chatSessionTasks.delete(sessionId);',
+      '      });',
+      '    }, 0);',
+      '    return { ok: true, pending: true, taskId };',
+      '  });',
+      ''
+    ].join("\n");
+    mainSource = mainSource.slice(0, chatStart) + chatReplacement + mainSource.slice(chatEnd);
+    mainSource = mainSource.replace(
+      "    manager.chatChildren.delete(taskId);\n    manager.chatRunMeta.delete(taskId);\n    return { ok: true, taskId };",
+      "    manager.chatChildren.delete(taskId);\n    manager.chatRunMeta.delete(taskId);\n    if (meta?.sessionId && manager.chatSessionTasks.get(meta.sessionId) === taskId) manager.chatSessionTasks.delete(meta.sessionId);\n    return { ok: true, taskId };"
+    );
+  }
+  fs.writeFileSync(mainFile, mainSource, "utf8");
+
+  let rendererSource = fs.readFileSync(rendererFile, "utf8").replace(/\r\n/g, "\n");
+  if (!rendererSource.includes("hermesPendingMessages")) {
+    rendererSource = rendererSource.replace(
+      '    const hermesProgressLines = /* @__PURE__ */ ref([]);',
+      '    const hermesProgressLines = /* @__PURE__ */ ref([]);\n    const hermesPendingMessages = /* @__PURE__ */ ref([]);'
+    );
+    rendererSource = rendererSource.replace(
+      'collabActiveTaskId: collabActiveTaskId.value };',
+      'collabActiveTaskId: collabActiveTaskId.value, hermesPendingMessages: hermesPendingMessages.value.slice(0, 3) };'
+    );
+    rendererSource = rendererSource.replace(
+      '          collabActiveTaskId.value = typeof liveState.collabActiveTaskId === "string" ? liveState.collabActiveTaskId : "";',
+      '          collabActiveTaskId.value = typeof liveState.collabActiveTaskId === "string" ? liveState.collabActiveTaskId : "";\n          hermesPendingMessages.value = Array.isArray(liveState.hermesPendingMessages) ? liveState.hermesPendingMessages.slice(0, 3) : [];'
+    );
+    rendererSource = rendererSource.replace(
+      '          collabActiveTaskId.value = typeof state.collabActiveTaskId === "string" ? state.collabActiveTaskId : "";',
+      '          collabActiveTaskId.value = typeof state.collabActiveTaskId === "string" ? state.collabActiveTaskId : "";\n          hermesPendingMessages.value = Array.isArray(state.hermesPendingMessages) ? state.hermesPendingMessages.slice(0, 3) : hermesPendingMessages.value;'
+    );
+    rendererSource = rendererSource.replace(
+      '    function handleHermesChatProgress(payload) {',
+      '    function handleHermesChatProgress(payload) {\n      if (payload?.mode !== "collab" && payload?.sessionId !== "openclaw-hermes-collab" && payload?.taskId && hermesActiveTaskId.value && payload.taskId !== hermesActiveTaskId.value) return;'
+    );
+    rendererSource = rendererSource.replace(
+      '      if (content && lines[lines.length - 1] !== content) lines.push(content);',
+      '      const previousStage = window.__uclawHermesProgressLastStage || "";\n      if (content && stage === "waiting" && previousStage === "waiting" && lines.length) lines[lines.length - 1] = content;\n      else if (content && lines[lines.length - 1] !== content) lines.push(content);\n      window.__uclawHermesProgressLastStage = stage;'
+    );
+    rendererSource = rendererSource.replace(
+      '      window.__uclawHermesActiveProgressId = null;\n      window.__uclawHermesProgressLines = [];',
+      '      window.__uclawHermesActiveProgressId = null;\n      window.__uclawHermesProgressLines = [];\n      window.__uclawHermesProgressLastStage = "";'
+    );
+    rendererSource = rendererSource.replace(
+      '        const waitPromise = waitForHermesChatResult(taskId);\n        const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });\n        if (!started?.pending || !started.taskId) return started;\n        return await waitPromise;',
+      '        const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });\n        if (!started?.pending || !started.taskId) return started;\n        return await waitForHermesChatResult(taskId);'
+    );
+    const sendStart = rendererSource.indexOf('    async function sendHermesMessage(text2, attachments = []) {');
+    const sendEnd = rendererSource.indexOf('    async function sendCollaborativeMessage(text2, attachments = []) {', sendStart);
+    if (sendStart < 0 || sendEnd < 0) throw new Error("Could not find Hermes send method for queue patch.");
+    let sendBlock = rendererSource.slice(sendStart, sendEnd);
+    const queueHelpers = [
+      '    function removeHermesMessage(messageId) {',
+      '      if (!messageId) return;',
+      '      hermesMessages.value = hermesMessages.value.filter((message) => message.id !== messageId);',
+      '    }',
+      '    function drainHermesPendingMessages() {',
+      '      if (hermesSending.value || window.__uclawHermesQueueDraining || !hermesPendingMessages.value.length) return;',
+      '      const next = hermesPendingMessages.value.shift();',
+      '      if (!next) return;',
+      '      removeHermesMessage(next.pendingStatusId);',
+      '      saveHermesSession();',
+      '      window.__uclawHermesQueueDraining = true;',
+      '      Promise.resolve(sendHermesMessage(next.content, next.attachments || [], { userMessageId: next.userMessageId, fromQueue: true })).finally(() => {',
+      '        window.__uclawHermesQueueDraining = false;',
+      '        drainHermesPendingMessages();',
+      '      });',
+      '    }',
+      ''
+    ].join("\n");
+    sendBlock = queueHelpers + sendBlock.replace(
+      '    async function sendHermesMessage(text2, attachments = []) {\n      const content = (text2 || "").trim();\n      if (!content) return;',
+      '    async function sendHermesMessage(text2, attachments = [], options = {}) {\n      const content = (text2 || "").trim();\n      if (!content) return;\n      const now = Date.now();\n      const userMessageId = options.userMessageId || `hermes-user-${now}-${Math.random().toString(36).slice(2, 7)}`;\n      if (!options.userMessageId) {\n        hermesMessages.value = [...hermesMessages.value, { id: userMessageId, role: "user", content, attachments, timestamp: now, status: "done" }];\n        saveHermesSession();\n        scrollToBottom();\n      }'
+    );
+    sendBlock = sendBlock.replace(
+      /        if \(hermesSending\.value && !recovered\) \{[\s\S]*?\n          return;\n        \}/,
+      '        if (hermesSending.value && !recovered) {\n          if (hermesPendingMessages.value.length >= 3) {\n            appendHermesAssistant("Hermes 当前已有 3 条待处理消息。为避免任务堆积，本条消息已显示但不会自动执行；请等待或停止当前任务后重新发送。", "Hermes 系统", "error");\n            hermesRunState.value = "Hermes 待处理消息已达到上限。";\n            saveHermesSession();\n            scrollToBottom();\n            return;\n          }\n          const pendingStatusId = `hermes-pending-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;\n          hermesPendingMessages.value = [...hermesPendingMessages.value, { content, attachments, userMessageId, pendingStatusId }];\n          hermesMessages.value = [...hermesMessages.value, { id: pendingStatusId, role: "assistant", content: "消息已收到，正在等待上一条 Hermes 任务完成，之后会自动处理。", model: "Hermes Agent", timestamp: Date.now(), status: "streaming", _streaming: true }];\n          hermesRunState.value = `Hermes 正在处理上一条消息，另有 ${hermesPendingMessages.value.length} 条等待处理。`;\n          saveHermesSession();\n          scrollToBottom();\n          return;\n        }'
+    );
+    sendBlock = sendBlock.replace(
+      /      const requestMode = "hermes";\n      const now = Date\.now\(\);\n      const userMessage = \{[\s\S]*?\n      hermesMessages\.value = \[\.\.\.hermesMessages\.value, userMessage\];/,
+      '      const requestMode = "hermes";'
+    );
+    sendBlock = sendBlock.replace(
+      '        saveHermesSession();\n        scrollToBottom();\n      }\n    }',
+      '        saveHermesSession();\n        scrollToBottom();\n        drainHermesPendingMessages();\n      }\n    }'
+    );
+    rendererSource = rendererSource.slice(0, sendStart) + sendBlock + rendererSource.slice(sendEnd);
+    const resumeStart = rendererSource.indexOf('    async function resumeHermesTask(taskId, mode = "hermes") {');
+    const resumeEnd = rendererSource.indexOf('    async function cancelActiveHermesTask(mode = "hermes") {', resumeStart);
+    if (resumeStart >= 0 && resumeEnd > resumeStart) {
+      let resumeBlock = rendererSource.slice(resumeStart, resumeEnd);
+      resumeBlock = resumeBlock.replace('        saveHermesSession();\n        scrollToBottom();\n      }', '        saveHermesSession();\n        scrollToBottom();\n        if (mode === "hermes") drainHermesPendingMessages();\n      }');
+      rendererSource = rendererSource.slice(0, resumeStart) + resumeBlock + rendererSource.slice(resumeEnd);
+    }
+  }
+  fs.writeFileSync(rendererFile, rendererSource, "utf8");
+}
+
 function patchJuly27ScrollHermesAndPortablePython(mainFile, rendererFile, stylesFile) {
   let mainSource = fs.readFileSync(mainFile, "utf8").replace(/\r\n/g, "\n");
   mainSource = mainSource.replace(
@@ -5152,6 +5291,7 @@ patchGatewayChatReadinessUi(rendererTarget);
 patchHermesHomeDashboard(rendererTarget);
 patchHermesModelConfig(rendererTarget);
 patchHermesAiChat(rendererTarget);
+patchHermesSingleFlightQueue(mainProcessTarget, rendererTarget);
 patchWeChatDiagnosticsUi(rendererTarget);
 patchHermesSkillManagement(rendererTarget);
 patchWindowsResponsiveChatAndWechat(mainProcessTarget, preloadTarget, rendererTarget);

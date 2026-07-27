@@ -23,6 +23,7 @@ const source = Object.fromEntries(Object.entries(files).map(([key, filePath]) =>
 const checks = [
   ["main", "Hermes manager", "class HermesManager"],
   ["main", "Hermes chat IPC", "\"hermes:chat\""],
+  ["main", "Hermes per-session single flight", "chatSessionTasks"],
   ["main", "OpenClaw skills shared with Hermes", "syncOpenClawSkillsToHermes"],
   ["main", "OpenClaw model bridge status", "modelBridgeReady"],
   ["main", "OpenAI-compatible provider mapping", "openai-api"],
@@ -59,6 +60,8 @@ const checks = [
   ["renderer", "Hermes chat mode", "Hermes Agent 会话"],
   ["renderer", "Collaborative chat mode", "OpenClaw / Hermes 协同会话"],
   ["renderer", "Hermes chat persistence", "uclaw_hermes_chat_state"],
+  ["renderer", "Hermes bounded pending messages", "hermesPendingMessages.value.length >= 3"],
+  ["renderer", "Hermes task-scoped progress", "payload.taskId !== hermesActiveTaskId.value"],
   ["renderer", "Hermes skill sync UI", "同步到 Hermes"],
   ["renderer", "Chat /skill picker", "skill-command-menu"],
   ["renderer", "Deferred multi-skill selection", "selectedSkills.value"],
