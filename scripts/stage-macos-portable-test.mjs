@@ -36,18 +36,19 @@ function fail(message) {
   process.exit(1);
 }
 
-function run(command, args) {
+function run(command, args, extraEnv = {}) {
   const result = spawnSync(command, args, {
     cwd: projectRoot,
     stdio: "inherit",
     shell: process.platform === "win32",
-    windowsHide: true
+    windowsHide: true,
+    env: { ...process.env, ...extraEnv }
   });
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed`);
 }
 
-function runNodeScript(script) {
-  run(process.execPath, [path.join(projectRoot, script)]);
+function runNodeScript(script, extraEnv = {}) {
+  run(process.execPath, [path.join(projectRoot, script)], extraEnv);
 }
 
 function assertInside(root, target) {
@@ -695,6 +696,7 @@ function main() {
   copyDir(path.join(projectRoot, "extensions"), path.join(releaseRoot, "extensions"));
   writeCleanData();
   verifyWechatPlugin();
+  runNodeScript("scripts/verify-openclaw-runtime.mjs", { AGENT_HUB_ROOT: releaseRoot });
   writeLauncher();
   const exfatReport = exfatCompat ? makeExfatCompatible() : null;
   signMacosApp();

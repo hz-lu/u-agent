@@ -3887,6 +3887,26 @@ function getOpenClawRuntimeDiagnosis() {
   if (!isWindowsRuntime && !fs$1.existsSync(entry)) problems.push("缺少 " + path$1.relative(appRoot, entry));
   if (isWindowsRuntime && !fs$1.existsSync(dist)) problems.push("缺少 runtime/node_modules/openclaw/dist");
   if (!isWindowsRuntime && !fs$1.existsSync(dist)) problems.push("缺少 " + path$1.relative(appRoot, dist));
+  const packageJson = path$1.join(packageRoot, "package.json");
+  const missingProductionDependencies = [];
+  if (fs$1.existsSync(packageJson)) {
+    try {
+      const packageManifest = JSON.parse(fs$1.readFileSync(packageJson, "utf8"));
+      for (const [packageName, requiredVersion] of Object.entries(packageManifest.dependencies || {})) {
+        const packageParts = packageName.split("/");
+        const candidates = [
+          path$1.join(packageRoot, "node_modules", ...packageParts, "package.json"),
+          path$1.join(runtimeRoot, "node_modules", ...packageParts, "package.json")
+        ];
+        if (!candidates.some((candidate) => fs$1.existsSync(candidate))) {
+          missingProductionDependencies.push({ packageName, requiredVersion });
+          problems.push(`缺少 OpenClaw 生产依赖 ${packageName} (${requiredVersion})`);
+        }
+      }
+    } catch (error) {
+      problems.push(`无法读取 OpenClaw package.json: ${error.message}`);
+    }
+  }
   const hints = [];
   if (fs$1.existsSync(nestedEntry)) hints.push("检测到 runtime/runtime/node_modules/openclaw/openclaw.mjs：runtime 可能多套了一层 runtime 目录。请把内层 runtime 的内容移动到 U 盘根目录的 runtime。");
   if (fs$1.existsSync(appNestedEntry)) hints.push("检测到 u-agent/runtime/node_modules/openclaw/openclaw.mjs：程序当前按 U 盘根目录运行，请把 u-agent 目录内的 runtime 复制到 U 盘根目录 runtime，或从完整 staging 目录启动。");
@@ -3897,6 +3917,7 @@ function getOpenClawRuntimeDiagnosis() {
     runtimeRoot,
     expectedEntry: entry,
     expectedDist: dist,
+    missingProductionDependencies,
     problems,
     hints,
     rootEntries,
@@ -4468,7 +4489,11 @@ function createGatewayManager() {
     if (!runtimeDiag.ok) {
       const detail = formatOpenClawRuntimeDiagnosis(runtimeDiag);
       sendGatewayLog("stderr", detail);
-      sendBootPhase("error", "OpenClaw 运行时不完整", "缺少 runtime/node_modules/openclaw/openclaw.mjs，请检查 U 盘 runtime 复制层级。", 0);
+      const missingDependencyNames = runtimeDiag.missingProductionDependencies.map((item) => item.packageName);
+      const userDetail = missingDependencyNames.length
+        ? `缺少 OpenClaw 依赖：${missingDependencyNames.join(", ")}。请补齐 U 盘 runtime 后重试。`
+        : "OpenClaw 运行时关键文件不完整，请检查 U 盘 runtime 复制层级。";
+      sendBootPhase("error", "OpenClaw 运行时不完整", userDetail, 0);
       sendGatewayStatus(false, "OpenClaw 运行时不完整");
       return Promise.resolve({
         success: false,

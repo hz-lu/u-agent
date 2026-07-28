@@ -80,6 +80,26 @@ function getPackageName(specifier) {
   return specifier.startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0];
 }
 
+function findMissingProductionDependencies() {
+  if (!fs.existsSync(openclawPackageJson)) return [];
+  let packageManifest;
+  try {
+    packageManifest = JSON.parse(fs.readFileSync(openclawPackageJson, "utf8"));
+  } catch {
+    return [];
+  }
+
+  return Object.entries(packageManifest.dependencies || {})
+    .filter(([packageName]) => {
+      const packageParts = packageName.split("/");
+      return ![
+        path.join(openclawPackage, "node_modules", ...packageParts, "package.json"),
+        path.join(runtimeRoot, "node_modules", ...packageParts, "package.json")
+      ].some((candidate) => fs.existsSync(candidate));
+    })
+    .map(([packageName, requiredVersion]) => ({ packageName, requiredVersion }));
+}
+
 function findMissingPackageImports() {
   const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
   const files = listFiles(distRoot).filter((file) => /\.(?:js|mjs)$/i.test(file));
@@ -157,6 +177,7 @@ const openclawTemplates = openclawTemplateNames.map((name) => path.join(openclaw
 const openclawEntry = entryCandidates.find((candidate) => fs.existsSync(candidate)) || null;
 const missingDistReferences = findMissingDistReferences();
 const missingPackageImports = findMissingPackageImports();
+const missingProductionDependencies = findMissingProductionDependencies();
 const cliSmoke = runOpenClawCliSmoke();
 const runtimeErrors = [];
 const runtimeWarnings = [];
@@ -178,6 +199,9 @@ for (const item of missingDistReferences.slice(0, 20)) {
 }
 if (missingDistReferences.length > 20) {
   runtimeErrors.push(`${missingDistReferences.length - 20} additional missing OpenClaw dist asset references.`);
+}
+for (const item of missingProductionDependencies) {
+  runtimeErrors.push(`Missing OpenClaw production dependency "${item.packageName}" (required ${item.requiredVersion}).`);
 }
 for (const item of missingPackageImports.slice(0, 20)) {
   const examples = item.imports
@@ -217,6 +241,7 @@ const report = {
     entry: openclawEntry,
     missingDistReferences,
     missingPackageImports,
+    missingProductionDependencies,
     cliSmoke,
     errors: runtimeErrors,
     warnings: runtimeWarnings
