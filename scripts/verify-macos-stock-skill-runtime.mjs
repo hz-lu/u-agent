@@ -26,7 +26,8 @@ function runPython(args, options = {}) {
       OPENCLAW_PORTABLE_ROOT: portableRoot,
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
-      PYTHONNOUSERSITE: "1"
+      PYTHONNOUSERSITE: "1",
+      PYTHONPYCACHEPREFIX: path.join(portableRoot, "data", ".hermes", "cache", "pycache")
     },
     encoding: "utf8",
     windowsHide: true,
@@ -40,6 +41,12 @@ function assertSourceWiring() {
   const stage = fs.readFileSync(path.join(projectRoot, "scripts", "stage-macos-portable-test.mjs"), "utf8");
   for (const marker of ["OPENCLAW_PORTABLE_ROOT", "PYTHONNOUSERSITE", "portablePythonBinDir"]) {
     if (!main.includes(marker)) fail(`Gateway portable Python wiring is missing: ${marker}`);
+  }
+  for (const marker of ["BASH_ENV", "PYTHONPYCACHEPREFIX", "portable-shell-env.sh", "portableSkillPython", "VIRTUAL_ENV", "unset PYTHONHOME"]) {
+    if (!main.includes(marker)) fail(`Hermes login shell portable Python wiring is missing: ${marker}`);
+  }
+  if (!main.includes('part === "site-packages" && process.platform !== "win32"')) {
+    fail("Hermes managed skill mirror does not exclude platform-specific Python vendors on macOS");
   }
   if (!build.includes("ensureOpenClawSkillPython")) fail("macOS runtime builder does not create the OpenClaw skill Python");
   if (!stage.includes('path.join(sourcePlatformRoot, "python3")')) fail("macOS staging does not copy runtime/python3");
@@ -78,7 +85,9 @@ function findStockToolRunner() {
 function verifyStockTool() {
   const toolRunner = findStockToolRunner();
   if (!toolRunner) return { skipped: true, reason: "openclaw-data-china-stock was not supplied" };
-  const result = runPython([toolRunner, "tool_check_trading_status", "{}"], {
+  const portableRunner = path.join(projectRoot, "src", "openclaw-shell-app", "dist", "main", "portable-stock-runner.py");
+  if (!fs.existsSync(portableRunner)) fail(`Portable stock runner is missing: ${portableRunner}`);
+  const result = runPython([portableRunner, toolRunner, "tool_check_trading_status", "{}"], {
     cwd: path.dirname(toolRunner),
     timeout: 120000
   });

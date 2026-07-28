@@ -26484,7 +26484,7 @@ const _sfc_main$9 = {
       if (window.uclaw?.ipcOnHermesChatProgress) window.uclaw.ipcOnHermesChatProgress(handleHermesChatProgress);
       if (hermesActiveTaskId.value) resumeHermesTask(hermesActiveTaskId.value, "hermes");
       if (collabActiveTaskId.value) resumeHermesTask(collabActiveTaskId.value, "collab");
-      nextTick(() => scrollToBottom());
+      nextTick(() => scrollToBottom(true));
     });
     async function handleRefreshModels() {
       loadingModels.value = true;
@@ -26543,7 +26543,7 @@ const _sfc_main$9 = {
       if (mode === "hermes" && collabSending.value) collabRunState.value = "协同仍在后台执行，可切回协同查看。";
       if (mode === "collab" && hermesSending.value) hermesRunState.value = "Hermes 仍在后台执行，可切回 Hermes 查看。";
       localStorage.setItem("uclaw_agent_mode", mode);
-      nextTick(() => scrollToBottom(0));
+      nextTick(() => scrollToBottom(true));
     }
     function saveHermesSession() {
       try {
@@ -26599,7 +26599,7 @@ const _sfc_main$9 = {
       }
     }
     function handleHermesStateEvent() {
-      nextTick(() => scrollToBottom(0));
+      nextTick(() => scrollToBottom());
     }
     function handleActiveModelChanged() {
       const sk = store.activeSessionKey;
@@ -26611,6 +26611,7 @@ const _sfc_main$9 = {
       saveHermesSession();
     }
     function handleHermesChatProgress(payload) {
+      if (payload?.mode !== "collab" && payload?.sessionId !== "openclaw-hermes-collab" && payload?.taskId && hermesActiveTaskId.value && payload.taskId !== hermesActiveTaskId.value) return;
       const now = Date.now();
       const lastPayload = window.__uclawHermesProgressLast || {};
       const key = `${payload?.mode || ""}:${payload?.sessionId || ""}:${payload?.stage || ""}:${payload?.detail || ""}`;
@@ -26624,6 +26625,7 @@ const _sfc_main$9 = {
         hermesRunState.value = text;
         const lines = hermesProgressLines.value.slice(-12);
         if (lines[lines.length - 1] !== text) hermesProgressLines.value = [...lines, text];
+        upsertHermesProgress(text, payload?.stage || "working", "running");
       }
       saveHermesSession();
     }
@@ -26785,7 +26787,8 @@ const _sfc_main$9 = {
         appendHermesAssistant("已停止当前 Hermes 任务。", "Hermes Agent", "done");
       }
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
     }
     async function runHermesChatBackground(payload) {
       const taskId = `hermes-chat-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -26793,10 +26796,9 @@ const _sfc_main$9 = {
       else hermesActiveTaskId.value = taskId;
       saveHermesSession();
       try {
-        const waitPromise = waitForHermesChatResult(taskId);
         const started = await window.uclaw.ipcHermesChat({ ...payload, background: true, taskId });
         if (!started?.pending || !started.taskId) return started;
-        return await waitPromise;
+        return await waitForHermesChatResult(taskId);
       } finally {
         if (payload?.sessionId === "openclaw-hermes-collab") {
           if (collabActiveTaskId.value === taskId) collabActiveTaskId.value = "";
@@ -26815,7 +26817,10 @@ const _sfc_main$9 = {
       const id = window.__uclawHermesActiveProgressId || `hermes-progress-${now}-${Math.random().toString(36).slice(2, 7)}`;
       window.__uclawHermesActiveProgressId = id;
       const lines = Array.isArray(window.__uclawHermesProgressLines) ? window.__uclawHermesProgressLines : [];
-      if (content && lines[lines.length - 1] !== content) lines.push(content);
+      const previousStage = window.__uclawHermesProgressLastStage || "";
+      if (content && stage === "waiting" && previousStage === "waiting" && lines.length) lines[lines.length - 1] = content;
+      else if (content && lines[lines.length - 1] !== content) lines.push(content);
+      window.__uclawHermesProgressLastStage = stage;
       window.__uclawHermesProgressLines = lines.slice(-20);
       const output = window.__uclawHermesProgressLines.map((line, idx) => `${idx + 1}. ${line}`).join("\n");
       const progressMessage = {
@@ -26852,6 +26857,7 @@ const _sfc_main$9 = {
       }
       window.__uclawHermesActiveProgressId = null;
       window.__uclawHermesProgressLines = [];
+      window.__uclawHermesProgressLastStage = "";
     }
     function getSelectedHermesModel() {
       const selectedId = sessionCurrentModelId.value || "";
@@ -26984,7 +26990,8 @@ const _sfc_main$9 = {
       window.__uclawHermesProgressLines = [];
       hermesRunState.value = "Hermes 正在调用模型，切换页面不会中断显示记录。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       try {
         let statusBeforeChat = null;
         try {
@@ -27055,7 +27062,8 @@ const _sfc_main$9 = {
         ? `OpenClaw 未接受任务，已安全回退 Hermes：${options.fallbackReason}`
         : "Hermes 正在执行所选技能。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       try {
         const result = await runHermesChatBackground({
           message: hermesMessage,
@@ -27100,7 +27108,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       collabRunState.value = "OpenClaw 正在执行所选技能。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       void (async () => {
         try {
           const reply = await waitForOpenClawDraft(beforeLength, 13e4, collabOpenClawSessionKey);
@@ -27144,7 +27153,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       hermesRunState.value = "协同执行中：OpenClaw 先出草案，Hermes 再复核整理。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       const beforeLength = store.currentMessages.length;
       try {
         if (!store.isReady && !gatewayAvailable.value) {
@@ -27208,7 +27218,8 @@ const _sfc_main$9 = {
       collabSending.value = true;
       collabRunState.value = "协同执行中：OpenClaw 生成内部草案，Hermes 输出统一最终答案。";
       saveHermesSession();
-      scrollToBottom();
+      autoScroll.value = true;
+      scrollToBottom(true);
       const beforeLength = store.currentMessages.length;
       try {
         if (!store.isReady && !gatewayAvailable.value) {
@@ -27333,12 +27344,16 @@ const _sfc_main$9 = {
       openclaw: {
         async send(text2, attachments) {
           const result = await store.sendMessage(text2, attachments);
-          scrollToBottom();
+          autoScroll.value = true;
+          scrollToBottom(true);
           return result;
         },
         command(cmd) {
           store.handleCommand(cmd);
-          if (cmd === "/new" || cmd === "/reset") scrollToBottom();
+          if (cmd === "/new" || cmd === "/reset") {
+            autoScroll.value = true;
+            scrollToBottom(true);
+          }
         },
         stop() {
           store.abortMessage();
@@ -27472,29 +27487,13 @@ const _sfc_main$9 = {
       }
       showClearDialog.value = false;
     }
-    function scrollToBottom(duration = 300) {
+    function scrollToBottom(force = false) {
+      if (!force && !autoScroll.value) return;
       nextTick(() => {
+        if (!force && !autoScroll.value) return;
         const el = messagesArea.value;
         if (!el) return;
-        if (duration <= 0) {
-          el.scrollTop = el.scrollHeight;
-          return;
-        }
-        const start = el.scrollTop;
-        const end = el.scrollHeight - el.clientHeight;
-        const distance = end - start;
-        if (distance <= 0) return;
-        const startTime = performance.now();
-        function animate(now) {
-          const elapsed = now - startTime;
-          const progress = Math.min(elapsed / duration, 1);
-          const eased = 1 - Math.pow(1 - progress, 3);
-          el.scrollTop = start + distance * eased;
-          if (progress < 1) {
-            requestAnimationFrame(animate);
-          }
-        }
-        requestAnimationFrame(animate);
+        el.scrollTop = el.scrollHeight;
       });
     }
     function handleScroll() {
@@ -27505,7 +27504,7 @@ const _sfc_main$9 = {
     }
     watch(() => store.activeSessionKey, () => {
       autoScroll.value = true;
-      scrollToBottom(0);
+      scrollToBottom(true);
     });
     // OpenClaw 流式消息不做深度调试拷贝，避免 Hermes 长任务并发时拖慢渲染进程。
     watch(() => store.currentMessages.length, () => {
@@ -27517,7 +27516,7 @@ const _sfc_main$9 = {
       const last = msgs[msgs.length - 1];
       return last?.content?.slice(-20) || "";
     }, () => {
-      if (autoScroll.value) scrollToBottom(0);
+      if (autoScroll.value) scrollToBottom();
     });
     function handleProfileSave(p2) {
       store.saveProfile(p2);

@@ -519,6 +519,7 @@ class HermesManager {
     this.apiProc = null;
     this.chatChildren = /* @__PURE__ */ new Map();
     this.chatRunMeta = /* @__PURE__ */ new Map();
+    this.chatSessionTasks = /* @__PURE__ */ new Map();
     this.apiServerKey = process.env.HERMES_API_SERVER_KEY || "openclaw-local-hermes";
     this._lastStatusSnapshot = null;
     this._lastStatusAt = 0;
@@ -681,11 +682,50 @@ class HermesManager {
     const platformNodeDir = process.platform === "win32" ? path$1.join(root, "node") : fs$1.existsSync(sharedNode) && fs$1.statSync(sharedNode).isFile() ? path$1.dirname(sharedNode) : path$1.join(sharedNode, "bin");
     const nodeDir = fs$1.existsSync(path$1.join(root, "node-windows-x64")) ? path$1.join(root, "node-windows-x64") : platformNodeDir;
     const pythonDir = path$1.dirname(this.getPortablePython());
-    for (const dir of [data, home, path$1.join(data, "config"), path$1.join(data, "cache"), path$1.join(data, "logs"), path$1.join(data, "memories"), path$1.join(data, "skills"), path$1.join(data, "tmp")]) {
+    const portableSkillPythonRoot = path$1.join(getAppRoot(), "runtime", "python3");
+    const portableSkillPython = process.platform === "win32" ? path$1.join(portableSkillPythonRoot, "python.exe") : path$1.join(portableSkillPythonRoot, "bin", "python3");
+    const portableSkillPythonBin = path$1.dirname(portableSkillPython);
+    const pycacheRoot = path$1.join(data, "cache", "pycache");
+    for (const dir of [data, home, path$1.join(data, "config"), path$1.join(data, "cache"), pycacheRoot, path$1.join(data, "logs"), path$1.join(data, "memories"), path$1.join(data, "skills"), path$1.join(data, "tmp")]) {
       if (!fs$1.existsSync(dir)) fs$1.mkdirSync(dir, { recursive: true });
     }
     const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
     const pythonHome = process.platform === "win32" ? "" : path$1.join(root, "python");
+    let shellEnv = {};
+    if (process.platform !== "win32") {
+      const shellQuote = (value) => `'${String(value).replace(/'/g, `'"'"'`)}'`;
+      const shellEnvPath = path$1.join(data, "config", "portable-shell-env.sh");
+      const stockRunner = path$1.join(__dirname, "portable-stock-runner.py");
+      const shellPython = fs$1.existsSync(portableSkillPython) ? portableSkillPython : this.getPortablePython();
+      const shellEnvContent = [
+        `export PATH=${shellQuote(path$1.dirname(shellPython))}:${shellQuote(venvScripts)}:"$PATH"`,
+        `export PYTHONPYCACHEPREFIX=${shellQuote(pycacheRoot)}`,
+        "unset PYTHONHOME",
+        "python3() {",
+        '  case "${1:-}" in',
+        "    */openclaw-data-china-stock/tool_runner.py)",
+        '      local tool_runner="$1"',
+        "      shift",
+        `      /usr/bin/env -u PYTHONHOME ${shellQuote(shellPython)} ${shellQuote(stockRunner)} "$tool_runner" "$@"`,
+        "      ;;",
+        "    *)",
+        `      /usr/bin/env -u PYTHONHOME ${shellQuote(shellPython)} "$@"`,
+        "      ;;",
+        "  esac",
+        "}",
+        'python() { python3 "$@"; }',
+        ""
+      ].join("\n");
+      let currentShellEnvContent = "";
+      try {
+        currentShellEnvContent = fs$1.readFileSync(shellEnvPath, "utf8");
+      } catch {
+      }
+      if (currentShellEnvContent !== shellEnvContent) {
+        atomicWriteFileSync(shellEnvPath, shellEnvContent, "utf8");
+      }
+      shellEnv = { BASH_ENV: shellEnvPath };
+    }
     return {
       ...process.env,
       COPYFILE_DISABLE: "1",
@@ -702,7 +742,10 @@ class HermesManager {
       HERMES_BROWSER_OPENED: "1",
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
+      PYTHONPYCACHEPREFIX: pycacheRoot,
       ...pythonHome ? { PYTHONHOME: pythonHome } : {},
+      ...process.platform !== "win32" && fs$1.existsSync(portableSkillPython) ? { VIRTUAL_ENV: portableSkillPythonRoot } : {},
+      ...shellEnv,
       PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path$1.delimiter),
       [pathKey]: [venvScripts, nodeDir, pythonDir, process.env[pathKey] || ""].filter(Boolean).join(path$1.delimiter)
     };
@@ -755,7 +798,7 @@ class HermesManager {
       if (path$1.basename(sourcePath).startsWith("._")) return false;
       const rel = path$1.relative(rootDir, sourcePath).replace(/\\/g, "/");
       const excluded = new Set([".git", ".github", ".hub", ".archive", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next", ".cache"]);
-      return !rel.split("/").some((part) => excluded.has(part));
+      return !rel.split("/").some((part) => excluded.has(part) || part === "site-packages" && process.platform !== "win32");
     }
     function findSkillSources(rootDir) {
       const rows = [];
@@ -2104,6 +2147,7 @@ class HermesManager {
       const progressBase = {
         sessionId: options.sessionId || "hermes-ai-chat",
         mode: options.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes",
+        taskId: options.taskId || "",
         startedAt: Date.now()
       };
       const startedAtMs = progressBase.startedAt;
@@ -24283,17 +24327,26 @@ function registerIPCHandlers({ gateway }) {
     if (!chatOptions.background) {
       return await getHermesManager().chat(chatOptions);
     }
+    const manager = getHermesManager();
+    const sessionId = chatOptions.sessionId || "hermes-ai-chat";
     const taskId = chatOptions.taskId || "hermes-chat-task-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
-    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] accepted background task " + taskId + " session=" + (chatOptions.sessionId || "hermes-ai-chat") + " messageLength=" + String(chatOptions.message || "").length });
+    const activeTaskId = manager.chatSessionTasks.get(sessionId);
+    if (activeTaskId && activeTaskId !== taskId) {
+      return { ok: false, pending: false, busy: true, taskId: activeTaskId, error: "Hermes is already processing a message in this conversation." };
+    }
+    manager.chatSessionTasks.set(sessionId, taskId);
+    safeSend("hermes-log", { type: "system", msg: "[hermes-chat] accepted background task " + taskId + " session=" + sessionId + " messageLength=" + String(chatOptions.message || "").length });
     setTimeout(() => {
-      getHermesManager().chat({ ...chatOptions, taskId }).then((result) => {
-        const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now(), runId: result?.runId, runDir: result?.runDir, stdoutPath: result?.stdoutPath, stderrPath: result?.stderrPath };
+      manager.chat({ ...chatOptions, taskId }).then((result) => {
+        const payload = { taskId, sessionId, mode: sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result, finishedAt: Date.now(), runId: result?.runId, runDir: result?.runDir, stdoutPath: result?.stdoutPath, stderrPath: result?.stderrPath };
         hermesChatResults.set(taskId, payload);
         safeSend("hermes-chat-result", payload);
       }).catch((err) => {
-        const payload = { taskId, sessionId: chatOptions.sessionId || "hermes-ai-chat", mode: chatOptions.sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };
+        const payload = { taskId, sessionId, mode: sessionId === "openclaw-hermes-collab" ? "collab" : "hermes", result: { ok: false, error: err instanceof Error ? err.message : String(err) }, finishedAt: Date.now() };
         hermesChatResults.set(taskId, payload);
         safeSend("hermes-chat-result", payload);
+      }).finally(() => {
+        if (manager.chatSessionTasks.get(sessionId) === taskId) manager.chatSessionTasks.delete(sessionId);
       });
     }, 0);
     return { ok: true, pending: true, taskId };
@@ -24328,6 +24381,7 @@ function registerIPCHandlers({ gateway }) {
     manager.killChild(child);
     manager.chatChildren.delete(taskId);
     manager.chatRunMeta.delete(taskId);
+    if (meta?.sessionId && manager.chatSessionTasks.get(meta.sessionId) === taskId) manager.chatSessionTasks.delete(meta.sessionId);
     return { ok: true, taskId };
   });
   electron.ipcMain.handle("hermes:openInternal", async (_, targetUrl) => {
