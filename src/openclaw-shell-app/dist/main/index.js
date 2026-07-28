@@ -4095,6 +4095,9 @@ function getGatewayEnv() {
   normalizeOpenClawPluginSkillLinks();
   const usbRuntime = path$1.join(getAppRoot(), "runtime");
   const paths = [];
+  const portablePythonRoot = path$1.join(runtimeRoot, "python3");
+  const portablePython = path$1.join(portablePythonRoot, process.platform === "win32" ? "python.exe" : "bin/python3");
+  const portablePythonBinDir = process.platform === "win32" ? portablePythonRoot : path$1.join(portablePythonRoot, "bin");
   const binDir = getOpenClawRuntimeBinDir();
   const nodeBinDir = process.platform === "win32" ? runtimeRoot : path$1.join(runtimeRoot, "node", "bin");
   if (fs$1.existsSync(binDir)) {
@@ -4108,6 +4111,9 @@ function getGatewayEnv() {
   }
   if (fs$1.existsSync(usbRuntime)) {
     paths.push(usbRuntime);
+  }
+  if (fs$1.existsSync(portablePython)) {
+    paths.unshift(portablePythonBinDir);
   }
   const runtimePath = runtimeRoot;
   const nodePathEntries = [
@@ -4138,10 +4144,14 @@ function getGatewayEnv() {
     OPENCLAW_CONFIG: path$1.join(portableStateRoot, "openclaw.json"),
     OPENCLAW_CONFIG_PATH: path$1.join(portableStateRoot, "openclaw.json"),
     OPENCLAW_WORKSPACE: path$1.join(portableStateRoot, "workspace"),
+    OPENCLAW_PORTABLE_ROOT: getAppRoot(),
     TMP: portableTmp,
     TEMP: portableTmp,
     NODE_PATH: (nodePathEntries.length ? nodePathEntries : [path$1.join(runtimePath, "node_modules")]).join(path$1.delimiter),
     PATH: `${paths.join(path$1.delimiter)}${path$1.delimiter}${process.env.PATH}`,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONNOUSERSITE: "1",
     NODE_OPTIONS: nodeOptions,
     NO_PROXY: noProxy,
     NO_COLOR: "1"

@@ -23,6 +23,8 @@ const requiredRuntimePaths = [
   "runtime/openclaw",
   "runtime/node_modules/openclaw/openclaw.mjs",
   "runtime/node_modules/openclaw/dist",
+  "runtime/python3/bin/python3",
+  ...["pydantic", "requests", "yaml", "pytz", "numpy", "pandas", "pyarrow", "akshare"].map((name) => `runtime/python3/lib/python3.12/site-packages/${name}`),
   ...openclawTemplateNames.map((name) => `runtime/node_modules/openclaw/src/agents/templates/${name}`),
   "runtime/HermesPortable/venv/bin/hermes",
   "runtime/HermesPortable/venv/bin/python",
@@ -238,6 +240,12 @@ function createOpenClawConfig() {
     },
     skills: {
       load: { extraDirs: ["skills"] },
+      limits: {
+        maxCandidatesPerRoot: 400,
+        maxSkillsLoadedPerSource: 400,
+        maxSkillsInPrompt: 400,
+        maxSkillsPromptChars: 65536
+      },
       entries: {}
     },
     models: {
@@ -420,6 +428,18 @@ function shouldCopyHermesPath(relPath) {
   return true;
 }
 
+function shouldCopySkillPythonPath(relPath) {
+  if (!relPath) return true;
+  const parts = relPath.split("/");
+  const name = parts.at(-1);
+  if (name.startsWith("._") || name === ".DS_Store" || name === ".gitkeep") return false;
+  if (parts.includes("__pycache__") || parts.some((part) => part === "test" || part === "tests" || part === "__tests__")) return false;
+  if (name.endsWith(".pyc") || name.endsWith(".pyo")) return false;
+  if (parts[0] === "include" || parts[0] === "share") return false;
+  if (parts.includes("dist-info") && ["RECORD", "INSTALLER", "REQUESTED"].includes(name)) return false;
+  return true;
+}
+
 function rewriteHermesVenvScripts(root) {
   const binDir = path.join(root, "venv", "bin");
   if (!fs.existsSync(binDir)) return;
@@ -464,6 +484,7 @@ function stageMacosRuntime() {
   const targetRuntimeRoot = path.join(releaseRoot, "runtime");
   const openclawPackage = path.join(sourcePlatformRoot, "openclaw", "node_modules", "openclaw");
   const hermesRoot = path.join(sourcePlatformRoot, "HermesPortable");
+  const skillPythonRoot = path.join(sourcePlatformRoot, "python3");
 
   if (!fs.existsSync(sourcePlatformRoot)) fail(`Missing macOS runtime root: ${sourcePlatformRoot}`);
   fs.rmSync(targetRuntimeRoot, { recursive: true, force: true });
@@ -472,6 +493,7 @@ function stageMacosRuntime() {
   copyNodeRuntime(sourcePlatformRoot, targetRuntimeRoot);
   copyDirFiltered(openclawPackage, path.join(targetRuntimeRoot, "node_modules", "openclaw"), shouldCopyOpenClawPath);
   writeRootOpenClawCommand();
+  copyDirFiltered(skillPythonRoot, path.join(targetRuntimeRoot, "python3"), shouldCopySkillPythonPath);
   copyDirFiltered(hermesRoot, path.join(targetRuntimeRoot, "HermesPortable"), shouldCopyHermesPath);
   rewriteHermesVenvScripts(path.join(targetRuntimeRoot, "HermesPortable"));
   copyFile(path.join(projectRoot, "runtime", "PORTABLE-RUNTIME-MANIFEST.json"), path.join(targetRuntimeRoot, "PORTABLE-RUNTIME-MANIFEST.json"));
@@ -552,6 +574,7 @@ function makeExfatCompatible() {
     path.join(releaseRoot, usbRootLayout ? appBundleName : path.join("macos", appBundleName), "Contents", "MacOS"),
     path.join(releaseRoot, appBundleName, "Contents", "Resources", innerAppBundleName, "Contents", "MacOS"),
     path.join(releaseRoot, "runtime"),
+    path.join(releaseRoot, "runtime", "python3", "bin"),
     path.join(releaseRoot, "runtime", "node_modules", "openclaw", "node_modules", ".bin"),
     path.join(releaseRoot, "runtime", "HermesPortable", "python", "bin"),
     path.join(releaseRoot, "runtime", "HermesPortable", "venv", "bin")

@@ -17,6 +17,8 @@ const pythonVersion = process.env.PYTHON_STANDALONE_VERSION || "3.12.13";
 const pythonStandaloneTag = process.env.PYTHON_STANDALONE_TAG || "20260623";
 const hermesConfigServerUrl = process.env.HERMES_CONFIG_SERVER_URL || "https://raw.githubusercontent.com/yuluyangguang1/hermes-portable/main/lib/config_server.py";
 const openclawTemplateNames = ["AGENTS.md", "BOOT.md", "BOOTSTRAP.md", "HEARTBEAT.md", "IDENTITY.md", "SOUL.md", "TOOLS.md", "USER.md"];
+const openClawSkillPythonPackages = ["pydantic", "requests", "PyYAML", "pytz", "numpy", "pandas", "pyarrow", "akshare"];
+const openClawSkillPythonModules = ["pydantic", "requests", "yaml", "pytz", "numpy", "pandas", "pyarrow", "akshare"];
 
 function fail(message) {
   console.error(message);
@@ -189,6 +191,27 @@ function ensurePythonRuntime() {
   return pythonBin;
 }
 
+function ensureOpenClawSkillPython() {
+  const pythonRoot = path.join(runtimeRoot, "python3");
+  const pythonBin = path.join(pythonRoot, "bin", "python3");
+  const importProbe = ["-I", "-c", `import ${openClawSkillPythonModules.join(", ")}; print("openclaw-skill-python-ok")`];
+  if (!force && commandOutput(pythonBin, importProbe) === "openclaw-skill-python-ok") return pythonBin;
+
+  if (force || !commandOutput(pythonBin, ["--version"]).includes(`Python ${pythonVersion}`)) {
+    const pythonArch = targetArch === "arm64" ? "aarch64" : "x86_64";
+    const asset = `cpython-${pythonVersion}+${pythonStandaloneTag}-${pythonArch}-apple-darwin-install_only_stripped.tar.gz`;
+    const archive = path.join(cacheRoot, asset);
+    download(`https://github.com/astral-sh/python-build-standalone/releases/download/${pythonStandaloneTag}/${asset}`, archive);
+    fs.rmSync(pythonRoot, { recursive: true, force: true });
+    mkdirp(pythonRoot);
+    run("tar", ["-xzf", archive, "-C", pythonRoot, "--strip-components=1"]);
+  }
+
+  run(pythonBin, ["-m", "pip", "install", "--upgrade", ...openClawSkillPythonPackages]);
+  run(pythonBin, importProbe);
+  return pythonBin;
+}
+
 function shouldCopyHermesSource(sourcePath) {
   const blocked = new Set([".git", ".github", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".venv", "venv", "node_modules"]);
   return !sourcePath.split(path.sep).some((part) => blocked.has(part));
@@ -292,6 +315,7 @@ function ensureTrackedPlaceholders() {
     path.join(runtimeRoot, "node", "bin", ".gitkeep"),
     path.join(runtimeRoot, "openclaw", "bin", ".gitkeep"),
     path.join(runtimeRoot, "openclaw", "node_modules", "openclaw", "dist", ".gitkeep"),
+    path.join(runtimeRoot, "python3", "bin", ".gitkeep"),
     path.join(runtimeRoot, "HermesPortable", "venv", "bin", ".gitkeep")
   ];
   for (const filePath of placeholders) {
@@ -317,6 +341,7 @@ function main() {
   mkdirp(buildRoot);
   const nodeBin = ensureNodeRuntime();
   const openclawBin = ensureOpenClawRuntime(nodeBin);
+  const openClawSkillPython = ensureOpenClawSkillPython();
   const pythonBin = ensurePythonRuntime();
   const hermesSource = ensureHermesSource();
   const hermesBin = ensureHermesVenv(pythonBin, hermesSource);
@@ -329,6 +354,7 @@ function main() {
     runtimeRoot,
     node: nodeBin,
     openclaw: openclawBin,
+    openClawSkillPython,
     python: pythonBin,
     hermes: hermesBin,
     configServer,

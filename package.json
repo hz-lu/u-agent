@@ -33,6 +33,7 @@
     "release:windows-dir": "node scripts/stage-windows-release-dir.mjs",
     "verify:hermes": "node scripts/verify-hermes-runtime.mjs",
     "verify:hermes:macos": "node scripts/verify-macos-hermes-runtime.mjs",
+    "verify:stock-skills:macos": "node scripts/verify-macos-stock-skill-runtime.mjs",
     "verify:hermes-memory": "node scripts/verify-hermes-memory.mjs",
     "verify:hermes-skill-growth": "node scripts/verify-hermes-skill-growth.mjs",
     "verify:hermes-skills": "node scripts/verify-hermes-skills.mjs",
