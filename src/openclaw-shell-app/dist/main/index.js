@@ -529,6 +529,10 @@ class HermesManager {
     this._lastWritableAppleDoubleCleanup = { removed: 0, errors: [], skipped: true };
     this._skillCommandCache = null;
     this._skillCommandCacheAt = 0;
+    this._startPromise = null;
+    this._startGeneration = -1;
+    this._stopPromise = null;
+    this._lifecycleGeneration = 0;
   }
   getHermesDataRoot() {
     return path$1.join(getAppRoot(), "data", ".hermes");
@@ -1409,7 +1413,25 @@ class HermesManager {
       this.memoryMb = 0;
     }
   }
-  async start(options = {}) {
+  start(options = {}) {
+    if (this._startPromise && this._startGeneration === this._lifecycleGeneration) return this._startPromise;
+    const generation = this._lifecycleGeneration;
+    const run = (async () => {
+      if (this._stopPromise) await this._stopPromise;
+      if (generation !== this._lifecycleGeneration) return this.snapshot();
+      return await this._startInternal(options, generation);
+    })();
+    const tracked = run.finally(() => {
+      if (this._startPromise === tracked) {
+        this._startPromise = null;
+        this._startGeneration = -1;
+      }
+    });
+    this._startPromise = tracked;
+    this._startGeneration = generation;
+    return tracked;
+  }
+  async _startInternal(options, generation) {
     this.cleanupAppleDoubleFiles(null, { force: options?.forceMetadataCleanup === true });
     const root = this.getPortableRoot();
     const configServer = path$1.join(root, "lib", "config_server.py");
@@ -1429,39 +1451,45 @@ class HermesManager {
     try {
       if (!(await this.checkTcpPort(17520))) {
         this.emitLog("system", "[hermes-portable] config server launch request\nroot=" + root + "\ncwd=" + root + "\npython=" + launchPython + "\nscript=" + configServer + "\nlogs=" + this.getHermesLogsRoot());
-        this.proc = child_process.spawn(launchPython, [configServer], {
+        const configProc = child_process.spawn(launchPython, [configServer], {
           cwd: root,
           env: this.getHermesEnv(),
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true
         });
+        this.proc = configProc;
         this.status = "starting";
-        this.emitLog("system", "[hermes-portable] config server spawned pid=" + (this.proc.pid || "unknown") + " command=" + launchPython + " " + configServer);
+        this.emitLog("system", "[hermes-portable] config server spawned pid=" + (configProc.pid || "unknown") + " command=" + launchPython + " " + configServer);
         this.emitStatus();
         let configStdoutTail = "";
         let configStderrTail = "";
         const appendConfigTail = (current, chunk) => (current + String(chunk || "")).slice(-4000);
-        this.proc.stdout?.on("data", (data) => {
+        configProc.stdout?.on("data", (data) => {
           const text = Buffer.from(data).toString("utf8");
           configStdoutTail = appendConfigTail(configStdoutTail, text);
           this.emitLog("stdout", "[config] " + text);
         });
-        this.proc.stderr?.on("data", (data) => {
+        configProc.stderr?.on("data", (data) => {
           const text = Buffer.from(data).toString("utf8");
           configStderrTail = appendConfigTail(configStderrTail, text);
           this.emitLog("stderr", "[config] " + text);
         });
-        this.proc.on("error", (err) => {
+        configProc.on("error", (err) => {
+          if (this.proc !== configProc) return;
           this.status = "error";
           this.lastError = err.message;
           this.emitLog("error", "[hermes-portable] config server spawn error: " + err.message);
           this.emitStatus();
         });
-        this.proc.on("exit", (code, signal) => {
-          const wasStopping = this.stopping;
-          this.proc = null;
+        configProc.on("exit", (code, signal) => {
+          const isCurrent = this.proc === configProc;
+          const wasStopping = this.stopping || generation !== this._lifecycleGeneration;
+          if (this.proc === configProc) this.proc = null;
+          if (!isCurrent) {
+            this.emitLog("exit", "[hermes-portable] stale config server exited code=" + (code ?? "null") + " signal=" + (signal ?? ""));
+            return;
+          }
           this.memoryMb = 0;
-          this.stopping = false;
           this.status = wasStopping || code === 0 ? "idle" : "error";
           if (this.status === "error") this.lastError = "Hermes config server exited with code " + (code ?? "null") + (signal ? ", signal " + signal : "");
           this.emitLog("exit", "[hermes-portable] config server exited code=" + (code ?? "null") + " signal=" + (signal ?? "") + (wasStopping || code === 0 ? " (normal stop)" : " (unexpected)"));
@@ -1472,6 +1500,7 @@ class HermesManager {
         });
       }
       const configReady = await this.waitForPort(17520, 2e4, () => !!this.proc);
+      if (generation !== this._lifecycleGeneration || this.stopping) return this.snapshot();
       if (!configReady) {
         this.status = "error";
         this.lastError = "Hermes config server did not become ready on 127.0.0.1:17520";
@@ -1481,6 +1510,7 @@ class HermesManager {
       }
       if (options.open === true) openHermesInMainWindow("http://127.0.0.1:17520");
       const apiStatus = await this.startApiServer({ open: false });
+      if (generation !== this._lifecycleGeneration || this.stopping) return this.snapshot();
       if (!apiStatus.apiServerReady) {
         this.status = "error";
         this.lastError = apiStatus.lastError || this.lastError || "Hermes Agent API did not become ready on 127.0.0.1:8642";
@@ -1489,6 +1519,7 @@ class HermesManager {
       }
       return await this.getStatus();
     } catch (err) {
+      if (generation !== this._lifecycleGeneration || this.stopping) return this.snapshot();
       this.status = "error";
       this.lastError = err instanceof Error ? err.message : String(err);
       this.emitLog("error", "[hermes-portable] start failed: " + this.lastError);
@@ -1576,7 +1607,7 @@ class HermesManager {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
-    this.status = "running";
+    this.status = "starting";
     this.lastError = "";
     this.emitLog("system", "[hermes-portable] " + label + " spawned pid=" + (proc.pid || "unknown"));
     let stderrTail = "";
@@ -1704,7 +1735,17 @@ class HermesManager {
   async openApiServer() {
     return await this.startApiServer({ open: true });
   }
-  async stop() {
+  stop() {
+    if (this._stopPromise) return this._stopPromise;
+    this._lifecycleGeneration += 1;
+    const run = this._stopInternal();
+    const tracked = run.finally(() => {
+      if (this._stopPromise === tracked) this._stopPromise = null;
+    });
+    this._stopPromise = tracked;
+    return tracked;
+  }
+  async _stopInternal() {
     this.stopping = true;
     const pid = this.proc?.pid;
     try {
@@ -1762,7 +1803,7 @@ class HermesManager {
     const dashboardReady = await this.checkTcpPort(9119);
     const apiServerReady = await this.checkTcpPort(8642);
     const gatewayReady = apiServerReady;
-    if (configReady || dashboardReady || apiServerReady) this.status = "running";
+    if (configReady && apiServerReady || dashboardReady) this.status = "running";
     else if (this.proc || this.dashboardProc || this.apiProc) {
       if (this.status !== "error") this.status = "starting";
     }

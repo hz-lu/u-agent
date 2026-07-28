@@ -256,6 +256,12 @@ function ensureHermesVenv(pythonBin, hermesSource) {
   return hermesBin;
 }
 
+function verifyHermesImports() {
+  const python = path.join(runtimeRoot, "HermesPortable", "venv", "bin", "python");
+  const marker = commandOutput(python, ["-c", 'import typing_extensions, pydantic, fastapi, uvicorn; print("hermes-imports-ok")']);
+  if (marker !== "hermes-imports-ok") fail(`Hermes Python dependencies failed their import probe: ${marker || "no output"}`);
+}
+
 function readConfigServerTemplate() {
   const candidates = [
     process.env.HERMES_CONFIG_SERVER_SOURCE && path.resolve(process.env.HERMES_CONFIG_SERVER_SOURCE),
@@ -345,6 +351,7 @@ function main() {
   const pythonBin = ensurePythonRuntime();
   const hermesSource = ensureHermesSource();
   const hermesBin = ensureHermesVenv(pythonBin, hermesSource);
+  verifyHermesImports();
   const configServer = ensureConfigServer(pythonBin);
   ensureTrackedPlaceholders();
   const required = verifyRequiredPaths();

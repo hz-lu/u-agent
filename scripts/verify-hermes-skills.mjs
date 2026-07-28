@@ -118,6 +118,7 @@ function buildHermesEnv() {
     : path.join(hermesRoot, "venv", "bin");
   for (const dir of [dataRoot, home, cache, config, logs, tmp, path.join(dataRoot, "skills")]) mkdirp(dir);
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === "path") || "Path";
+  const pythonHome = process.platform === "win32" ? "" : path.join(hermesRoot, "python");
   return {
     ...process.env,
     HOME: home,
@@ -131,6 +132,7 @@ function buildHermesEnv() {
     HERMES_BROWSER_OPENED: "1",
     PYTHONIOENCODING: "utf-8",
     PYTHONUTF8: "1",
+    ...(pythonHome ? { PYTHONHOME: pythonHome } : {}),
     PYTHONPATH: [venvSitePackages, sourceRoot, process.env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     PIP_CACHE_DIR: path.join(cache, "pip"),
     npm_config_cache: path.join(cache, "npm"),

@@ -73,6 +73,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
   }
 
   let version = "";
+  let imports = {};
   if (errors.length === 0) {
     const venvBin = path.dirname(python);
     const pythonRoot = path.join(hermesRoot, "python");
@@ -91,6 +92,35 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
     if (result.status !== 0 || !version.includes("Hermes Agent")) {
       errors.push(`Hermes CLI smoke 失败: ${version || `exit=${result.status}`}`);
     }
+    const requiredImports = ["typing_extensions", "pydantic", "fastapi", "uvicorn"];
+    const importProbe = spawnSync(python, ["-c", [
+      "import importlib, json",
+      `names = ${JSON.stringify(requiredImports)}`,
+      "versions = {}",
+      "for name in names:",
+      "    module = importlib.import_module(name)",
+      "    versions[name] = str(getattr(module, '__version__', 'unknown'))",
+      "print(json.dumps(versions))"
+    ].join("\n")], {
+      cwd: hermesRoot,
+      encoding: "utf8",
+      timeout: 30000,
+      env: {
+        ...process.env,
+        PYTHONHOME: pythonRoot,
+        PYTHONPATH: [sitePackages, path.join(hermesRoot, "hermes-agent")].join(path.delimiter),
+        PATH: [venvBin, path.join(pythonRoot, "bin"), process.env.PATH || ""].join(path.delimiter)
+      }
+    });
+    if (importProbe.status !== 0) {
+      errors.push(`Hermes Python 核心依赖导入失败: ${importProbe.stderr || importProbe.stdout || `exit=${importProbe.status}`}`);
+    } else {
+      try {
+        imports = JSON.parse(importProbe.stdout.trim());
+      } catch {
+        errors.push(`Hermes Python import probe 输出无效: ${importProbe.stdout}`);
+      }
+    }
   }
 
   return {
@@ -102,6 +132,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
     hermes,
     embeddedPython,
     version,
+    imports,
     errors
   };
 }
