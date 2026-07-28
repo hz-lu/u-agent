@@ -250,6 +250,7 @@ function ensureHermesVenv(pythonBin, hermesSource) {
 
   run(venvPython, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"]);
   run(venvPython, ["-m", "pip", "install", hermesSource]);
+  run(venvPython, ["-m", "pip", "install", "aiohttp==3.13.4"]);
 
   const version = commandOutput(hermesBin, ["--version"]);
   if (!version.includes("Hermes Agent")) fail(`Hermes CLI smoke failed: ${version || "no output"}`);
@@ -258,7 +259,7 @@ function ensureHermesVenv(pythonBin, hermesSource) {
 
 function verifyHermesImports() {
   const python = path.join(runtimeRoot, "HermesPortable", "venv", "bin", "python");
-  const marker = commandOutput(python, ["-c", 'import typing_extensions, pydantic, fastapi, uvicorn; print("hermes-imports-ok")']);
+  const marker = commandOutput(python, ["-c", 'import typing_extensions, pydantic, fastapi, uvicorn, aiohttp; print("hermes-imports-ok")']);
   if (marker !== "hermes-imports-ok") fail(`Hermes Python dependencies failed their import probe: ${marker || "no output"}`);
 }
 

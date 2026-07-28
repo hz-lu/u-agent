@@ -22,10 +22,11 @@ assert(hermesClass.includes('this.status = "starting"'), "Hermes child spawn mus
 assert(hermesClass.includes("if (configReady && apiServerReady || dashboardReady) this.status = \"running\""), "Hermes must not report running when only the config server is ready");
 
 const runtimeVerifier = fs.readFileSync(runtimeVerifierPath, "utf8");
-for (const moduleName of ["typing_extensions", "pydantic", "fastapi", "uvicorn"]) {
+for (const moduleName of ["typing_extensions", "pydantic", "fastapi", "uvicorn", "aiohttp"]) {
   assert(runtimeVerifier.includes(`"${moduleName}"`), `macOS Hermes verifier must import ${moduleName}`);
 }
 assert(runtimeVerifier.includes("importProbe"), "macOS Hermes verifier must execute an import probe");
+assert(runtimeVerifier.includes('PYTHONDONTWRITEBYTECODE: "1"'), "macOS Hermes verifier must not create bytecode caches in the staged release");
 
 const runtimeBuilder = fs.readFileSync(runtimeBuilderPath, "utf8");
 assert(runtimeBuilder.includes("verifyHermesImports"), "macOS runtime build must reject broken Hermes site-packages");

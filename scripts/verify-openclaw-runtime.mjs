@@ -109,8 +109,7 @@ function findMissingPackageImports() {
 }
 
 function findRunnableNode() {
-  if (nodeRuntime && process.platform === "win32") return nodeRuntime;
-  return process.execPath || nodeRuntime;
+  return nodeRuntime || process.execPath;
 }
 
 function runOpenClawCliSmoke() {

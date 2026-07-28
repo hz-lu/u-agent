@@ -83,6 +83,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
       encoding: "utf8",
       env: {
         ...process.env,
+        PYTHONDONTWRITEBYTECODE: "1",
         PYTHONHOME: pythonRoot,
         PYTHONPATH: [sitePackages, path.join(hermesRoot, "hermes-agent")].join(path.delimiter),
         PATH: [venvBin, path.join(pythonRoot, "bin"), process.env.PATH || ""].join(path.delimiter)
@@ -92,7 +93,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
     if (result.status !== 0 || !version.includes("Hermes Agent")) {
       errors.push(`Hermes CLI smoke 失败: ${version || `exit=${result.status}`}`);
     }
-    const requiredImports = ["typing_extensions", "pydantic", "fastapi", "uvicorn"];
+    const requiredImports = ["typing_extensions", "pydantic", "fastapi", "uvicorn", "aiohttp"];
     const importProbe = spawnSync(python, ["-c", [
       "import importlib, json",
       `names = ${JSON.stringify(requiredImports)}`,
@@ -107,6 +108,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
       timeout: 30000,
       env: {
         ...process.env,
+        PYTHONDONTWRITEBYTECODE: "1",
         PYTHONHOME: pythonRoot,
         PYTHONPATH: [sitePackages, path.join(hermesRoot, "hermes-agent")].join(path.delimiter),
         PATH: [venvBin, path.join(pythonRoot, "bin"), process.env.PATH || ""].join(path.delimiter)
