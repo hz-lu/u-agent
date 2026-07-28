@@ -3175,6 +3175,14 @@ electron.app.setPath("userData", electronDataDir);
 electron.app.setPath("sessionData", path$1.join(electronDataDir, "session"));
 electron.app.setPath("crashDumps", path$1.join(electronDataDir, "crashDumps"));
 electron.app.setAppLogsPath(path$1.join(electronDataDir, "logs"));
+if (!IS_DEV && process.platform === "darwin") {
+  electron.app.commandLine.appendSwitch("disable-http-cache");
+  electron.app.commandLine.appendSwitch("disable-gpu-shader-disk-cache");
+  electron.app.commandLine.appendSwitch("disable-gpu-program-cache");
+  electron.app.commandLine.appendSwitch("disk-cache-size", "1");
+  electron.app.commandLine.appendSwitch("media-cache-size", "1");
+  electron.app.commandLine.appendSwitch("disable-features", "DIPS,SharedStorageAPI");
+}
 const RUNTIME_DIR = path$1.join(getAppRoot(), DIR_RUNTIME);
 function getAppRoot() {
   if (_appRoot) return _appRoot;
