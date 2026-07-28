@@ -43,6 +43,7 @@ const {
   normalizeSelectedSkills,
   routeCompleteSkillSet
 } = require("./chat-skill-routing.cjs");
+const portableSkillMetadata = require("./skill-metadata.cjs");
 const LICENSE_SALT = "uclaw-license-v1";
 const LICENSE_ITERATIONS = 1e5;
 const LICENSE_KEYLEN = 32;
@@ -2689,7 +2690,10 @@ function startPortableSkillRepositoryWorker() {
       try {
         const report = JSON.parse(line);
         if (report?.type !== "skill-repository") continue;
-        if (report.ok) settleSkillRepositoryWaiters(null, report);
+        if (report.ok) {
+          if (Number(report.changedCount) > 0) invalidateOpenClawSessionSkillSnapshots();
+          settleSkillRepositoryWaiters(null, report);
+        }
         else settleSkillRepositoryWaiters(new Error(report.error || "Skill repository failed"));
         safeSend("skills-repository-updated", report);
       } catch (error) {
@@ -3415,6 +3419,7 @@ function updateSkillsField(config, skills) {
     if (!config.skills.entries) config.skills.entries = {};
     Object.assign(config.skills.entries, skills.entries);
   }
+  ensureOpenClawSkillLimits(config);
   return config;
 }
 function updateChannelsField(config, channels) {
@@ -3496,6 +3501,12 @@ async function ensureOpenClawDirectories() {
       skills: {
         load: {
           extraDirs: [appSkillsDir]
+        },
+        limits: {
+          maxCandidatesPerRoot: 400,
+          maxSkillsLoadedPerSource: 400,
+          maxSkillsInPrompt: 400,
+          maxSkillsPromptChars: 65536
         }
       },
       meta: {
@@ -3510,6 +3521,7 @@ async function ensureOpenClawDirectories() {
       if (!config.skills) config.skills = {};
       if (!config.skills.load) config.skills.load = {};
       if (!config.skills.load.extraDirs) config.skills.load.extraDirs = [];
+      ensureOpenClawSkillLimits(config);
       if (config.skills.load.extraDirs.length > 0) {
         config.skills.load.extraDirs = [appSkillsDir];
       }
@@ -3994,13 +4006,49 @@ function ensurePortableOpenClawSkillConfig() {
     }
     addDir("skills");
     for (const entry of current) addDir(entry);
-    if (JSON.stringify(next) !== JSON.stringify(current)) {
+    const limitsChanged = ensureOpenClawSkillLimits(config);
+    if (JSON.stringify(next) !== JSON.stringify(current) || limitsChanged) {
       config.skills.load.extraDirs = next;
       fs$1.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf8");
       console.log("[portable] ensured OpenClaw skills.load.extraDirs:", next.join(", "));
     }
   } catch (err) {
     console.warn("[portable] failed to ensure OpenClaw skill config:", err instanceof Error ? err.message : String(err));
+  }
+}
+function ensureOpenClawSkillLimits(config) {
+  config.skills ||= {};
+  config.skills.limits ||= {};
+  const requiredLimits = {
+    maxCandidatesPerRoot: 400,
+    maxSkillsLoadedPerSource: 400,
+    maxSkillsInPrompt: 400,
+    maxSkillsPromptChars: 65536
+  };
+  let changed = false;
+  for (const [key, minimum] of Object.entries(requiredLimits)) {
+    const current = Number(config.skills.limits[key]);
+    if (!Number.isFinite(current) || current < minimum) {
+      config.skills.limits[key] = minimum;
+      changed = true;
+    }
+  }
+  return changed;
+}
+function invalidateOpenClawSessionSkillSnapshots() {
+  const sessionsPath = path$1.join(getDataRoot(), ".openclaw", "agents", "main", "sessions", "sessions.json");
+  try {
+    if (!fs$1.existsSync(sessionsPath)) return 0;
+    const sessions = JSON.parse(fs$1.readFileSync(sessionsPath, "utf8"));
+    const invalidated = portableSkillMetadata.stripSessionSkillSnapshots(sessions);
+    if (invalidated > 0) {
+      atomicWriteFileSync(sessionsPath, JSON.stringify(sessions, null, 2) + "\n", "utf8");
+      console.log(`[skills] invalidated ${invalidated} persisted session snapshot(s); chat history was preserved`);
+    }
+    return invalidated;
+  } catch (error) {
+    console.warn("[skills] failed to invalidate persisted session snapshots:", error?.message || error);
+    return 0;
   }
 }
 function normalizeOpenClawPluginSkillLinks() {

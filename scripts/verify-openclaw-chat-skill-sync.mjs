@@ -28,6 +28,18 @@ function assertMainSkillRoots(relativePath) {
   assert(source.includes('path$1.join(getDataRoot(), ".openclaw", "skills")'), `${relativePath}: OpenClaw managed skills must be included`);
   assert(source.includes("ensurePortableOpenClawSkillConfig"), `${relativePath}: OpenClaw config should be repaired to include portable skills root`);
   assert(source.includes("getOpenClawSkillSourceRoots(config)"), `${relativePath}: skill scan/sync must use shared source roots`);
+  assert(source.includes("function ensureOpenClawSkillLimits(config)"), `${relativePath}: missing official OpenClaw skill capacity repair`);
+  for (const expected of [
+    "maxCandidatesPerRoot: 400",
+    "maxSkillsLoadedPerSource: 400",
+    "maxSkillsInPrompt: 400",
+    "maxSkillsPromptChars: 65536"
+  ]) {
+    assert(source.includes(expected), `${relativePath}: missing skill limit ${expected}`);
+  }
+  assert(source.includes("function invalidateOpenClawSessionSkillSnapshots()"), `${relativePath}: missing persisted skill snapshot invalidation`);
+  assert(source.includes("Number(report.changedCount) > 0"), `${relativePath}: repository changes must invalidate stale session skill snapshots`);
+  assert(source.includes("invalidateOpenClawSessionSkillSnapshots();"), `${relativePath}: skill repository change handler does not invalidate snapshots`);
 }
 
 for (const relativePath of [
