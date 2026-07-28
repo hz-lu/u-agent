@@ -40,6 +40,13 @@ function assertMainSkillRoots(relativePath) {
   assert(source.includes("function invalidateOpenClawSessionSkillSnapshots()"), `${relativePath}: missing persisted skill snapshot invalidation`);
   assert(source.includes("Number(report.changedCount) > 0"), `${relativePath}: repository changes must invalidate stale session skill snapshots`);
   assert(source.includes("invalidateOpenClawSessionSkillSnapshots();"), `${relativePath}: skill repository change handler does not invalidate snapshots`);
+  const gatewayEnv = source.split("function getGatewayEnv()")[1]?.split("function ")[0] || "";
+  assert(gatewayEnv.includes("ensurePortableOpenClawSkillConfig();"), `${relativePath}: Gateway startup must repair portable skill config`);
+  assert(gatewayEnv.includes("invalidateOpenClawSessionSkillSnapshots();"), `${relativePath}: Gateway startup must invalidate stale skill snapshots before the first chat`);
+  assert(
+    gatewayEnv.indexOf("invalidateOpenClawSessionSkillSnapshots();") > gatewayEnv.indexOf("ensurePortableOpenClawSkillConfig();"),
+    `${relativePath}: skill snapshot invalidation must run after portable skill config repair`
+  );
 }
 
 for (const relativePath of [

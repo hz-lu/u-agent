@@ -26,6 +26,42 @@ function isExecutable(filePath) {
   }
 }
 
+export function scanPythonSourcesForNullBytes(rootDir) {
+  const corruptFiles = [];
+  const unreadablePaths = [];
+  let checkedFiles = 0;
+  const pending = [rootDir];
+
+  while (pending.length) {
+    const current = pending.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (error) {
+      unreadablePaths.push({ path: current, error: error?.code || error?.message || String(error) });
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name.startsWith("._")) continue;
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".py")) continue;
+      checkedFiles += 1;
+      try {
+        if (fs.readFileSync(entryPath).includes(0)) corruptFiles.push(entryPath);
+      } catch (error) {
+        unreadablePaths.push({ path: entryPath, error: error?.code || error?.message || String(error) });
+      }
+    }
+  }
+
+  corruptFiles.sort();
+  return { checkedFiles, corruptFiles, unreadablePaths };
+}
+
 export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
   const hermesRoot = path.join(releaseRoot, "runtime", "HermesPortable");
   const python = path.join(hermesRoot, "venv", "bin", "python");
@@ -69,6 +105,25 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
     const firstLine = fs.readFileSync(hermes, "utf8").split(/\r?\n/, 1)[0];
     if (firstLine !== "#!/usr/bin/env python3") {
       errors.push(`Hermes CLI shebang 不可移植: ${firstLine || "(空)"}`);
+    }
+  }
+
+  let pythonSourceScan = { checkedFiles: 0, corruptFiles: [], unreadablePaths: [] };
+  if (fs.existsSync(hermesRoot)) {
+    pythonSourceScan = scanPythonSourcesForNullBytes(hermesRoot);
+    if (pythonSourceScan.corruptFiles.length) {
+      const sample = pythonSourceScan.corruptFiles
+        .slice(0, 5)
+        .map((file) => path.relative(releaseRoot, file))
+        .join(", ");
+      errors.push(`Hermes Python 源文件损坏（含 NUL 字节）: ${pythonSourceScan.corruptFiles.length} 个；${sample}`);
+    }
+    if (pythonSourceScan.unreadablePaths.length) {
+      const sample = pythonSourceScan.unreadablePaths
+        .slice(0, 5)
+        .map((item) => `${path.relative(releaseRoot, item.path)} (${item.error})`)
+        .join(", ");
+      errors.push(`Hermes Python 运行时存在不可读取路径: ${pythonSourceScan.unreadablePaths.length} 个；${sample}`);
     }
   }
 
@@ -135,6 +190,7 @@ export function verifyMacosHermesRuntime(releaseRoot, expectedArch = "arm64") {
     embeddedPython,
     version,
     imports,
+    pythonSourceScan,
     errors
   };
 }

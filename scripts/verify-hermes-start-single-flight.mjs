@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { scanPythonSourcesForNullBytes } from "./verify-macos-hermes-runtime.mjs";
 
 const projectRoot = path.resolve(import.meta.dirname, "..");
 const mainPath = path.join(projectRoot, "src", "openclaw-shell-app", "dist", "main", "index.js");
@@ -27,6 +29,23 @@ for (const moduleName of ["typing_extensions", "pydantic", "fastapi", "uvicorn",
 }
 assert(runtimeVerifier.includes("importProbe"), "macOS Hermes verifier must execute an import probe");
 assert(runtimeVerifier.includes('PYTHONDONTWRITEBYTECODE: "1"'), "macOS Hermes verifier must not create bytecode caches in the staged release");
+
+const corruptPythonRoot = fs.mkdtempSync(path.join(os.tmpdir(), "uclaw-hermes-nul-"));
+try {
+  fs.writeFileSync(path.join(corruptPythonRoot, "healthy.py"), "print('ok')\n");
+  fs.writeFileSync(path.join(corruptPythonRoot, "corrupt.py"), Buffer.from("print('bad')\0\n"));
+  const scan = scanPythonSourcesForNullBytes(corruptPythonRoot);
+  assert(scan.checkedFiles === 2, "Hermes verifier must scan every Python source file");
+  assert(
+    JSON.stringify(scan.corruptFiles.map((file) => path.basename(file))) === JSON.stringify(["corrupt.py"]),
+    "Hermes verifier must report only the corrupt Python source"
+  );
+} finally {
+  fs.rmSync(corruptPythonRoot, { recursive: true, force: true });
+}
+
+assert(main.includes('build("runtime_corrupt"'), "Hermes null-byte failures must be classified as runtime corruption");
+assert(main.includes("source code string cannot contain null bytes"), "Hermes error classifier must recognize Python null-byte failures");
 
 const runtimeBuilder = fs.readFileSync(runtimeBuilderPath, "utf8");
 assert(runtimeBuilder.includes("verifyHermesImports"), "macOS runtime build must reject broken Hermes site-packages");

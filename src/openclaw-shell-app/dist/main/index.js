@@ -2224,6 +2224,9 @@ class HermesManager {
           stderrPath: context.stderrPath,
           ...extra
         });
+        if (has(["source code string cannot contain null bytes", "null bytes in python source"])) {
+          return build("runtime_corrupt", "Hermes 运行时文件已损坏，当前对话无法执行。", ["Hermes 的 Python 源文件包含异常 NUL 字节，通常由 U 盘复制中断、文件系统异常或运行时目录损坏导致。"], ["关闭程序后，用完整且校验通过的 runtime/HermesPortable 目录替换 U 盘中的同名目录。", "不要覆盖 U 盘中的 data、skills 和 .license；替换完成后重新启动并执行环境检查。"]);
+        }
         if (context.exitSignal || has(["Hermes chat exited with code null", "signal SIGTERM", "signal SIGKILL"])) {
           return build("interrupted", "Hermes 本轮任务被本地进程启动/重启流程中断，当前不能当作模型或 API Key 错误处理。", ["U 盘慢盘首次启动时，Hermes API / Gateway 还在预热，oneshot 对话进程可能被旧进程清理或重启信号打断。", "用户点击停止、应用退出或后台服务重启也会产生同类中断。"], ["等首页 Hermes 状态稳定显示已启动后重新发送。", "如果反复出现，请在首页停止并重新启动 Hermes，再发送同一条消息。"], { exitCode: context.exitCode ?? null, exitSignal: context.exitSignal || "" });
         }
@@ -4138,6 +4141,7 @@ function normalizeOpenClawPluginSkillLinks() {
 function getGatewayEnv() {
   rewritePortableOpenClawConfigPaths();
   ensurePortableOpenClawSkillConfig();
+  invalidateOpenClawSessionSkillSnapshots();
   const runtimeRoot = getActiveRuntimeDir();
   const repair = repairOpenClawRuntimeTemplates(runtimeRoot);
   if (!repair.ok) console.warn("[runtime] OpenClaw template repair pending before gateway start:", repair.error || repair.targetRoot);
