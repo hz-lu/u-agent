@@ -131,7 +131,7 @@ for (const marker of [
   "sendCollaborativeSkillMessage",
   "const result = !selectedSkills.length",
   "function parseStoredOpenClawSkillMessage(content)",
-  'const collabOpenClawSessionKey = "agent:main:openclawpro-collab"',
+  'const collabOpenClawSessionKey = "openclawpro-collab"',
   "getSessionMessages(sessionKey)",
   "sendOptions.sessionKey = collabOpenClawSessionKey"
 ]) {

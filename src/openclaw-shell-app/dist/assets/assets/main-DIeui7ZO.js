@@ -20131,6 +20131,9 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       if (finalIdx >= 0) {
         const newMsgs = [...msgs];
         const updated = { ...newMsgs[finalIdx], status: "done", _streaming: false };
+        updated.timestamp = payload.message?.timestamp || Date.now();
+        updated._final = true;
+        updated._localOnly = true;
         if (finalContent) updated.content = finalContent;
         if (finalThinkContent) updated._thinkContent = finalThinkContent;
         if (finalContentBlocks?.length) updated.contentBlocks = finalContentBlocks;
@@ -20154,6 +20157,8 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
             tools: [],
             timestamp: Date.now(),
             status: "done",
+            _final: true,
+            _localOnly: true,
             model: payload.message?.model || void 0
           };
           messagesMap.value[sk] = [...msgs, doneMsg];
@@ -20266,7 +20271,7 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
           if (CHAT_DEBUG) console.warn("[DEDUP-DEBUG] 格式A 复用已有流式消息 | runId=", payload.runId, "| reuseIdx=", reuseIdx);
           const oldMsg = msgs[reuseIdx];
           const updated = { ...oldMsg, runId: payload.runId || oldMsg.runId, status: "streaming" };
-          if (textContent) updated.content = (oldMsg.content || "") + textContent;
+          if (textContent) updated.content = textContent;
           if (thinkingContent) updated._thinkContent = thinkingContent;
           updated.contentBlocks = _buildContentBlocks(updated.content, updated._thinkContent);
           const newMsgs = [...msgs];
@@ -20653,26 +20658,40 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       timestamp: msg.timestamp || Date.now(),
       runId: msg.runId || void 0,
       status: msg.status || "done",
+      _stopReason: msg.stopReason || void 0,
+      _final: msg._final === true || role === "assistant" && !!msg.stopReason && msg.stopReason !== "toolUse" && msg.stopReason !== "toolResult",
       model: msg.model || void 0
     });
   }
-  function mergeThinking(base, next) {
-    return [base, next].filter(Boolean).join("\n") || void 0;
+  function isSameAssistantTurn(base, next) {
+    if (!base || !next || base.role !== "assistant" || next.role !== "assistant") return false;
+    if (base.id && next.id && base.id === next.id) return true;
+    return !!(base.runId && next.runId && base.runId === next.runId);
   }
-  function appendAssistantMessage(base, next, includeText = true) {
-    const content = includeText ? [base.content, next.content].filter(Boolean).join("\n") : base.content;
+  function mergeSameAssistantTurn(base, next) {
+    const baseContent = String(base.content || "");
+    const nextContent = String(next.content || "");
+    let content = nextContent || baseContent;
+    if (baseContent && nextContent) {
+      if (nextContent.startsWith(baseContent)) content = nextContent;
+      else if (baseContent.startsWith(nextContent)) content = baseContent;
+    }
+    const tools = [...base.tools || []];
+    for (const tool of next.tools || []) {
+      const index = tool?.id ? tools.findIndex((item) => item?.id === tool.id) : -1;
+      if (index >= 0) tools[index] = { ...tools[index], ...tool };
+      else tools.push(tool);
+    }
     return syncMessageBlocks({
       ...base,
+      ...next,
+      id: base.id || next.id,
       content,
-      tools: [...base.tools || [], ...next.tools || []],
-      images: [...base.images || [], ...next.images || []],
-      videos: [...base.videos || [], ...next.videos || []],
-      audios: [...base.audios || [], ...next.audios || []],
-      files: [...base.files || [], ...next.files || []],
-      attachments: [...base.attachments || [], ...next.attachments || []],
-      _thinkContent: mergeThinking(base._thinkContent, next._thinkContent),
-      timestamp: Math.min(base.timestamp || Date.now(), next.timestamp || Date.now()),
-      status: base.status === "streaming" || next.status === "streaming" ? "streaming" : "done"
+      tools,
+      timestamp: Math.max(base.timestamp || 0, next.timestamp || 0) || Date.now(),
+      status: next.status || base.status,
+      _streaming: next._streaming ?? base._streaming,
+      _thinkContent: next._thinkContent || base._thinkContent
     });
   }
   function _mergeToolResults(msgs) {
@@ -20681,38 +20700,23 @@ const useAiChatStore = /* @__PURE__ */ defineStore("aiChat", () => {
       const msg = { ...rawMsg };
       const last = result[result.length - 1];
       if (msg.role === "toolResult") {
-        if (last?.role === "assistant" && last.tools?.length) {
-          const matchedTool = last.tools.find((t) => t.id === msg._toolCallId && t.output == null) || last.tools.find((t) => t.output == null);
+        for (let index = result.length - 1; index >= 0; index--) {
+          const owner = result[index];
+          if (owner?.role !== "assistant" || !owner.tools?.length) continue;
+          const tools = owner.tools.map((tool) => ({ ...tool }));
+          const matchedTool = tools.find((t) => t.id === msg._toolCallId && t.output == null) || !msg._toolCallId && tools.find((t) => t.output == null);
           if (matchedTool) {
             matchedTool.output = (msg.content || "").trim() || null;
             matchedTool.status = "ok";
-            last.tools = [...last.tools];
+            result[index] = { ...owner, tools };
+            break;
           }
         }
         continue;
       }
-      if (msg.role === "assistant" && last?.role === "assistant") {
-        const hasText = !!(msg.content || "").trim();
-        const hasMedia = !!(msg.images?.length || msg.videos?.length || msg.audios?.length || msg.files?.length || msg.attachments?.length);
-        const hasTools = !!msg.tools?.length;
-        const lastHasTools = !!last.tools?.length;
-        const lastHasText = !!(last.content || "").trim();
-        if (hasTools && !hasText && !hasMedia) {
-          result[result.length - 1] = appendAssistantMessage(last, msg, false);
-          continue;
-        }
-        if (hasText && lastHasTools && !lastHasText) {
-          result[result.length - 1] = appendAssistantMessage(last, msg);
-          continue;
-        }
-        if (hasText && hasTools) {
-          result[result.length - 1] = appendAssistantMessage(last, msg);
-          continue;
-        }
-        if (hasText && !hasTools && lastHasTools) {
-          result[result.length - 1] = appendAssistantMessage(last, msg);
-          continue;
-        }
+      if (msg.role === "assistant" && last?.role === "assistant" && isSameAssistantTurn(last, msg)) {
+        result[result.length - 1] = mergeSameAssistantTurn(last, msg);
+        continue;
       }
       result.push(syncMessageBlocks(msg));
     }
@@ -26395,7 +26399,7 @@ const _sfc_main$9 = {
     const collabRunState = /* @__PURE__ */ ref("");
     const hermesActiveTaskId = /* @__PURE__ */ ref("");
     const collabActiveTaskId = /* @__PURE__ */ ref("");
-    const collabOpenClawSessionKey = "agent:main:openclawpro-collab";
+    const collabOpenClawSessionKey = "openclawpro-collab";
     const hermesProgressLines = /* @__PURE__ */ ref([]);
     const messagesArea = /* @__PURE__ */ ref(null);
     const messagesEnd = /* @__PURE__ */ ref(null);
@@ -26898,27 +26902,32 @@ const _sfc_main$9 = {
       }];
       saveHermesSession();
     }
-    function getLatestOpenClawAssistant(afterLength, sessionKey = "") {
+    const OPENCLAW_DRAFT_TIMEOUT_MS = 18e5;
+    function getLatestOpenClawAssistant(startedAt, sessionKey = "") {
       const messages = sessionKey ? store.getSessionMessages(sessionKey) : store.currentMessages || [];
-      const candidates = messages.slice(afterLength).filter((m) => m.role === "assistant" && (m.content || m.status === "error"));
-      return candidates[candidates.length - 1] || null;
+      const candidates = messages.filter((message) => message.role === "assistant" && message.timestamp >= startedAt && (message.content || message.status === "error"));
+      const completed = candidates.filter((message) => message._final === true || message.status === "error");
+      return completed[completed.length - 1] || candidates[candidates.length - 1] || null;
     }
-    function waitForOpenClawDraft(afterLength, timeoutMs = 13e4, sessionKey = "") {
-      return new Promise((resolve, reject) => {
-        const start = Date.now();
-        const timer = window.setInterval(() => {
-          const draft = getLatestOpenClawAssistant(afterLength, sessionKey);
-          if (draft && !draft._streaming && draft.status !== "streaming" && !store.sending) {
-            window.clearInterval(timer);
-            resolve(draft);
-            return;
+    async function waitForOpenClawDraft(startedAt, sessionKey = "") {
+      const targetSessionKey = sessionKey || store.activeSessionKey || "";
+      const deadline = Date.now() + OPENCLAW_DRAFT_TIMEOUT_MS;
+      let completedAt = 0;
+      let historyRefreshed = false;
+      while (Date.now() < deadline) {
+        if (!store.sending) {
+          if (!completedAt) completedAt = Date.now();
+          if (!historyRefreshed && targetSessionKey) {
+            historyRefreshed = true;
+            await store.loadSessionMessages(targetSessionKey, 200, { force: true });
           }
-          if (Date.now() - start > timeoutMs) {
-            window.clearInterval(timer);
-            reject(new Error("OpenClaw 草案生成超时"));
-          }
-        }, 600);
-      });
+          const draft = getLatestOpenClawAssistant(startedAt, sessionKey);
+          if (draft?._final === true || draft?.status === "error") return draft;
+          if (draft && Date.now() - completedAt >= 5e3 && !draft._streaming && draft.status !== "streaming") return draft;
+        }
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+      }
+      throw new Error("OpenClaw 草案生成超时（已等待 30 分钟）");
     }
     async function ensureOpenClawChatReady(timeoutMs = 25000) {
       if (store.isReady) return true;
@@ -27092,7 +27101,7 @@ const _sfc_main$9 = {
         scrollToBottom();
       }
     }
-    function trackCollaborativeOpenClawSkillResult(beforeLength, displayText, attachments, skills) {
+    function trackCollaborativeOpenClawSkillResult(openClawStartedAt, displayText, attachments, skills) {
       const now = Date.now();
       collabMessages.value = [...collabMessages.value, {
         id: `collab-user-${now}`,
@@ -27112,7 +27121,7 @@ const _sfc_main$9 = {
       scrollToBottom(true);
       void (async () => {
         try {
-          const reply = await waitForOpenClawDraft(beforeLength, 13e4, collabOpenClawSessionKey);
+          const reply = await waitForOpenClawDraft(openClawStartedAt, collabOpenClawSessionKey);
           appendCollabAssistant(
             reply?.content || "OpenClaw 未返回可用结果。",
             "OpenClaw 技能执行",
@@ -27155,7 +27164,7 @@ const _sfc_main$9 = {
       saveHermesSession();
       autoScroll.value = true;
       scrollToBottom(true);
-      const beforeLength = store.currentMessages.length;
+      const openClawStartedAt = Date.now();
       try {
         if (!store.isReady && !gatewayAvailable.value) {
           appendHermesAssistant("Gateway 已启动，正在连接 OpenClaw 会话...", "协同编排", "done");
@@ -27164,7 +27173,7 @@ const _sfc_main$9 = {
         }
         appendHermesAssistant("阶段 1/2：OpenClaw 正在生成执行草案...", "协同编排", "done");
         await store.sendMessage(content, attachments);
-        const draft = await waitForOpenClawDraft(beforeLength);
+        const draft = await waitForOpenClawDraft(openClawStartedAt);
         const draftText = draft?.content || "OpenClaw 未返回可用草案。";
         appendHermesAssistant(draftText, "OpenClaw 草案", draft?.status === "error" ? "error" : "done");
         appendHermesAssistant("阶段 2/2：Hermes 正在基于 OpenClaw 草案进行复核、补充记忆和技能视角...", "协同编排", "done");
@@ -27220,7 +27229,7 @@ const _sfc_main$9 = {
       saveHermesSession();
       autoScroll.value = true;
       scrollToBottom(true);
-      const beforeLength = store.currentMessages.length;
+      const openClawStartedAt = Date.now();
       try {
         if (!store.isReady && !gatewayAvailable.value) {
           collabRunState.value = "Gateway 已启动，正在连接 OpenClaw 会话...";
@@ -27230,7 +27239,7 @@ const _sfc_main$9 = {
         }
         appendCollabAssistant("阶段 1/2：OpenClaw 正在生成内部草案。", "协同编排", "done");
         await store.sendMessage(content, attachments);
-        const draft = await waitForOpenClawDraft(beforeLength);
+        const draft = await waitForOpenClawDraft(openClawStartedAt);
         const draftText = draft?.content || "OpenClaw 未返回可用草案。";
         appendCollabAssistant("阶段 2/2：Hermes 正在复核内部草案并整理最终答复。", "协同编排", "done", { internalDraft: draftText });
         const hermesPrompt = [
@@ -27323,11 +27332,11 @@ const _sfc_main$9 = {
         return { accepted: true, queued: false };
       }
       const openClawSessionKey = agentMode.value === "collab" ? collabOpenClawSessionKey : "";
-      const beforeLength = openClawSessionKey ? store.getSessionMessages(openClawSessionKey).length : store.currentMessages.length;
+      const openClawStartedAt = Date.now();
       if (openClawSessionKey) sendOptions.sessionKey = collabOpenClawSessionKey;
       const result = await store.sendMessage(prepared.runtimeMessage, attachments, sendOptions);
       if (result?.accepted && agentMode.value === "collab") {
-        trackCollaborativeOpenClawSkillResult(beforeLength, text2, attachments || [], skills);
+        trackCollaborativeOpenClawSkillResult(openClawStartedAt, text2, attachments || [], skills);
       }
       if (result?.accepted || agentMode.value !== "collab" || result?.retrySafe !== true) return result;
       const fallback = await prepareSkillRequest("hermes", text2, skills);
